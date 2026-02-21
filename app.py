@@ -1,6 +1,9 @@
+import logging
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 st.set_page_config(page_title="Sri Lanka Media Bias MVP", layout="wide")
 
@@ -13,15 +16,34 @@ It uses proxy signals (entity sentiment and coverage frequency) rather than bina
 # --- Load Data ---
 @st.cache_data
 def load_data():
-    try:
-        agg_sentiment = pd.read_csv("data/agg_sentiment.csv")
-        agg_coverage = pd.read_csv("data/agg_coverage.csv")
-        explain_data = pd.read_csv("data/ui_explain_data.csv")
-        omissions = pd.read_csv("data/potential_omissions.csv")
-        return agg_sentiment, agg_coverage, explain_data, omissions
-    except FileNotFoundError:
-        # Return empty DataFrames instead of None to avoid downstream TypeErrors
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    files = {
+        'agg_sentiment': 'data/agg_sentiment.csv',
+        'agg_coverage': 'data/agg_coverage.csv',
+        'explain_data': 'data/ui_explain_data.csv',
+        'omissions': 'data/potential_omissions.csv'
+    }
+
+    results = {}
+    for key, path in files.items():
+        try:
+            df = pd.read_csv(path)
+            logging.info(f"Loaded {path}: shape={df.shape}, cols={list(df.columns)}")
+            if not df.empty:
+                try:
+                    logging.info(f"{path} first row: {df.head(1).to_dict(orient='records')}")
+                except Exception:
+                    logging.info(f"{path} loaded but couldn't show head() (non-standard types)")
+        except FileNotFoundError:
+            logging.warning(f"File not found: {path}")
+            df = pd.DataFrame()
+        except Exception as e:
+            logging.exception(f"Error loading {path}: {e}")
+            df = pd.DataFrame()
+
+        results[key] = df
+
+    logging.info("Finished attempting to load all data files.")
+    return results['agg_sentiment'], results['agg_coverage'], results['explain_data'], results['omissions']
 
 agg_sentiment, agg_coverage, explain_data, omissions = load_data()
 
