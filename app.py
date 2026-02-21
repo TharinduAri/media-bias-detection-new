@@ -70,9 +70,9 @@ with tab1:
     else:
         entities = []
 
-    selected_entity = st.selectbox("Select Entity to track:", entities if len(entities) > 0 else ["No entities available"]) 
+    selected_entity = st.selectbox("Select Entity to track:", list(entities) if len(entities) > 0 else ["No entities available"]) 
 
-    if entities and selected_entity != "No entities available":
+    if len(entities) > 0 and selected_entity != "No entities available":
         entity_data = agg_sentiment[agg_sentiment['entity'] == selected_entity]
     else:
         entity_data = pd.DataFrame()
