@@ -20,13 +20,20 @@ def load_data():
         omissions = pd.read_csv("data/potential_omissions.csv")
         return agg_sentiment, agg_coverage, explain_data, omissions
     except FileNotFoundError:
-        return None, None, None, None
+        # Return empty DataFrames instead of None to avoid downstream TypeErrors
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 agg_sentiment, agg_coverage, explain_data, omissions = load_data()
 
-if agg_sentiment is None:
-    st.error("Data files not found. Please run the pipeline scripts first.")
-    st.stop()
+# Ensure we always have DataFrame objects and guard missing columns
+if not isinstance(agg_sentiment, pd.DataFrame):
+    agg_sentiment = pd.DataFrame()
+if not isinstance(agg_coverage, pd.DataFrame):
+    agg_coverage = pd.DataFrame()
+if not isinstance(explain_data, pd.DataFrame):
+    explain_data = pd.DataFrame()
+if not isinstance(omissions, pd.DataFrame):
+    omissions = pd.DataFrame()
 
 # --- Dashboard Layout ---
 tab1, tab2, tab3 = st.tabs(["Longitudinal Sentiment", "Topic Coverage & Omissions", "Explainability"])
@@ -35,10 +42,18 @@ with tab1:
     st.header("Outlet Sentiment Trends")
     st.markdown("Tracks the average sentiment expressed toward specific entities over time by different outlets.")
     
-    entities = agg_sentiment['entity'].unique()
-    selected_entity = st.selectbox("Select Entity to track:", entities)
-    
-    entity_data = agg_sentiment[agg_sentiment['entity'] == selected_entity]
+    # Safely get entities list
+    if not agg_sentiment.empty and 'entity' in agg_sentiment.columns:
+        entities = agg_sentiment['entity'].unique()
+    else:
+        entities = []
+
+    selected_entity = st.selectbox("Select Entity to track:", entities if len(entities) > 0 else ["No entities available"]) 
+
+    if entities and selected_entity != "No entities available":
+        entity_data = agg_sentiment[agg_sentiment['entity'] == selected_entity]
+    else:
+        entity_data = pd.DataFrame()
     
     if not entity_data.empty:
         fig_sentiment = px.line(
@@ -60,19 +75,27 @@ with tab2:
     
     # Simple bar chart of total mentions
     # For a cleaner chart, take top 15 most mentioned entities overall
-    top_entities = agg_coverage.groupby('entity')['total_mentions'].sum().nlargest(15).index
-    coverage_filtered = agg_coverage[agg_coverage['entity'].isin(top_entities)]
+    # Guard coverage DataFrame
+    if not agg_coverage.empty and 'entity' in agg_coverage.columns and 'total_mentions' in agg_coverage.columns:
+        top_entities = agg_coverage.groupby('entity')['total_mentions'].sum().nlargest(15).index
+        coverage_filtered = agg_coverage[agg_coverage['entity'].isin(top_entities)]
+    else:
+        top_entities = []
+        coverage_filtered = pd.DataFrame()
     
-    fig_coverage = px.bar(
-        coverage_filtered,
-        x='entity',
-        y='total_mentions',
-        color='outlet',
-        barmode='group',
-        title="Top 15 Entities: Coverage Frequency by Outlet",
-        labels={'total_mentions': 'Total Mentions (Sentences)'}
-    )
-    st.plotly_chart(fig_coverage, use_container_width=True)
+    if not coverage_filtered.empty:
+        fig_coverage = px.bar(
+            coverage_filtered,
+            x='entity',
+            y='total_mentions',
+            color='outlet',
+            barmode='group',
+            title="Top 15 Entities: Coverage Frequency by Outlet",
+            labels={'total_mentions': 'Total Mentions (Sentences)'}
+        )
+        st.plotly_chart(fig_coverage, use_container_width=True)
+    else:
+        st.info("No coverage data available.")
 
     st.subheader("Potential Omissions")
     st.markdown("Entities heavily covered by one outlet but ignored by another:")
