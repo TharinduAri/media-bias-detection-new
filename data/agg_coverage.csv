@@ -1,9 +1,7 @@
 outlet,entity,label,total_mentions,article_count
 AdaDerana,Abbas Araghchi,PERSON,1,1
 AdaDerana,Abu Dhabi,GPE,1,1
-AdaDerana,Agalakada Sirisumana Thero,PERSON,1,1
 AdaDerana,Air Force One,ORG,1,1
-AdaDerana,Akuregeoda,GPE,1,1
 AdaDerana,Alcoa,ORG,1,1
 AdaDerana,American,NORP,4,2
 AdaDerana,Americans,NORP,2,2
@@ -12,7 +10,8 @@ AdaDerana,Amy Coney Barrett,PERSON,3,2
 AdaDerana,Andrew,PERSON,7,1
 AdaDerana,Andrew Mountbatten-Windsor,PERSON,1,1
 AdaDerana,Andrew Taylor,PERSON,1,1
-AdaDerana,Anura Kumara Dissanayake,PERSON,2,2
+AdaDerana,Anura Karunatilaka,PERSON,1,1
+AdaDerana,Anura Kumara Dissanayake,PERSON,1,1
 AdaDerana,Australia,GPE,1,1
 AdaDerana,Ayatollah Ali Khamanei,PERSON,1,1
 AdaDerana,BBC,ORG,6,1
@@ -27,7 +26,6 @@ AdaDerana,Brazilian,NORP,1,1
 AdaDerana,Brett,PERSON,2,1
 AdaDerana,Brett Kavanaugh,PERSON,4,2
 AdaDerana,British,NORP,1,1
-AdaDerana,Buddhist,NORP,3,1
 AdaDerana,Bumble Bee,PERSON,1,1
 AdaDerana,Busy Baby,ORG,1,1
 AdaDerana,CBP,ORG,1,1
@@ -35,24 +33,26 @@ AdaDerana,CEB,ORG,3,1
 AdaDerana,CID,ORG,2,1
 AdaDerana,CNN,ORG,1,1
 AdaDerana,CPS,ORG,2,1
+AdaDerana,Cabinet,ORG,1,1
 AdaDerana,Canada,GPE,3,3
 AdaDerana,Cardiff Crown Court,ORG,1,1
 AdaDerana,Catholic,NORP,1,1
 AdaDerana,Charles III,PERSON,1,1
 AdaDerana,China,GPE,4,2
 AdaDerana,Clarence Thomas,PERSON,2,2
-AdaDerana,Colombo,GPE,3,1
 AdaDerana,Colombo’s Sea Street,ORG,2,1
 AdaDerana,Commonwealth,ORG,1,1
 AdaDerana,Congress,ORG,9,2
 AdaDerana,Costco,ORG,2,2
+AdaDerana,Cyril Hendavitharana,PERSON,1,1
 AdaDerana,DMC,ORG,1,1
 AdaDerana,Daniel Williams,PERSON,2,1
 AdaDerana,Democrat,NORP,2,1
 AdaDerana,Diane Swonk,PERSON,1,1
 AdaDerana,Dissanayake,PERSON,4,1
 AdaDerana,Donald Trump,PERSON,3,3
-AdaDerana,Dondra,GPE,3,2
+AdaDerana,Dondra,GPE,5,2
+AdaDerana,Dondra,PERSON,4,1
 AdaDerana,Downing Street,ORG,1,1
 AdaDerana,Duke of York,GPE,1,1
 AdaDerana,EU,ORG,1,1
@@ -70,7 +70,8 @@ AdaDerana,Ford,ORG,1,1
 AdaDerana,France,GPE,1,1
 AdaDerana,Galle,GPE,1,1
 AdaDerana,Gamage Nilantha,PERSON,1,1
-AdaDerana,Gandara,PERSON,2,2
+AdaDerana,Gandara,PERSON,4,2
+AdaDerana,Gandara Police,PERSON,1,1
 AdaDerana,Geneva,GPE,1,1
 AdaDerana,Geoffrey Gertz,PERSON,1,1
 AdaDerana,Graham Williams,PERSON,1,1
@@ -80,6 +81,7 @@ AdaDerana,India,GPE,6,3
 AdaDerana,Indian,NORP,3,1
 AdaDerana,Iran,GPE,10,1
 AdaDerana,Iranian,NORP,2,1
+AdaDerana,Jaffna,GPE,1,1
 AdaDerana,Jamaica,GPE,1,1
 AdaDerana,James,PERSON,2,1
 AdaDerana,James Stephenson,PERSON,1,1
@@ -91,6 +93,7 @@ AdaDerana,KPMG US,ORG,1,1
 AdaDerana,Kalutara,PERSON,1,1
 AdaDerana,Kaluthara,ORG,1,1
 AdaDerana,Karoline Leavitt,PERSON,1,1
+AdaDerana,Karunatilaka,PERSON,2,1
 AdaDerana,Kemi Badenoch,PERSON,1,1
 AdaDerana,Khaled bin Mohamed bin Zayed Al Nahyan,PERSON,1,1
 AdaDerana,Khamenei,PERSON,1,1
@@ -101,13 +104,12 @@ AdaDerana,Learning Resources,ORG,1,1
 AdaDerana,Liberal Democrats,NORP,1,1
 AdaDerana,Luke Pollard,PERSON,1,1
 AdaDerana,Lula da Silva,PERSON,1,1
-AdaDerana,Maha Sangha,PERSON,2,1
 AdaDerana,Maha Viharaya,PERSON,1,1
 AdaDerana,Matara,GPE,1,1
+AdaDerana,Matara Hospital,ORG,1,1
 AdaDerana,Mexico,GPE,2,2
 AdaDerana,Michael Jones KC,PERSON,1,1
 AdaDerana,Minnesota,GPE,1,1
-AdaDerana,Moratuwa,GPE,1,1
 AdaDerana,Mount Lavinia,GPE,3,1
 AdaDerana,Mountbatten-Windsor,PERSON,3,1
 AdaDerana,NBRO,ORG,2,1
@@ -122,7 +124,6 @@ AdaDerana,Nik Holm,PERSON,1,1
 AdaDerana,Nirodha,GPE,14,1
 AdaDerana,Nirodha,PERSON,14,1
 AdaDerana,Nirodha Kalapni Niwunhella,PERSON,1,1
-AdaDerana,Nugegoda,ORG,1,1
 AdaDerana,Olof Gill,PERSON,1,1
 AdaDerana,Orugodawatta,ORG,1,1
 AdaDerana,Parliament,ORG,4,1
@@ -131,6 +132,7 @@ AdaDerana,Pentwyn,GPE,1,1
 AdaDerana,Pillsbury,GPE,1,1
 AdaDerana,Pollard,PERSON,2,1
 AdaDerana,Polonnaruwa,PERSON,1,1
+AdaDerana,Ports,ORG,1,1
 AdaDerana,Rachael Maskell,PERSON,1,1
 AdaDerana,Ratmalana,GPE,1,1
 AdaDerana,Republican,NORP,1,1
@@ -142,7 +144,7 @@ AdaDerana,SNP,ORG,2,1
 AdaDerana,Sabaragamuwa,PERSON,2,1
 AdaDerana,Samuel Alito,PERSON,2,2
 AdaDerana,Sanath Manjula,PERSON,1,1
-AdaDerana,Sangha Charter,PERSON,2,1
+AdaDerana,Sinhasana Place,ORG,1,1
 AdaDerana,South Wales Police,ORG,1,1
 AdaDerana,Soysapura,PERSON,1,1
 AdaDerana,Spokesperson Chandana Punchihewa,PERSON,1,1
@@ -163,9 +165,7 @@ AdaDerana,Supreme Court,ORG,6,1
 AdaDerana,Switzerland,GPE,1,1
 AdaDerana,Taylor,PERSON,2,1
 AdaDerana,Terry Precision Cycling,PERSON,1,1
-AdaDerana,Thalangama,GPE,1,1
 AdaDerana,The Criminal Investigation Department,ORG,1,1
-AdaDerana,The Maha Sangha Conference,PERSON,1,1
 AdaDerana,The Mount Lavinia Divisional Crime Investigation Bureau,ORG,1,1
 AdaDerana,The National Building Research Organisation,ORG,1,1
 AdaDerana,The Public Utilities Commission,ORG,1,1
@@ -187,18 +187,13 @@ AdaDerana,USS Gerald R Ford,PERSON,1,1
 AdaDerana,United States Customs and Border Protection,ORG,1,1
 AdaDerana,Uva,PERSON,2,1
 AdaDerana,V.O.S. Selections,ORG,1,1
-AdaDerana,Ven,GPE,1,1
 AdaDerana,Washington,GPE,3,2
 AdaDerana,"Washington, DC",GPE,1,1
 AdaDerana,Welagalage,ORG,1,1
 AdaDerana,Weragalage,PERSON,9,1
 AdaDerana,Weragalge,ORG,1,1
-AdaDerana,Western Province North,GPE,1,1
-AdaDerana,Western Province South Crime Division,ORG,1,1
 AdaDerana,White House,ORG,8,2
 AdaDerana,York Central,ORG,1,1
-AdaDerana,the All Ceylon Buddhist Congress,ORG,1,1
-AdaDerana,the Buddha Sasana,PERSON,1,1
 AdaDerana,the Ceylon Electricity Board,ORG,1,1
 AdaDerana,the Commerce Department,ORG,1,1
 AdaDerana,the Container Transport Owners’ Association (CTOA,ORG,1,1
@@ -208,14 +203,14 @@ AdaDerana,the DC Circuit,ORG,1,1
 AdaDerana,the Department of Meteorology,ORG,1,1
 AdaDerana,the Disaster Management Centre,ORG,1,1
 AdaDerana,the Dodangoda Police Station,ORG,1,1
+AdaDerana,the G.C.E. Ordinary Level,ORG,1,1
 AdaDerana,the Gangodawila Magistrate’s Court,ORG,1,1
 AdaDerana,the Global AI Impact Summit,ORG,1,1
 AdaDerana,the House of Commons Library,ORG,1,1
 AdaDerana,the International Emergency Economic Powers Act,ORG,2,2
-AdaDerana,the Matara Hospital,ORG,2,2
+AdaDerana,the Matara Hospital,ORG,1,1
 AdaDerana,the Mount Lavinia Divisional Crime Investigation Bureau,ORG,1,1
 AdaDerana,the Oval Office,ORG,1,1
-AdaDerana,the Sinhala Department of the University of Colombo,ORG,1,1
 AdaDerana,the Southern Expressway Police Traffic Division,ORG,1,1
 AdaDerana,the Sri Lanka Navy,ORG,4,1
 AdaDerana,the Supreme Court,ORG,5,2
@@ -224,4 +219,5 @@ AdaDerana,the U.S. Supreme Court,ORG,1,1
 AdaDerana,the US Court of International Trade,ORG,2,1
 AdaDerana,the United States,GPE,1,1
 AdaDerana,the White House,ORG,5,2
+AdaDerana,the ‘People’s Movement for Education Reforms,ORG,1,1
 AdaDerana,’s Westminster,GPE,1,1
