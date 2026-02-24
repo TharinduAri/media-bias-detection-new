@@ -8,3 +8,7 @@ feedparser
 newspaper3k
 requests
 python-dateutil
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary

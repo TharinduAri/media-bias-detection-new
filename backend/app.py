@@ -14,44 +14,40 @@ It uses proxy signals (entity sentiment and coverage frequency) rather than bina
 """)
 
 # --- Load Data ---
-@st.cache_data
+API_BASE_URL = "http://localhost:8000/api/v1"
+
+@st.cache_data(ttl=60) # Cache for 60 seconds
 def load_data():
-    from prisma import Prisma
+    import requests
     import pandas as pd
     
-    db = Prisma()
-    try:
-        db.connect()
-    except Exception as e:
-        logging.error(f"Could not connect to database: {e}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    def fetch_endpoint(endpoint):
+        try:
+            response = requests.get(f"{API_BASE_URL}/{endpoint}/", timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return pd.DataFrame(data) if data else pd.DataFrame()
+            else:
+                logging.error(f"Failed to fetch {endpoint}: HTTP {response.status_code}")
+                return pd.DataFrame()
+        except Exception as e:
+            logging.error(f"Error fetching {endpoint}: {e}")
+            return pd.DataFrame()
 
-    try:
-        def to_dict(record):
-            return record.model_dump() if hasattr(record, 'model_dump') else dict(record)
+    agg_sentiment = fetch_endpoint('sentiment')
+    agg_coverage = fetch_endpoint('coverage')
+    omissions = fetch_endpoint('omissions')
+    explain_data = fetch_endpoint('explainability')
+    
+    # We must ensure certain columns are converted back to datetime if needed, 
+    # but Streamlit usually handles raw strings or we can parse them just in case
+    for df, date_col in [(agg_sentiment, 'created_at'), (agg_coverage, 'created_at'), 
+                         (omissions, 'created_at'), (explain_data, 'date')]:
+        if not df.empty and date_col in df.columns:
+            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
 
-        agg_sentiment_records = db.aggregatedsentiment.find_many()
-        agg_sentiment = pd.DataFrame([to_dict(r) for r in agg_sentiment_records]) if agg_sentiment_records else pd.DataFrame()
-
-        agg_coverage_records = db.aggregatedcoverage.find_many()
-        agg_coverage = pd.DataFrame([to_dict(r) for r in agg_coverage_records]) if agg_coverage_records else pd.DataFrame()
-
-        explain_records = db.uiexplaindata.find_many()
-        explain_data = pd.DataFrame([to_dict(r) for r in explain_records]) if explain_records else pd.DataFrame()
-
-        omissions_records = db.potentialomission.find_many()
-        omissions = pd.DataFrame([to_dict(r) for r in omissions_records]) if omissions_records else pd.DataFrame()
-
-        logging.info(f"Loaded from DB: sentiment={len(agg_sentiment)}, coverage={len(agg_coverage)}, explain={len(explain_data)}, omissions={len(omissions)}")
-    except Exception as e:
-        logging.exception(f"Error loading data from DB: {e}")
-        agg_sentiment = pd.DataFrame()
-        agg_coverage = pd.DataFrame()
-        explain_data = pd.DataFrame()
-        omissions = pd.DataFrame()
-    finally:
-        db.disconnect()
-
+    logging.info(f"Loaded via API: sentiment={len(agg_sentiment)}, coverage={len(agg_coverage)}, omissions={len(omissions)}, explain={len(explain_data)}")
+    
     return agg_sentiment, agg_coverage, explain_data, omissions
 
 agg_sentiment, agg_coverage, explain_data, omissions = load_data()
