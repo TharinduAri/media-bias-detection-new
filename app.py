@@ -16,34 +16,43 @@ It uses proxy signals (entity sentiment and coverage frequency) rather than bina
 # --- Load Data ---
 @st.cache_data
 def load_data():
-    files = {
-        'agg_sentiment': 'data/agg_sentiment.csv',
-        'agg_coverage': 'data/agg_coverage.csv',
-        'explain_data': 'data/ui_explain_data.csv',
-        'omissions': 'data/potential_omissions.csv'
-    }
+    from prisma import Prisma
+    import pandas as pd
+    
+    db = Prisma()
+    try:
+        db.connect()
+    except Exception as e:
+        logging.error(f"Could not connect to database: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    results = {}
-    for key, path in files.items():
-        try:
-            df = pd.read_csv(path)
-            logging.info(f"Loaded {path}: shape={df.shape}, cols={list(df.columns)}")
-            if not df.empty:
-                try:
-                    logging.info(f"{path} first row: {df.head(1).to_dict(orient='records')}")
-                except Exception:
-                    logging.info(f"{path} loaded but couldn't show head() (non-standard types)")
-        except FileNotFoundError:
-            logging.warning(f"File not found: {path}")
-            df = pd.DataFrame()
-        except Exception as e:
-            logging.exception(f"Error loading {path}: {e}")
-            df = pd.DataFrame()
+    try:
+        def to_dict(record):
+            return record.model_dump() if hasattr(record, 'model_dump') else dict(record)
 
-        results[key] = df
+        agg_sentiment_records = db.aggregatedsentiment.find_many()
+        agg_sentiment = pd.DataFrame([to_dict(r) for r in agg_sentiment_records]) if agg_sentiment_records else pd.DataFrame()
 
-    logging.info("Finished attempting to load all data files.")
-    return results['agg_sentiment'], results['agg_coverage'], results['explain_data'], results['omissions']
+        agg_coverage_records = db.aggregatedcoverage.find_many()
+        agg_coverage = pd.DataFrame([to_dict(r) for r in agg_coverage_records]) if agg_coverage_records else pd.DataFrame()
+
+        explain_records = db.uiexplaindata.find_many()
+        explain_data = pd.DataFrame([to_dict(r) for r in explain_records]) if explain_records else pd.DataFrame()
+
+        omissions_records = db.potentialomission.find_many()
+        omissions = pd.DataFrame([to_dict(r) for r in omissions_records]) if omissions_records else pd.DataFrame()
+
+        logging.info(f"Loaded from DB: sentiment={len(agg_sentiment)}, coverage={len(agg_coverage)}, explain={len(explain_data)}, omissions={len(omissions)}")
+    except Exception as e:
+        logging.exception(f"Error loading data from DB: {e}")
+        agg_sentiment = pd.DataFrame()
+        agg_coverage = pd.DataFrame()
+        explain_data = pd.DataFrame()
+        omissions = pd.DataFrame()
+    finally:
+        db.disconnect()
+
+    return agg_sentiment, agg_coverage, explain_data, omissions
 
 agg_sentiment, agg_coverage, explain_data, omissions = load_data()
 

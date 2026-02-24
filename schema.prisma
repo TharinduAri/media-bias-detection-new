@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-py"
+  interface = "sync"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Article {
+  id                Int      @id @default(autoincrement())
+  outlet            String
+  date              DateTime
+  title             String
+  url               String   @unique
+  text              String?  @db.Text
+  clean_text        String?  @db.Text
+  sentences         Json?
+  entities          Json?
+  entity_sentiments Json?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+}
+
+model AggregatedSentiment {
+  id             Int      @id @default(autoincrement())
+  outlet         String
+  year_month     String
+  entity         String
+  label          String
+  avg_sentiment  Float
+  total_mentions Int
+  article_count  Int
+  created_at     DateTime @default(now())
+}
+
+model AggregatedCoverage {
+  id             Int      @id @default(autoincrement())
+  outlet         String
+  entity         String
+  label          String
+  total_mentions Int
+  article_count  Int
+  created_at     DateTime @default(now())
+}
+
+model PotentialOmission {
+  id                Int      @id @default(autoincrement())
+  entity            String
+  covered_mostly_by String
+  max_mentions      Int
+  omitted_by        String
+  created_at        DateTime @default(now())
+}
+
+model UIExplainData {
+  id                     Int      @id @default(autoincrement())
+  outlet                 String
+  year_month             String
+  date                   DateTime
+  entity                 String
+  label                  String
+  sentiment              Float
+  mention_count          Int
+  article_url            String
+  example_sentence       String   @db.Text
+  example_sentence_score Float
+  abs_sentiment          Float
+  created_at             DateTime @default(now())
+}

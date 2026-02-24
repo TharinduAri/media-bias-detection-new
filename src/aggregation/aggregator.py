@@ -4,124 +4,130 @@ import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def process_entity_sentiments(row):
-    """Parses the stringified list of dictionaries back into a Python list."""
-    try:
-        val = row['entity_sentiments']
-        if pd.isna(val) or val == '[]':
-            return []
-        return ast.literal_eval(val) if isinstance(val, str) else val
-    except Exception as e:
-        logging.error(f"Error parsing entity_sentiments for row: {e}")
-        return []
-
-def aggregate_data(input_csv="data/article_signals.csv",
-                  sentiment_out="data/agg_sentiment.csv",
-                  coverage_out="data/agg_coverage.csv"):
-                      
-    logging.info(f"Loading article signals from {input_csv}")
-    try:
-        df = pd.read_csv(input_csv)
-    except FileNotFoundError:
-        logging.error(f"Input file {input_csv} not found.")
-        return
-
-    if df.empty:
-        logging.warning("Dataset is empty.")
-        return
-
-    # Convert date strings to datetime objects
-    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+def aggregate_data():
+    from prisma import Prisma
+    import json
     
-    # Create a Year-Month column for longitudinal grouping
-    df['year_month'] = df['date'].dt.to_period('M').astype(str)
+    logging.info("Connecting to DB...")
+    db = Prisma()
+    db.connect()
+    
+    try:
+        all_articles = db.article.find_many()
+        articles = [a for a in all_articles if a.entity_sentiments is not None]
+        
+        if not articles:
+            logging.warning("No articles with entity sentiments found.")
+            return
 
-    # Parse entity sentiments
-    df['parsed_sentiments'] = df.apply(process_entity_sentiments, axis=1)
+        # Flatten the data: Create a row for every entity mention in every article
+        flattened_data = []
+        for article in articles:
+            if not article.entity_sentiments:
+                continue
+            
+            ent_sents = article.entity_sentiments
+            if isinstance(ent_sents, str):
+                ent_sents = json.loads(ent_sents)
+                
+            year_month = article.date.strftime('%Y-%m')
+            
+            for ent in ent_sents:
+                flattened_data.append({
+                    'outlet': article.outlet,
+                    'year_month': year_month,
+                    'date': article.date,
+                    'entity': ent['entity'],
+                    'label': ent['label'],
+                    'sentiment': ent['sentiment'],
+                    'mention_count': ent['mention_count'],
+                    'article_url': article.url,
+                    'example_sentence': ent.get('example_sentence', ''),
+                    'example_sentence_score': ent.get('example_sentence_score', 0.0)
+                })
 
-    # Flatten the data: Create a row for every entity mention in every article
-    flattened_data = []
-    for _, row in df.iterrows():
-        for ent in row['parsed_sentiments']:
-            flattened_data.append({
+        if not flattened_data:
+            logging.warning("No entity sentiment data found to aggregate.")
+            return
+
+        flat_df = pd.DataFrame(flattened_data)
+
+        # --- 1. Aggregate Sentiment ---
+        logging.info("Aggregating sentiment data...")
+        agg_sentiment = flat_df.groupby(['outlet', 'year_month', 'entity', 'label']).agg(
+            avg_sentiment=('sentiment', 'mean'),
+            total_mentions=('mention_count', 'sum'),
+            article_count=('article_url', 'nunique')
+        ).reset_index()
+
+        # Filter to show only relatively prominent entities
+        agg_sentiment = agg_sentiment[agg_sentiment['total_mentions'] > 1]
+        
+        # Clear existing & Insert
+        db.aggregatedsentiment.delete_many()
+        sent_records = []
+        for _, row in agg_sentiment.iterrows():
+            sent_records.append({
                 'outlet': row['outlet'],
                 'year_month': row['year_month'],
-                'date': row['date'],
-                'entity': ent['entity'],
-                'label': ent['label'],
-                'sentiment': ent['sentiment'],
-                'mention_count': ent['mention_count'],
-                'article_url': row['url'],
-                'example_sentence': ent.get('example_sentence', ''),
-                'example_sentence_score': ent.get('example_sentence_score', 0.0)
+                'entity': row['entity'],
+                'label': row['label'],
+                'avg_sentiment': float(row['avg_sentiment']),
+                'total_mentions': int(row['total_mentions']),
+                'article_count': int(row['article_count'])
             })
+        if sent_records:
+            db.aggregatedsentiment.create_many(data=sent_records)
+        logging.info("Saved aggregated sentiment to DB.")
 
-    if not flattened_data:
-        logging.warning("No entity sentiment data found to aggregate.")
-        return
+        # --- 2. Aggregate Coverage & Identify Omissions ---
+        logging.info("Aggregating coverage data...")
+        agg_coverage = flat_df.groupby(['outlet', 'entity', 'label']).agg(
+            total_mentions=('mention_count', 'sum'),
+            article_count=('article_url', 'nunique')
+        ).reset_index()
 
-    flat_df = pd.DataFrame(flattened_data)
-
-    # --- 1. Aggregate Sentiment ---
-    # Group by Outlet, Time (Month), and Entity
-    logging.info("Aggregating sentiment data...")
-    agg_sentiment = flat_df.groupby(['outlet', 'year_month', 'entity', 'label']).agg(
-        avg_sentiment=('sentiment', 'mean'),
-        total_mentions=('mention_count', 'sum'),
-        article_count=('article_url', 'nunique')
-    ).reset_index()
-
-    # Save mapping for explainability (top sentences per entity per outlet)
-    # We'll just save the flattened data for the UI to query
-    flat_df.to_csv("data/explainability_data.csv", index=False)
-    
-    # Filter to show only relatively prominent entities to reduce noise (e.g., mentioned in >1 article)
-    # For MVP with limited data, we might not want to filter too much
-    agg_sentiment = agg_sentiment[agg_sentiment['total_mentions'] > 1]
-    
-    agg_sentiment.to_csv(sentiment_out, index=False)
-    logging.info(f"Saved aggregated sentiment to {sentiment_out}")
-
-
-    # --- 2. Aggregate Coverage & Identify Omissions ---
-    logging.info("Aggregating coverage data...")
-    # Coverage frequency: total mentions of an entity across all time for an outlet
-    agg_coverage = flat_df.groupby(['outlet', 'entity', 'label']).agg(
-        total_mentions=('mention_count', 'sum'),
-        article_count=('article_url', 'nunique')
-    ).reset_index()
-
-    # Omission logic: Find entities covered by at least one outlet but entirely missing in another
-    # Create a pivot table: Entities as rows, Outlets as columns, values are mention counts
-    # Use pivot_table with an aggregation function to handle potential duplicate entities per outlet across months
-    pivot_coverage = agg_coverage.pivot_table(index='entity', columns='outlet', values='total_mentions', aggfunc='sum').fillna(0)
-    
-    # Find entities that are highly covered by one, but 0 by another
-    omissions = []
-    outlets = pivot_coverage.columns
-    
-    # Simple logic for MVP: if max mentions > 5 and min mentions == 0
-    for entity, row in pivot_coverage.iterrows():
-        max_val = row.max()
-        min_val = row.min()
-        if max_val > 2 and min_val == 0:  # Using low threshold for the MVP's tiny dataset
-            omitting_outlets = row[row == 0].index.tolist()
-            covering_outlets = row[row == max_val].index.tolist()
-            omissions.append({
-                'entity': entity,
-                'covered_mostly_by': covering_outlets[0] if covering_outlets else "Unknown",
-                'max_mentions': max_val,
-                'omitted_by': ", ".join(omitting_outlets)
+        db.aggregatedcoverage.delete_many()
+        cov_records = []
+        for _, row in agg_coverage.iterrows():
+            cov_records.append({
+                'outlet': row['outlet'],
+                'entity': row['entity'],
+                'label': row['label'],
+                'total_mentions': int(row['total_mentions']),
+                'article_count': int(row['article_count'])
             })
+        if cov_records:
+            db.aggregatedcoverage.create_many(data=cov_records)
+        logging.info("Saved aggregated coverage to DB.")
 
-    omissions_df = pd.DataFrame(omissions)
-    if not omissions_df.empty:
-         omissions_df.to_csv("data/potential_omissions.csv", index=False)
-         logging.info("Saved potential omissions to data/potential_omissions.csv")
-    
-    agg_coverage.to_csv(coverage_out, index=False)
-    logging.info(f"Saved aggregated coverage to {coverage_out}")
-    logging.info("Done.")
+        # Omissions logic
+        pivot_coverage = agg_coverage.pivot_table(index='entity', columns='outlet', values='total_mentions', aggfunc='sum').fillna(0)
+        
+        omissions = []
+        for entity, row in pivot_coverage.iterrows():
+            max_val = row.max()
+            min_val = row.min()
+            if max_val > 2 and min_val == 0:
+                omitting_outlets = row[row == 0].index.tolist()
+                covering_outlets = row[row == max_val].index.tolist()
+                omissions.append({
+                    'entity': entity,
+                    'covered_mostly_by': covering_outlets[0] if covering_outlets else "Unknown",
+                    'max_mentions': int(max_val),
+                    'omitted_by': ", ".join(omitting_outlets)
+                })
+
+        db.potentialomission.delete_many()
+        if omissions:
+             db.potentialomission.create_many(data=omissions)
+             logging.info("Saved potential omissions to DB.")
+
+        logging.info("Done.")
+    except Exception as e:
+        logging.error(f"DB Error during aggregation: {e}")
+    finally:
+        db.disconnect()
 
 if __name__ == "__main__":
     aggregate_data()

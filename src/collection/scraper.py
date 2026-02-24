@@ -148,16 +148,40 @@ def collect_data(days_back=90):
     # Filter out articles where we couldn't get text
     valid_articles = [a for a in all_articles if a.get('text') and len(a['text'].strip()) > 50]
     
-    # 3. Save to DataFrame
-    df = pd.DataFrame(valid_articles)
-    
-    if not df.empty:
-        # Save to CSV
-        output_file = "data/raw_articles.csv"
-        df.to_csv(output_file, index=False)
-        logging.info(f"Saved {len(df)} articles to {output_file}")
-    else:
+    # 3. Save to DB
+    if not valid_articles:
         logging.warning("No valid articles collected.")
+        return
+
+    try:
+        from prisma import Prisma
+        db = Prisma()
+        db.connect()
+        
+        for article in valid_articles:
+            # We must convert date string to datetime to avoid Prisma validation error
+            dt = datetime.strptime(article['date'], '%Y-%m-%d %H:%M:%S')
+            
+            db.article.upsert(
+                where={'url': article['url']},
+                data={
+                    'create': {
+                        'outlet': article['outlet'],
+                        'date': dt,
+                        'title': article['title'],
+                        'url': article['url'],
+                        'text': article['text']
+                    },
+                    'update': {
+                        'text': article['text'],
+                        'title': article['title']
+                    }
+                }
+            )
+        logging.info(f"Saved {len(valid_articles)} articles to DB")
+        db.disconnect()
+    except Exception as e:
+        logging.error(f"DB Error while saving articles: {e}")
 
 if __name__ == "__main__":
     # For MVP, try to collect what's available now

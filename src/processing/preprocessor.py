@@ -63,32 +63,50 @@ def extract_entities(text):
             
     return unique_entities
 
-def preprocess_data(input_csv="data/raw_articles.csv", output_csv="data/processed_articles.csv"):
-    logging.info(f"Loading data from {input_csv}")
+def preprocess_data():
+    from prisma import Prisma
+    import json
+    
+    logging.info("Connecting to DB...")
+    db = Prisma()
+    db.connect()
+    
     try:
-        df = pd.read_csv(input_csv)
-    except FileNotFoundError:
-        logging.error(f"Input file {input_csv} not found.")
-        return
-    
-    if df.empty:
-        logging.warning("Input dataset is empty.")
-        return
+        # Fetch articles that require processing
+        articles = db.article.find_many(where={'clean_text': None})
         
-    logging.info("Starting text preprocessing...")
-    
-    # Clean full text
-    df['clean_text'] = df['text'].apply(clean_text)
-    
-    # Segment into sentences (useful for explainability and sentence-level sentiment later)
-    df['sentences'] = df['clean_text'].apply(segment_sentences)
-    
-    # Extract entities from the clean text
-    df['entities'] = df['clean_text'].apply(extract_entities)
-    
-    logging.info(f"Preprocessing complete. Saving to {output_csv}")
-    df.to_csv(output_csv, index=False)
-    logging.info("Done.")
+        if not articles:
+            logging.warning("No new articles to preprocess.")
+            return
+
+        logging.info(f"Starting text preprocessing for {len(articles)} articles...")
+        
+        for article in articles:
+            text = article.text
+            if not text:
+                continue
+                
+            clean_t = clean_text(text)
+            sentences = segment_sentences(clean_t)
+            entities = extract_entities(clean_t)
+            
+            # Update article
+            # Prisma python accepts string for Json fields.
+            db.article.update(
+                where={'id': article.id},
+                data={
+                    'clean_text': clean_t,
+                    'sentences': json.dumps(sentences),
+                    'entities': json.dumps(entities)
+                }
+            )
+            
+        logging.info("Preprocessing complete.")
+    except Exception as e:
+        logging.error(f"DB Error during preprocessing: {e}")
+    finally:
+        db.disconnect()
+        logging.info("Done.")
 
 if __name__ == "__main__":
     preprocess_data()
