@@ -2,7 +2,6 @@ prisma
 python-dotenv
 pandas
 plotly
-streamlit
 spacy
 feedparser
 newspaper3k
