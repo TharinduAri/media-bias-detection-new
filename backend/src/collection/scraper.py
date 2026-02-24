@@ -10,6 +10,7 @@ import newspaper
 from newspaper import Article
 import pandas as pd
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -137,13 +138,27 @@ def collect_data(days_back=90):
                      logging.info(f"Fallback site scraping found {len(fallback)} articles for {outlet_name}")
     
     # 2. Scrape full content for gathered URLs
-    logging.info(f"Scraping full content for {len(all_articles)} articles...")
-    for idx, article in enumerate(all_articles):
-        if idx % 10 == 0:
-            logging.info(f"Scraping progress: {idx}/{len(all_articles)}")
-        
+    logging.info(f"Scraping full content for {len(all_articles)} articles concurrently...")
+    
+    # We will process in parallel using threads (newspaper3k makes network requests, so threads are great)
+    def process_article(article):
         content = scrape_article_content(article['url'])
         article['text'] = content
+        return article
+
+    processed_articles = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Submit all tasks
+        future_to_article = {executor.submit(process_article, art): art for art in all_articles}
+        
+        # As they complete, add them to our processed list
+        for idx, future in enumerate(as_completed(future_to_article)):
+            if (idx + 1) % 10 == 0:
+                logging.info(f"Scraping progress: {idx + 1}/{len(all_articles)}")
+            processed_articles.append(future.result())
+
+    # Replace all_articles with the processed ones
+    all_articles = processed_articles
         
     # Filter out articles where we couldn't get text
     valid_articles = [a for a in all_articles if a.get('text') and len(a['text'].strip()) > 50]
