@@ -3,6 +3,7 @@ import SentimentChart from "@/components/SentimentChart";
 import CoverageChart from "@/components/CoverageChart";
 import OmissionsTable from "@/components/OmissionsTable";
 import ExplainabilityCards from "@/components/ExplainabilityCards";
+import CleanScrapeButton from "@/components/CleanScrapeButton";
 
 // Server Component (RSC) to handle data fetching before sending to client
 export default async function Home() {
@@ -19,13 +20,16 @@ export default async function Home() {
 
       {/* Header */}
       <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">
-            Media Bias Control Center
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Analyzing Sentiment, Coverage, and Omissions across Sri Lankan Media
-          </p>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-gray-900">
+              Media Bias Control Center
+            </h1>
+            <p className="text-sm text-gray-500 mt-1">
+              Analyzing Sentiment, Coverage, and Omissions across Sri Lankan Media
+            </p>
+          </div>
+          <CleanScrapeButton />
         </div>
       </header>
 

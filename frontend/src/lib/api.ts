@@ -70,3 +70,12 @@ export async function fetchExplainability(): Promise<ExplainabilityData[]> {
   if (!res.ok) throw new Error("Failed to fetch explainability data");
   return res.json();
 }
+
+export async function triggerCleanScrape(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/system/clean-and-rescrape`, {
+    method: 'POST',
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error("Failed to trigger clean and rescrape");
+  return res.json();
+}

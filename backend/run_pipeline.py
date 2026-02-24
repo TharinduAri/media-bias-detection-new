@@ -31,17 +31,17 @@ STAGES = [
 ]
 
 
-def run_stage(script_path, python_exec=sys.executable):
-    cmd = [python_exec, script_path]
+def run_stage(script_path: str, python_exec: str | None = sys.executable):
+    cmd = [str(python_exec or "python"), str(script_path)]
     logging.info("Running: %s", " ".join(cmd))
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    out = proc.stdout.strip()
-    err = proc.stderr.strip()
+    out = str(proc.stdout).strip() if proc.stdout else ""
+    err = str(proc.stderr).strip() if proc.stderr else ""
     logging.info("Stage exit code: %s", proc.returncode)
     if out:
-        logging.info("Stdout (truncated to 2000 chars):\n%s", out[:2000])
+        logging.info("Stdout (truncated to 2000 chars):\n%s", out[:2000])  # type: ignore
     if err:
-        logging.warning("Stderr (truncated to 2000 chars):\n%s", err[:2000])
+        logging.warning("Stderr (truncated to 2000 chars):\n%s", err[:2000])  # type: ignore
     return proc.returncode
 
 
