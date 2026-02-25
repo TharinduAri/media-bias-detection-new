@@ -70,3 +70,11 @@ model UIExplainData {
   abs_sentiment          Float
   created_at             DateTime @default(now())
 }
+
+model Outlet {
+  id         Int      @id @default(autoincrement())
+  name       String   @unique
+  url        String
+  rss_feeds  Json?
+  created_at DateTime @default(now())
+}
