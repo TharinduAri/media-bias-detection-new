@@ -6,9 +6,11 @@ import ExplainabilityCards from "@/components/ExplainabilityCards";
 import CleanScrapeButton from "@/components/CleanScrapeButton";
 import OutletManager from "@/components/OutletManager";
 
-// Server Component (RSC) to handle data fetching before sending to client
+export const metadata = {
+  title: "Dashboard | Media Bias Control Center",
+};
+
 export default async function Home() {
-  // Fetch everything in parallel
   const [sentiment, coverage, omissions, explainability] = await Promise.all([
     fetchSentiment().catch(() => []),
     fetchCoverage().catch(() => []),
@@ -17,44 +19,41 @@ export default async function Home() {
   ]);
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 pb-20">
+    <div className="min-h-screen bg-slate-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 pb-20 transition-colors duration-200">
 
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+      {/* Page Sub-header */}
+      <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 py-8 transition-colors duration-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-gray-900">
-              Media Bias Control Center
+            <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+              Dashboard
             </h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Analyzing Sentiment, Coverage, and Omissions across Sri Lankan Media
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Sentiment, Coverage &amp; Omissions across Sri Lankan Media
             </p>
           </div>
           <CleanScrapeButton />
         </div>
-      </header>
+      </div>
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-8">
 
         <OutletManager />
 
-        {/* Top Row: Longitudinal and Coverage side by side on large screens */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <SentimentChart data={sentiment} />
           <CoverageChart data={coverage} />
         </div>
 
-        {/* Middle Row: Omissions (Full width for table layout) */}
         <div>
           <OmissionsTable data={omissions} />
         </div>
 
-        {/* Bottom Row: Explainability */}
         <div>
           <div className="mb-4">
-            <h2 className="text-xl font-bold">Deep Dive</h2>
-            <p className="text-sm text-gray-600">See the exact sentences driving the sentiment scores.</p>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">Deep Dive</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400">See the exact sentences driving the sentiment scores.</p>
           </div>
           <ExplainabilityCards data={explainability} />
         </div>

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import sentiment, coverage, omissions, explainability, system, outlets
+from api.routers import sentiment, coverage, omissions, explainability, system, outlets, articles
 
 app = FastAPI(
     title="Media Bias Analytics API",
@@ -25,6 +25,7 @@ app.include_router(omissions.router)
 app.include_router(explainability.router)
 app.include_router(system.router)
 app.include_router(outlets.router)
+app.include_router(articles.router)
 
 @app.get("/")
 def read_root():

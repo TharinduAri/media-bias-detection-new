@@ -1,5 +1,21 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Text
 from .database import Base
+
+class Article(Base):
+    __tablename__ = "Article"
+
+    id = Column(Integer, primary_key=True, index=True)
+    outlet = Column(String, index=True)
+    date = Column(DateTime)
+    title = Column(String)
+    url = Column(String, unique=True)
+    text = Column(Text, nullable=True)
+    clean_text = Column(Text, nullable=True)
+    sentences = Column(JSON, nullable=True)
+    entities = Column(JSON, nullable=True)
+    entity_sentiments = Column(JSON, nullable=True)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
 
 class AggregatedSentiment(Base):
     __tablename__ = "AggregatedSentiment"

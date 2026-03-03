@@ -140,3 +140,28 @@ export async function deleteOutlet(outletId: number): Promise<{ status: string; 
 
   return res.json();
 }
+
+export interface ArticleData {
+  id: number;
+  outlet: string;
+  date: string;
+  title: string;
+  url: string;
+  text: string | null;
+  clean_text: string | null;
+  created_at: string;
+}
+
+export async function fetchArticleOutlets(): Promise<string[]> {
+  const res = await fetch(`${API_BASE_URL}/articles/outlets`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch article outlets");
+  return res.json();
+}
+
+export async function fetchArticles(outlet?: string, limit = 50, offset = 0): Promise<ArticleData[]> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (outlet) params.set("outlet", outlet);
+  const res = await fetch(`${API_BASE_URL}/articles/?${params}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch articles");
+  return res.json();
+}
