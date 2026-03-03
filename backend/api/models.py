@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON
 from .database import Base
 
 class AggregatedSentiment(Base):
@@ -50,4 +50,13 @@ class UIExplainData(Base):
     example_sentence = Column(String)
     example_sentence_score = Column(Float)
     abs_sentiment = Column(Float)
+    created_at = Column(DateTime)
+
+class Outlet(Base):
+    __tablename__ = "Outlet"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    url = Column(String)
+    rss_feeds = Column(JSON, nullable=True)
     created_at = Column(DateTime)

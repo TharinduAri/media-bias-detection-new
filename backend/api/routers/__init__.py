@@ -1,1 +1,1 @@
-from . import sentiment, coverage, omissions, explainability
+from . import sentiment, coverage, omissions, explainability, outlets

@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { triggerCleanScrape } from "@/lib/api";
+import { triggerCleanDb, triggerCleanScrape } from "@/lib/api";
 
 export default function CleanScrapeButton() {
-    const [isLoading, setIsLoading] = useState(false);
+    const [isLoadingScrape, setIsLoadingScrape] = useState(false);
+    const [isLoadingCleanDb, setIsLoadingCleanDb] = useState(false);
     const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
     const handleCleanAndRescrape = async () => {
@@ -14,7 +15,7 @@ export default function CleanScrapeButton() {
         );
         if (!confirmed) return;
 
-        setIsLoading(true);
+        setIsLoadingScrape(true);
         setMessage(null);
 
         try {
@@ -24,7 +25,27 @@ export default function CleanScrapeButton() {
             console.error(error);
             setMessage({ text: "Failed to clean and rescrape. See console for details.", type: "error" });
         } finally {
-            setIsLoading(false);
+            setIsLoadingScrape(false);
+        }
+    };
+
+    const handleCleanDbOnly = async () => {
+        const confirmed = window.confirm(
+            "Are you sure you want to completely wipe the database without scraping new data? This action cannot be undone."
+        );
+        if (!confirmed) return;
+
+        setIsLoadingCleanDb(true);
+        setMessage(null);
+
+        try {
+            const result = await triggerCleanDb();
+            setMessage({ text: result.message, type: "success" });
+        } catch (error) {
+            console.error(error);
+            setMessage({ text: "Failed to clean database. See console for details.", type: "error" });
+        } finally {
+            setIsLoadingCleanDb(false);
         }
     };
 
@@ -36,12 +57,20 @@ export default function CleanScrapeButton() {
                 </span>
             )}
             <button
+                onClick={handleCleanDbOnly}
+                disabled={isLoadingCleanDb || isLoadingScrape}
+                className="px-4 py-2 bg-gray-700 text-white text-sm font-medium rounded-md shadow-sm hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Wipe database only"
+            >
+                {isLoadingCleanDb ? "Cleaning..." : "Clean DB"}
+            </button>
+            <button
                 onClick={handleCleanAndRescrape}
-                disabled={isLoading}
+                disabled={isLoadingScrape || isLoadingCleanDb}
                 className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-md shadow-sm hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Wipe database and trigger run_pipeline.py"
             >
-                {isLoading ? "Processing..." : "Clean & Rescrape"}
+                {isLoadingScrape ? "Processing..." : "Clean & Rescrape"}
             </button>
         </div>
     );

@@ -47,6 +47,20 @@ export interface ExplainabilityData {
   created_at: string;
 }
 
+export interface OutletData {
+  id: number;
+  name: string;
+  url: string;
+  rss_feeds: string[] | null;
+  created_at: string;
+}
+
+export interface CreateOutletPayload {
+  name: string;
+  url: string;
+  rss_feeds: string[];
+}
+
 export async function fetchSentiment(): Promise<SentimentData[]> {
   const res = await fetch(`${API_BASE_URL}/sentiment/`, { cache: 'no-store' });
   if (!res.ok) throw new Error("Failed to fetch sentiment data");
@@ -77,5 +91,52 @@ export async function triggerCleanScrape(): Promise<{ status: string; message: s
     cache: 'no-store',
   });
   if (!res.ok) throw new Error("Failed to trigger clean and rescrape");
+  return res.json();
+}
+
+export async function triggerCleanDb(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/system/clean-db`, {
+    method: 'POST',
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error("Failed to clean database");
+  return res.json();
+}
+
+export async function fetchOutlets(): Promise<OutletData[]> {
+  const res = await fetch(`${API_BASE_URL}/outlets/`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch outlets");
+  return res.json();
+}
+
+export async function createOutlet(payload: CreateOutletPayload): Promise<OutletData> {
+  const res = await fetch(`${API_BASE_URL}/outlets/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to create outlet");
+  }
+
+  return res.json();
+}
+
+export async function deleteOutlet(outletId: number): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/outlets/${outletId}`, {
+    method: 'DELETE',
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to delete outlet");
+  }
+
   return res.json();
 }

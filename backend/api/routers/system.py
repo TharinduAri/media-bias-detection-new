@@ -61,3 +61,32 @@ def clean_and_rescrape(background_tasks: BackgroundTasks, db: Session = Depends(
         "status": "ok", 
         "message": "Database cleaned and rescrape pipeline started in the background."
     }
+
+
+@router.post("/clean-db")
+def clean_db_only(db: Session = Depends(get_db)):
+    """
+    Cleans all data from the database without triggering the pipeline.
+    """
+    try:
+        tables = [
+            "UIExplainData",
+            "PotentialOmission",
+            "AggregatedCoverage",
+            "AggregatedSentiment",
+            "Article"
+        ]
+
+        for table in tables:
+            db.execute(text(f'DELETE FROM "{table}";'))
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Database wipe failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database clean failed: {str(e)}")
+
+    return {
+        "status": "ok",
+        "message": "Database cleaned successfully."
+    }

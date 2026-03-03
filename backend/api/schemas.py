@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 class AggregatedSentimentResponse(BaseModel):
     id: int
@@ -13,8 +13,7 @@ class AggregatedSentimentResponse(BaseModel):
     article_count: int
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class AggregatedCoverageResponse(BaseModel):
     id: int
@@ -25,8 +24,7 @@ class AggregatedCoverageResponse(BaseModel):
     article_count: int
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PotentialOmissionResponse(BaseModel):
     id: int
@@ -36,8 +34,7 @@ class PotentialOmissionResponse(BaseModel):
     omitted_by: str
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class UIExplainDataResponse(BaseModel):
     id: int
@@ -54,5 +51,18 @@ class UIExplainDataResponse(BaseModel):
     abs_sentiment: float
     created_at: datetime
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
+class OutletResponse(BaseModel):
+    id: int
+    name: str
+    url: str
+    rss_feeds: Optional[List[str]] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class OutletCreateRequest(BaseModel):
+    name: str
+    url: str
+    rss_feeds: List[str] = Field(default_factory=list)

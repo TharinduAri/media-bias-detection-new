@@ -4,6 +4,7 @@ import CoverageChart from "@/components/CoverageChart";
 import OmissionsTable from "@/components/OmissionsTable";
 import ExplainabilityCards from "@/components/ExplainabilityCards";
 import CleanScrapeButton from "@/components/CleanScrapeButton";
+import OutletManager from "@/components/OutletManager";
 
 // Server Component (RSC) to handle data fetching before sending to client
 export default async function Home() {
@@ -35,6 +36,8 @@ export default async function Home() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-8">
+
+        <OutletManager />
 
         {/* Top Row: Longitudinal and Coverage side by side on large screens */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
