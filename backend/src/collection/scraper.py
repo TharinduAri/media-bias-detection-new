@@ -32,6 +32,9 @@ SKIP_PATTERNS = [
     '/index.php', '/rss', '/mobi/', 'disqus', 'exchange-rates',
     'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab',
 ]
+SITE_DISCOVERY_MAX_SEEN_URLS = 75
+SITE_DISCOVERY_MAX_KNOWN_URLS = 120
+SITE_DISCOVERY_SCAN_LIMIT = 75
 
 _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
 
@@ -277,8 +280,8 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
         _, known_urls = await asyncio.to_thread(
             focused_crawler,
             site_url,
-            max_seen_urls=max_articles * 2,
-            max_known_urls=200,
+            max_seen_urls=SITE_DISCOVERY_MAX_SEEN_URLS,
+            max_known_urls=SITE_DISCOVERY_MAX_KNOWN_URLS,
         )
         candidate_urls = [u for u in _coerce_known_urls(known_urls, site_url) if is_article_url(u)]
 
@@ -310,23 +313,31 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
                     "title": title or article_url,
                     "url": article_url,
                 }
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logging.debug(f"site fallback failed for {article_url}: {e}")
                 return None
 
-        scan_urls = candidate_urls[: max_articles * 2]
+        scan_urls = candidate_urls[: min(max_articles * 2, SITE_DISCOVERY_SCAN_LIMIT)]
         if not scan_urls:
             logging.warning(f"No articles found for {outlet_name} from site fallback")
             return articles_data
 
-        results = await asyncio.gather(*(process_url(url) for url in scan_urls), return_exceptions=True)
-        for result in results:
-            if isinstance(result, dict):
-                articles_data.append(result)
-                if len(articles_data) >= max_articles:
-                    break
-            elif isinstance(result, Exception):
-                logging.debug(f"site fallback failed while processing result for {outlet_name}: {result}")
+        tasks = [asyncio.create_task(process_url(url)) for url in scan_urls]
+        try:
+            for task in asyncio.as_completed(tasks):
+                result = await task
+                if isinstance(result, dict):
+                    articles_data.append(result)
+                    if len(articles_data) >= max_articles:
+                        break
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     except Exception as e:
         logging.warning(f"Site scraping fallback failed for {outlet_name}: {e}")

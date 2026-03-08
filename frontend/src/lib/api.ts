@@ -169,6 +169,20 @@ export async function fetchArticles(outlet?: string, limit = 50, offset = 0): Pr
   return res.json();
 }
 
+export async function deleteArticle(articleId: number): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/articles/${articleId}`, {
+    method: 'DELETE',
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to delete article");
+  }
+
+  return res.json();
+}
+
 export interface PipelineStage {
   key: string;
   label: string;

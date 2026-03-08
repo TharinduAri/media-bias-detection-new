@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { ArticleData, fetchArticles } from "@/lib/api";
+import { ArticleData, deleteArticle, fetchArticles } from "@/lib/api";
 
 interface Props {
     outlets: string[];
@@ -19,6 +19,8 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
     const [hasMore, setHasMore] = useState(initialArticles.length === PAGE_SIZE);
     const [search, setSearch] = useState("");
     const [expandedId, setExpandedId] = useState<number | null>(null);
+    const [deletingId, setDeletingId] = useState<number | null>(null);
+    const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
     const loadArticles = useCallback(async (outlet: string, newOffset: number, replace: boolean) => {
         setLoading(true);
@@ -38,12 +40,36 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
         setSelectedOutlet(outlet);
         setSearch("");
         setExpandedId(null);
+        setMessage(null);
         setOffset(0);
         loadArticles(outlet, 0, true);
     };
 
     const handleLoadMore = () => {
         loadArticles(selectedOutlet, offset, false);
+    };
+
+    const handleDeleteArticle = async (articleId: number, articleTitle: string) => {
+        const confirmed = window.confirm(`Delete article "${articleTitle}"?`);
+        if (!confirmed) return;
+
+        setMessage(null);
+        setDeletingId(articleId);
+
+        try {
+            await deleteArticle(articleId);
+            setArticles((prev) => prev.filter((article) => article.id !== articleId));
+            setExpandedId((prev) => (prev === articleId ? null : prev));
+            setOffset((prev) => Math.max(0, prev - 1));
+            setMessage({ text: "Article deleted successfully.", type: "success" });
+        } catch (error) {
+            setMessage({
+                text: error instanceof Error ? error.message : "Failed to delete article.",
+                type: "error",
+            });
+        } finally {
+            setDeletingId(null);
+        }
     };
 
     const filtered = articles.filter(a =>
@@ -111,6 +137,12 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
                 )}
             </div>
 
+            {message && (
+                <p className={`text-sm ${message.type === "success" ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                    {message.text}
+                </p>
+            )}
+
             {/* Article list */}
             {filtered.length === 0 && !loading ? (
                 <div className="text-center py-16 text-gray-400 dark:text-gray-600">
@@ -133,7 +165,7 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
                             >
                                 {/* Date pill */}
                                 <div className="shrink-0 text-center">
-                                    <div className="bg-gray-100 dark:bg-gray-700 rounded-lg px-2 py-1 min-w-[52px]">
+                                    <div className="bg-gray-100 dark:bg-gray-700 rounded-lg px-2 py-1 min-w-13">
                                         <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                                             {new Date(article.date).toLocaleString("en-GB", { month: "short" })}
                                         </p>
@@ -165,13 +197,24 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
                                     </div>
                                 </div>
 
-                                {/* Expand chevron */}
-                                <svg
-                                    className={`shrink-0 w-4 h-4 text-gray-400 dark:text-gray-500 transition-transform duration-200 mt-1 ${expandedId === article.id ? "rotate-180" : ""}`}
-                                    fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                                >
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                </svg>
+                                <div className="shrink-0 flex items-center gap-2 mt-1">
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteArticle(article.id, article.title);
+                                        }}
+                                        disabled={deletingId === article.id}
+                                        className="px-2.5 py-1 rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-[11px] font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                    >
+                                        {deletingId === article.id ? "Deleting..." : "Delete"}
+                                    </button>
+                                    <svg
+                                        className={`w-4 h-4 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${expandedId === article.id ? "rotate-180" : ""}`}
+                                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                    >
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
                             </div>
 
                             {/* Expanded body */}

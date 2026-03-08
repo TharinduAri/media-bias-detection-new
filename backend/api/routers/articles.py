@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import distinct
 
@@ -32,3 +32,16 @@ def get_articles(
     if outlet:
         q = q.filter(models.Article.outlet == outlet)
     return q.offset(offset).limit(limit).all()
+
+
+@router.delete("/{article_id}")
+def delete_article(article_id: int, db: Session = Depends(get_db)):
+    """Delete a single article by ID."""
+    article = db.query(models.Article).filter(models.Article.id == article_id).first()
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    db.delete(article)
+    db.commit()
+
+    return {"status": "ok", "message": "Article deleted successfully"}
