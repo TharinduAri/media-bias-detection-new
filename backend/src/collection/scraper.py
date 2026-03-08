@@ -24,8 +24,21 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
+SKIP_PATTERNS = [
+    '#', '/contact', '/about', '/privacy', '/terms', '/search',
+    '/cdn-cgi/', 'email-protection', 'video_story_inside',
+    '/sports-news/', '/technology-news/', '/entertainment-news/',
+    '/hot-news/', '/author-biography/', '/more', 'news_archive',
+    '/index.php', '/rss', '/mobi/', 'disqus', 'exchange-rates',
+    'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab',
+]
 
 _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def is_article_url(url: str) -> bool:
+    url_lower = url.lower()
+    return not any(pattern in url_lower for pattern in SKIP_PATTERNS)
 
 def load_outlets_from_db():
     from prisma import Prisma
@@ -261,16 +274,18 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
 
     try:
         logging.info(f"Starting primary site discovery for {outlet_name}: {site_url}")
-        logging.info(f"Falling back to site scraping for {outlet_name}: {site_url}")
         _, known_urls = await asyncio.to_thread(
             focused_crawler,
             site_url,
-            max_seen_urls=max_articles,
-            max_known_urls=max(MAX_KNOWN_URLS, max_articles * 20),
+            max_seen_urls=max_articles * 2,
+            max_known_urls=200,
         )
-        candidate_urls = _coerce_known_urls(known_urls, site_url)
+        candidate_urls = [u for u in _coerce_known_urls(known_urls, site_url) if is_article_url(u)]
 
         async def process_url(article_url: str) -> dict[str, str] | None:
+            if not is_article_url(article_url):
+                return None
+
             try:
                 response = await _get_with_semaphore(client, article_url)
                 extracted_json = trafilatura.extract(
@@ -317,6 +332,50 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
         logging.warning(f"Site scraping fallback failed for {outlet_name}: {e}")
 
     return articles_data
+
+
+async def process_outlet(outlet, client, days_back):
+    outlet_name = outlet["name"]
+    info = {
+        "rss_feeds": outlet.get("rss_feeds", []),
+        "url": outlet.get("url"),
+    }
+    logging.info(f"Starting data collection for {outlet_name}")
+
+    outlet_articles = []
+    if info.get("url"):
+        site_articles = await collect_articles_from_site(
+            outlet_name,
+            info.get("url"),
+            client,
+            days_back=days_back,
+            max_articles=50,
+        )
+        outlet_articles.extend(site_articles)
+        logging.info(f"Primary site discovery found {len(site_articles)} articles for {outlet_name}")
+    else:
+        logging.warning(f"Outlet {outlet_name} has no URL configured for site fallback")
+
+    rss_feeds = info.get("rss_feeds") or []
+    if rss_feeds:
+        rss_articles = await collect_articles_from_rss(outlet_name, rss_feeds, client, days_back)
+        outlet_articles.extend(rss_articles)
+        logging.info(f"Found {len(rss_articles)} articles in RSS for {outlet_name}")
+    else:
+        logging.info(f"No RSS feeds configured for {outlet_name}; RSS fallback skipped")
+
+    deduped_for_outlet: dict[str, dict[str, str]] = {}
+    for article in outlet_articles:
+        url = article.get("url")
+        if isinstance(url, str) and url and url not in deduped_for_outlet:
+            deduped_for_outlet[url] = article
+
+    deduped_list = list(deduped_for_outlet.values())
+    if deduped_list:
+        return deduped_list
+
+    logging.warning(f"No articles found for {outlet_name} from RSS or site fallback")
+    return []
 
 def save_to_db(valid_articles):
     if not valid_articles:
@@ -372,48 +431,8 @@ async def collect_data(days_back=90):
         headers = {"User-Agent": USER_AGENT}
         async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
             # 1. Gather URLs and metadata from site first, then RSS fallback
-            for outlet in outlets:
-                outlet_name = outlet["name"]
-                info = {
-                    "rss_feeds": outlet.get("rss_feeds", []),
-                    "url": outlet.get("url"),
-                }
-                logging.info(f"Starting data collection for {outlet_name}")
-
-                outlet_articles = []
-                if info.get("url"):
-                    site_articles = await collect_articles_from_site(
-                        outlet_name,
-                        info.get("url"),
-                        client,
-                        days_back=days_back,
-                        max_articles=50,
-                    )
-                    outlet_articles.extend(site_articles)
-                    logging.info(f"Fallback site scraping found {len(site_articles)} articles for {outlet_name}")
-                else:
-                    logging.warning(f"Outlet {outlet_name} has no URL configured for site fallback")
-
-                rss_feeds = info.get("rss_feeds") or []
-                if rss_feeds:
-                    rss_articles = await collect_articles_from_rss(outlet_name, rss_feeds, client, days_back)
-                    outlet_articles.extend(rss_articles)
-                    logging.info(f"Found {len(rss_articles)} articles in RSS for {outlet_name}")
-                else:
-                    logging.info(f"No RSS feeds configured for {outlet_name}; trying site fallback")
-                    logging.info(f"No RSS feeds configured for {outlet_name}; RSS fallback skipped")
-
-                deduped_for_outlet: dict[str, dict[str, str]] = {}
-                for article in outlet_articles:
-                    url = article.get("url")
-                    if isinstance(url, str) and url and url not in deduped_for_outlet:
-                        deduped_for_outlet[url] = article
-
-                deduped_list = list(deduped_for_outlet.values())
-                if deduped_list:
-                    all_articles.extend(deduped_list)
-                else:
-                    logging.warning(f"No articles found for {outlet_name} from RSS or site fallback")
+            outlet_results = await asyncio.gather(*(process_outlet(outlet, client, days_back) for outlet in outlets))
+            all_articles = [article for result in outlet_results for article in result]
 
             # Global URL dedupe across all outlets
             deduped_global: dict[str, dict[str, str]] = {}
