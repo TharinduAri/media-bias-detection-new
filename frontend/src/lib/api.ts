@@ -90,7 +90,10 @@ export async function triggerCleanScrape(): Promise<{ status: string; message: s
     method: 'POST',
     cache: 'no-store',
   });
-  if (!res.ok) throw new Error("Failed to trigger clean and rescrape");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to trigger clean and rescrape");
+  }
   return res.json();
 }
 
@@ -138,5 +141,66 @@ export async function deleteOutlet(outletId: number): Promise<{ status: string; 
     throw new Error(body?.detail || "Failed to delete outlet");
   }
 
+  return res.json();
+}
+
+export interface ArticleData {
+  id: number;
+  outlet: string;
+  date: string;
+  title: string;
+  url: string;
+  text: string | null;
+  clean_text: string | null;
+  created_at: string;
+}
+
+export async function fetchArticleOutlets(): Promise<string[]> {
+  const res = await fetch(`${API_BASE_URL}/articles/outlets`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch article outlets");
+  return res.json();
+}
+
+export async function fetchArticles(outlet?: string, limit = 50, offset = 0): Promise<ArticleData[]> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (outlet) params.set("outlet", outlet);
+  const res = await fetch(`${API_BASE_URL}/articles/?${params}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch articles");
+  return res.json();
+}
+
+export async function deleteArticle(articleId: number): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/articles/${articleId}`, {
+    method: 'DELETE',
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to delete article");
+  }
+
+  return res.json();
+}
+
+export interface PipelineStage {
+  key: string;
+  label: string;
+}
+
+export interface PipelineStatus {
+  running: boolean;
+  status: "idle" | "running" | "done" | "error";
+  current_stage_index: number;
+  stages: PipelineStage[];
+  logs: string[];
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export async function fetchPipelineStatus(): Promise<PipelineStatus> {
+  const res = await fetch(`${API_BASE_URL}/system/pipeline-status`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch pipeline status");
   return res.json();
 }

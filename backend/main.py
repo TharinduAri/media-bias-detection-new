@@ -1,12 +1,25 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import sentiment, coverage, omissions, explainability, system, outlets
+from api.database import db_manager
+from api.routers import sentiment, coverage, omissions, explainability, system, outlets, articles
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    db_manager.connect()
+    try:
+        yield
+    finally:
+        db_manager.disconnect()
 
 app = FastAPI(
     title="Media Bias Analytics API",
     description="Read-only API for aggregated media bias data.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS configuration to allow local Streamlit/NextJS to connect
@@ -25,6 +38,7 @@ app.include_router(omissions.router)
 app.include_router(explainability.router)
 app.include_router(system.router)
 app.include_router(outlets.router)
+app.include_router(articles.router)
 
 @app.get("/")
 def read_root():

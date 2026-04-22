@@ -3,10 +3,11 @@ python-dotenv
 pandas
 plotly
 spacy
-feedparser
-newspaper3k
-requests
-python-dateutil
+atoma
+httpx
+tenacity
+trafilatura
+sentry-sdk
 fastapi
 uvicorn
 sqlalchemy

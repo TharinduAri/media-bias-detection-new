@@ -66,3 +66,15 @@ class OutletCreateRequest(BaseModel):
     name: str
     url: str
     rss_feeds: List[str] = Field(default_factory=list)
+
+class ArticleResponse(BaseModel):
+    id: int
+    outlet: str
+    date: datetime
+    title: str
+    url: str
+    text: Optional[str] = None
+    clean_text: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
