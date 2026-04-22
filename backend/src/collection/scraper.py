@@ -1,11 +1,14 @@
 import asyncio
+import html
 import json
 import logging
 import os
 import random
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
@@ -50,12 +53,27 @@ SITE_DISCOVERY_MAX_SEEN_URLS = 75
 SITE_DISCOVERY_MAX_KNOWN_URLS = 120
 SITE_DISCOVERY_SCAN_LIMIT = 75
 WAYBACK_ENABLED_DOMAINS = {"adaderana.lk", "dailymirror.lk"}
+WORDPRESS_API_ENABLED_DOMAINS = {"lankabusinessonline.com", "lbo.lk"}
 
 _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
 _DOMAIN_LOCKS: dict[str, asyncio.Lock] = {}
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _ROBOTS_CACHE: dict[str, RobotFileParser] = {}
 FALLBACK_JSONL_PATH = Path(__file__).resolve().parents[2] / "data" / "db_fallback_articles.jsonl"
+
+
+class _HTMLStripper(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        cleaned = data.strip()
+        if cleaned:
+            self._parts.append(cleaned)
+
+    def get_text(self) -> str:
+        return " ".join(self._parts).strip()
 
 
 def is_article_url(url: str) -> bool:
@@ -91,6 +109,100 @@ def _tag_name(tag: str) -> str:
 def _looks_like_wayback_target(domain: str) -> bool:
     normalized = domain.lstrip("www.")
     return any(normalized == d or normalized.endswith(f".{d}") for d in WAYBACK_ENABLED_DOMAINS)
+
+
+def _looks_like_wordpress_api_target(domain: str) -> bool:
+    normalized = domain.lstrip("www.")
+    return any(normalized == d or normalized.endswith(f".{d}") for d in WORDPRESS_API_ENABLED_DOMAINS)
+
+
+def _strip_html(html_text: str) -> str:
+    clean_html = re.sub(r"<!--.*?-->", " ", html_text, flags=re.DOTALL)
+    stripper = _HTMLStripper()
+    stripper.feed(clean_html)
+    return html.unescape(stripper.get_text())
+
+
+def _extract_slug_from_article_url(article_url: str) -> str:
+    parsed = urlparse(article_url)
+    path = parsed.path.strip("/")
+    if not path:
+        return ""
+
+    slug = path.split("/")[-1].strip()
+    return slug
+
+
+def _looks_truncated_wp_text(text: str) -> bool:
+    candidate = text.strip().lower()
+    if not candidate:
+        return True
+
+    markers = (
+        "[…]",
+        "[...]",
+        "[&hellip;]",
+        "…",
+        "...",
+        "continue reading",
+        "read more",
+    )
+    return any(candidate.endswith(marker) for marker in markers)
+
+
+async def _fetch_wordpress_api_payload(url: str, client: httpx.AsyncClient) -> dict[str, str] | None:
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    if not _looks_like_wordpress_api_target(domain):
+        return None
+
+    slug = _extract_slug_from_article_url(url)
+    if not slug or slug.isdigit():
+        return None
+
+    endpoint = f"{parsed.scheme}://{parsed.netloc}/wp-json/wp/v2/posts"
+    params = {
+        "slug": slug,
+        "_fields": "id,date,title,link,content",
+        "per_page": "1",
+    }
+
+    try:
+        response = await client.get(
+            endpoint,
+            params=params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            headers={"User-Agent": _choose_user_agent()},
+        )
+        response.raise_for_status()
+        posts = response.json()
+    except Exception as e:
+        logging.debug(f"WordPress API lookup failed for {url}: {e}")
+        return None
+
+    if not isinstance(posts, list) or not posts:
+        return None
+
+    post = posts[0]
+    if not isinstance(post, dict):
+        return None
+
+    content_obj = post.get("content")
+    title_obj = post.get("title")
+    raw_html = content_obj.get("rendered", "") if isinstance(content_obj, dict) else ""
+    title_html = title_obj.get("rendered", "") if isinstance(title_obj, dict) else ""
+    extracted_text = _strip_html(raw_html)
+    if len(extracted_text) < 50 or _looks_truncated_wp_text(extracted_text):
+        return None
+
+    published = _parse_metadata_datetime(post.get("date"))
+    cleaned_title = _strip_html(title_html)
+    return {
+        "raw_html": raw_html,
+        "text": extracted_text,
+        "title": cleaned_title,
+        "date": (published or datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
+    }
 
 
 def _domain_lock(domain: str) -> asyncio.Lock:
@@ -774,6 +886,10 @@ def save_to_db(valid_articles: list[dict[str, str]], allow_fallback: bool = True
     reraise=False,
 )
 async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[str, str]:
+    wp_payload = await _fetch_wordpress_api_payload(url, client)
+    if wp_payload is not None:
+        return wp_payload
+
     response = await _get_with_semaphore(client, url)
     raw_html = response.text
     extracted_json = trafilatura.extract(
