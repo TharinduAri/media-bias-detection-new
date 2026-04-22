@@ -13,7 +13,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 import sentry_sdk
 import trafilatura
-from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
+from tenacity import RetryCallState, retry, retry_if_exception, stop_after_attempt, wait_exponential
 from trafilatura.spider import focused_crawler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -443,9 +443,30 @@ def _scrape_retry_error_callback(retry_state: RetryCallState) -> str:
     return ""
 
 
+def _scrape_payload_retry_error_callback(retry_state: RetryCallState) -> dict[str, str]:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    url = retry_state.args[0] if retry_state.args else "unknown"
+    logging.error(f"Failed to scrape content from {url} after {SCRAPE_MAX_RETRIES} attempts: {exc}")
+    return {"text": "", "raw_html": "", "title": "", "date": ""}
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    if isinstance(exc, PermissionError):
+        return False
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        # Do not retry permanent client-side failures like 404/410.
+        return status >= 500 or status == 429
+
+    # Retry transient network and parsing related exceptions.
+    return True
+
+
 @retry(
     stop=stop_after_attempt(SCRAPE_MAX_RETRIES),
     wait=wait_exponential(multiplier=1.5, min=1.5, max=6),
+    retry=retry_if_exception(_is_retryable_exception),
     before_sleep=_log_retry_before_sleep,
     retry_error_callback=_scrape_retry_error_callback,
     reraise=False,
@@ -659,8 +680,9 @@ def save_to_db(valid_articles):
 @retry(
     stop=stop_after_attempt(SCRAPE_MAX_RETRIES),
     wait=wait_exponential(multiplier=1.5, min=1.5, max=6),
+    retry=retry_if_exception(_is_retryable_exception),
     before_sleep=_log_retry_before_sleep,
-    retry_error_callback=_scrape_retry_error_callback,
+    retry_error_callback=_scrape_payload_retry_error_callback,
     reraise=False,
 )
 async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[str, str]:
@@ -754,8 +776,15 @@ async def collect_data(days_back=90):
 
                 return processed
 
-            processed_articles = await asyncio.gather(*(process_article(art) for art in all_articles))
-            all_articles = processed_articles
+            processed_results = await asyncio.gather(
+                *(process_article(art) for art in all_articles),
+                return_exceptions=True,
+            )
+            failed_count = sum(1 for r in processed_results if isinstance(r, Exception))
+            if failed_count:
+                logging.warning(f"{failed_count} articles failed during content scraping and were skipped")
+
+            all_articles = [r for r in processed_results if isinstance(r, dict)]
 
             # Filter out articles where we couldn't get text
             valid_articles = [a for a in all_articles if a.get('text') and len(a['text'].strip()) > 50]
