@@ -51,14 +51,12 @@ export interface OutletData {
   id: number;
   name: string;
   url: string;
-  rss_feeds: string[] | null;
   created_at: string;
 }
 
 export interface CreateOutletPayload {
   name: string;
   url: string;
-  rss_feeds: string[];
 }
 
 export async function fetchSentiment(): Promise<SentimentData[]> {

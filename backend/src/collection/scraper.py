@@ -2,11 +2,14 @@ import asyncio
 import json
 import logging
 import os
+import random
+import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from typing import Any
-from urllib.parse import urljoin
+from typing import Any, cast
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
 
-import atoma
 import httpx
 import sentry_sdk
 import trafilatura
@@ -19,11 +22,18 @@ sentry_sdk.init(dsn=os.getenv("SENTRY_DSN"), traces_sample_rate=0.2)
 SCRAPE_MAX_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 12
 MAX_CONCURRENT_REQUESTS = 10
-MAX_KNOWN_URLS = 1000
-USER_AGENT = (
+MAX_ARTICLES_PER_OUTLET = int(os.getenv("MAX_ARTICLES_PER_OUTLET", "300"))
+MAX_SITEMAP_URLS_PER_OUTLET = int(os.getenv("MAX_SITEMAP_URLS_PER_OUTLET", "4000"))
+MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
+MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2.0"))
+USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-)
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+]
 SKIP_PATTERNS = [
     '#', '/contact', '/about', '/privacy', '/terms', '/search',
     '/cdn-cgi/', 'email-protection', 'video_story_inside',
@@ -35,13 +45,69 @@ SKIP_PATTERNS = [
 SITE_DISCOVERY_MAX_SEEN_URLS = 75
 SITE_DISCOVERY_MAX_KNOWN_URLS = 120
 SITE_DISCOVERY_SCAN_LIMIT = 75
+WAYBACK_ENABLED_DOMAINS = {"adaderana.lk", "dailymirror.lk"}
 
 _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
+_DOMAIN_LOCKS: dict[str, asyncio.Lock] = {}
+_DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
+_ROBOTS_CACHE: dict[str, RobotFileParser] = {}
 
 
 def is_article_url(url: str) -> bool:
     url_lower = url.lower()
     return not any(pattern in url_lower for pattern in SKIP_PATTERNS)
+
+
+def _choose_user_agent() -> str:
+    return random.choice(USER_AGENTS)
+
+
+def _domain_of(url: str) -> str:
+    return urlparse(url).netloc.lower()
+
+
+def _is_same_or_subdomain(site_url: str, candidate_url: str) -> bool:
+    site_domain = _domain_of(site_url).lstrip("www.")
+    candidate_domain = _domain_of(candidate_url).lstrip("www.")
+    return candidate_domain == site_domain or candidate_domain.endswith(f".{site_domain}")
+
+
+def _sitemap_default_url(site_url: str) -> str:
+    parsed = urlparse(site_url)
+    return f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+
+
+def _tag_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.split("}", 1)[1]
+    return tag
+
+
+def _looks_like_wayback_target(domain: str) -> bool:
+    normalized = domain.lstrip("www.")
+    return any(normalized == d or normalized.endswith(f".{d}") for d in WAYBACK_ENABLED_DOMAINS)
+
+
+def _domain_lock(domain: str) -> asyncio.Lock:
+    if domain not in _DOMAIN_LOCKS:
+        _DOMAIN_LOCKS[domain] = asyncio.Lock()
+    return _DOMAIN_LOCKS[domain]
+
+
+async def _throttle_domain(domain: str) -> None:
+    lock = _domain_lock(domain)
+    async with lock:
+        now = time.monotonic()
+        last = _DOMAIN_LAST_REQUEST_AT.get(domain, 0.0)
+        jitter = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+        wait_for = max(0.0, (last + jitter) - now)
+        if wait_for > 0:
+            await asyncio.sleep(wait_for)
+        _DOMAIN_LAST_REQUEST_AT[domain] = time.monotonic()
+
+
+def _normalize_outlet_url(url: str) -> str:
+    return url.strip().rstrip("/")
 
 def load_outlets_from_db():
     from prisma import Prisma
@@ -53,21 +119,14 @@ def load_outlets_from_db():
         outlet_configs = []
 
         for outlet in outlets:
-            feeds = outlet.rss_feeds
-            if isinstance(feeds, str):
-                try:
-                    feeds = json.loads(feeds)
-                except Exception:
-                    feeds = []
-
-            if not isinstance(feeds, list):
-                feeds = []
+            normalized_url = _normalize_outlet_url(outlet.url or "")
+            if not normalized_url:
+                continue
 
             outlet_configs.append(
                 {
                     "name": outlet.name,
-                    "url": outlet.url,
-                    "rss_feeds": [f.strip() for f in feeds if isinstance(f, str) and f.strip()],
+                    "url": normalized_url,
                 }
             )
 
@@ -108,33 +167,6 @@ def _parse_metadata_datetime(value: Any) -> datetime | None:
     return None
 
 
-def _get_entry_title(entry: Any) -> str:
-    title = getattr(entry, "title", None)
-    if isinstance(title, str) and title.strip():
-        return title.strip()
-
-    nested = getattr(title, "value", None)
-    if isinstance(nested, str) and nested.strip():
-        return nested.strip()
-
-    return "Untitled"
-
-
-def _get_entry_url(entry: Any) -> str:
-    link = getattr(entry, "link", None)
-    if isinstance(link, str) and link.strip():
-        return link.strip()
-
-    links = getattr(entry, "links", None)
-    if isinstance(links, list):
-        for item in links:
-            href = getattr(item, "href", None)
-            if isinstance(href, str) and href.strip():
-                return href.strip()
-
-    return ""
-
-
 def _coerce_known_urls(known_urls: Any, base_url: str) -> list[str]:
     raw_values: list[str] = []
 
@@ -165,14 +197,233 @@ def _coerce_known_urls(known_urls: Any, base_url: str) -> list[str]:
 
 
 async def _get_with_semaphore(client: httpx.AsyncClient, url: str) -> httpx.Response:
+    domain = _domain_of(url)
+    await _throttle_domain(domain)
+
+    user_agent = _choose_user_agent()
+    if not await _can_fetch_url(client, url, user_agent):
+        raise PermissionError(f"Blocked by robots.txt: {url}")
+
     if _REQUEST_SEMAPHORE is None:
-        response = await client.get(url, follow_redirects=True)
+        response = await client.get(url, follow_redirects=True, headers={"User-Agent": user_agent})
     else:
         async with _REQUEST_SEMAPHORE:
-            response = await client.get(url, follow_redirects=True)
+            response = await client.get(url, follow_redirects=True, headers={"User-Agent": user_agent})
 
     response.raise_for_status()
     return response
+
+
+async def _load_robots_parser(client: httpx.AsyncClient, url: str) -> RobotFileParser:
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    cached = _ROBOTS_CACHE.get(domain)
+    if cached is not None:
+        return cached
+
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    rp = RobotFileParser()
+    rp.set_url(robots_url)
+
+    try:
+        response = await client.get(robots_url, follow_redirects=True, headers={"User-Agent": _choose_user_agent()})
+        if response.status_code == 200 and response.text:
+            rp.parse(response.text.splitlines())
+    except Exception:
+        # On robots fetch failure, default to permissive behavior to avoid hard-stop backfills.
+        pass
+
+    _ROBOTS_CACHE[domain] = rp
+    return rp
+
+
+async def _can_fetch_url(client: httpx.AsyncClient, url: str, user_agent: str) -> bool:
+    try:
+        rp = await _load_robots_parser(client, url)
+        return rp.can_fetch(user_agent, url)
+    except Exception:
+        return True
+
+
+def _extract_sitemap_locations_from_robots(robots_text: str) -> list[str]:
+    urls: list[str] = []
+    for line in robots_text.splitlines():
+        raw = line.strip()
+        if raw.lower().startswith("sitemap:"):
+            candidate = raw.split(":", 1)[1].strip()
+            if candidate:
+                urls.append(candidate)
+    return urls
+
+
+async def _discover_sitemaps(site_url: str, client: httpx.AsyncClient) -> list[str]:
+    parsed = urlparse(site_url)
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    discovered = {_sitemap_default_url(site_url)}
+
+    try:
+        response = await client.get(robots_url, follow_redirects=True, headers={"User-Agent": _choose_user_agent()})
+        if response.status_code == 200 and response.text:
+            discovered.update(_extract_sitemap_locations_from_robots(response.text))
+    except Exception:
+        pass
+
+    return sorted(discovered)
+
+
+async def collect_articles_from_sitemaps(
+    outlet_name: str,
+    site_url: str,
+    client: httpx.AsyncClient,
+    days_back: int,
+    max_articles: int,
+) -> list[dict[str, str]]:
+    """Discover article URLs from sitemap index/urlset documents first."""
+    cutoff_date = datetime.now() - timedelta(days=days_back)
+    seeds = await _discover_sitemaps(site_url, client)
+    queue = list(seeds)
+    visited_sitemaps: set[str] = set()
+    discovered_articles: dict[str, dict[str, str]] = {}
+
+    while queue and len(discovered_articles) < max_articles and len(visited_sitemaps) < MAX_SITEMAP_URLS_PER_OUTLET:
+        sitemap_url = queue.pop(0)
+        if sitemap_url in visited_sitemaps:
+            continue
+        visited_sitemaps.add(sitemap_url)
+
+        try:
+            response = await _get_with_semaphore(client, sitemap_url)
+        except Exception as e:
+            logging.debug(f"Could not fetch sitemap {sitemap_url}: {e}")
+            continue
+
+        try:
+            root = ET.fromstring(response.text)
+        except Exception:
+            logging.debug(f"Invalid XML in sitemap: {sitemap_url}")
+            continue
+
+        root_tag = _tag_name(root.tag)
+        if root_tag == "sitemapindex":
+            for child in root:
+                if _tag_name(child.tag) != "sitemap":
+                    continue
+                loc = None
+                for node in child:
+                    if _tag_name(node.tag) == "loc" and node.text:
+                        loc = node.text.strip()
+                        break
+                if loc and loc not in visited_sitemaps and _is_same_or_subdomain(site_url, loc):
+                    queue.append(loc)
+            continue
+
+        if root_tag != "urlset":
+            continue
+
+        for child in root:
+            if _tag_name(child.tag) != "url":
+                continue
+
+            loc = ""
+            lastmod_raw = None
+            for node in child:
+                tag = _tag_name(node.tag)
+                if tag == "loc" and node.text:
+                    loc = node.text.strip()
+                elif tag == "lastmod" and node.text:
+                    lastmod_raw = node.text.strip()
+
+            if not loc or not is_article_url(loc) or not _is_same_or_subdomain(site_url, loc):
+                continue
+
+            pub = _parse_metadata_datetime(lastmod_raw)
+            if pub and pub < cutoff_date:
+                continue
+
+            discovered_articles[loc] = {
+                "outlet": outlet_name,
+                "date": (pub or datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
+                "title": loc,
+                "url": loc,
+            }
+
+            if len(discovered_articles) >= max_articles:
+                break
+
+    return list(discovered_articles.values())
+
+
+async def collect_wayback_urls(
+    outlet_name: str,
+    site_url: str,
+    client: httpx.AsyncClient,
+    days_back: int,
+    max_articles: int,
+) -> list[dict[str, str]]:
+    domain = _domain_of(site_url)
+    if not _looks_like_wayback_target(domain):
+        return []
+
+    since = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y%m%d")
+    until = datetime.utcnow().strftime("%Y%m%d")
+    params = {
+        "url": f"{domain}/*",
+        "output": "json",
+        "fl": "timestamp,original,statuscode",
+        "filter": "statuscode:200",
+        "collapse": "urlkey",
+        "from": since,
+        "to": until,
+        "limit": str(max_articles * 2),
+    }
+
+    try:
+        response = await client.get(
+            "https://web.archive.org/cdx/search/cdx",
+            params=params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            headers={"User-Agent": _choose_user_agent()},
+        )
+        response.raise_for_status()
+        rows = response.json()
+    except Exception as e:
+        logging.warning(f"Wayback lookup failed for {outlet_name}: {e}")
+        return []
+
+    if not isinstance(rows, list) or len(rows) <= 1:
+        return []
+
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows[1:]:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+
+        ts = str(row[0]).strip()
+        original_url = str(row[1]).strip()
+        if not original_url or original_url in seen or not is_article_url(original_url):
+            continue
+        if not _is_same_or_subdomain(site_url, original_url):
+            continue
+
+        try:
+            dt = datetime.strptime(ts[:14], "%Y%m%d%H%M%S")
+        except ValueError:
+            dt = datetime.utcnow()
+
+        seen.add(original_url)
+        items.append(
+            {
+                "outlet": outlet_name,
+                "date": dt.strftime('%Y-%m-%d %H:%M:%S'),
+                "title": original_url,
+                "url": original_url,
+            }
+        )
+        if len(items) >= max_articles:
+            break
+
+    return items
 
 
 def _log_retry_before_sleep(retry_state: RetryCallState) -> None:
@@ -190,63 +441,6 @@ def _scrape_retry_error_callback(retry_state: RetryCallState) -> str:
     url = retry_state.args[0] if retry_state.args else "unknown"
     logging.error(f"Failed to scrape content from {url} after {SCRAPE_MAX_RETRIES} attempts: {exc}")
     return ""
-
-
-async def collect_articles_from_rss(outlet_name, feeds, client, days_back=90):
-    articles_data = []
-    cutoff_date = datetime.now() - timedelta(days=days_back)
-
-    for feed_url in feeds:
-        logging.info(f"Parsing RSS feed for {outlet_name}: {feed_url}")
-
-        try:
-            response = await _get_with_semaphore(client, feed_url)
-            feed_bytes = response.content
-        except Exception as e:
-            logging.error(f"Error fetching feed for {outlet_name}: {e}")
-            continue
-
-        try:
-            feed = atoma.parse_rss_bytes(feed_bytes)
-            entries = getattr(feed, "items", [])
-        except Exception:
-            try:
-                feed = atoma.parse_atom_bytes(feed_bytes)
-                entries = getattr(feed, "entries", [])
-            except Exception as e:
-                logging.error(f"Error parsing feed for {outlet_name}: {e}")
-                continue
-
-        for entry in entries:
-            try:
-                dt = _normalize_datetime(
-                    getattr(entry, "pub_date", None)
-                    or getattr(entry, "published", None)
-                    or getattr(entry, "updated", None)
-                )
-                if dt is None:
-                    # As a last resort include the article but mark with current time
-                    logging.warning(f"Missing/unknown date for entry; including anyway: {_get_entry_title(entry)}")
-                    dt = datetime.now()
-
-                # check if it's within our time window (e.g., last 3 months)
-                # Note: RSS feeds rarely go back 3 months, they usually only have the latest 50-100 items.
-                if dt >= cutoff_date:
-                    url = _get_entry_url(entry)
-                    if not url:
-                        logging.debug(f"Skipping feed entry without URL for {outlet_name}")
-                        continue
-
-                    articles_data.append({
-                        "outlet": outlet_name,
-                        "date": dt.strftime('%Y-%m-%d %H:%M:%S'),
-                        "title": _get_entry_title(entry),
-                        "url": url
-                    })
-            except Exception as e:
-                logging.error(f"Error parsing entry in {outlet_name}: {e}")
-
-    return articles_data
 
 
 @retry(
@@ -271,7 +465,7 @@ async def scrape_article_content(url, client):
 
 
 async def collect_articles_from_site(outlet_name, site_url, client, days_back=90, max_articles=50):
-    """Primary discovery: crawl site URLs and extract metadata with trafilatura."""
+    """Fallback discovery: crawl site URLs and extract metadata with trafilatura."""
     articles_data = []
     cutoff_date = datetime.now() - timedelta(days=days_back)
 
@@ -316,12 +510,12 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logging.debug(f"site fallback failed for {article_url}: {e}")
+                logging.debug(f"site crawl fallback failed for {article_url}: {e}")
                 return None
 
         scan_urls = candidate_urls[: min(max_articles * 2, SITE_DISCOVERY_SCAN_LIMIT)]
         if not scan_urls:
-            logging.warning(f"No articles found for {outlet_name} from site fallback")
+            logging.warning(f"No articles found for {outlet_name} from crawl fallback")
             return articles_data
 
         tasks = [asyncio.create_task(process_url(url)) for url in scan_urls]
@@ -340,40 +534,52 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     except Exception as e:
-        logging.warning(f"Site scraping fallback failed for {outlet_name}: {e}")
+        logging.warning(f"Site crawl fallback failed for {outlet_name}: {e}")
 
     return articles_data
 
 
 async def process_outlet(outlet, client, days_back):
     outlet_name = outlet["name"]
-    info = {
-        "rss_feeds": outlet.get("rss_feeds", []),
-        "url": outlet.get("url"),
-    }
+    info = {"url": outlet.get("url")}
     logging.info(f"Starting data collection for {outlet_name}")
 
     outlet_articles = []
-    if info.get("url"):
-        site_articles = await collect_articles_from_site(
+    site_url = info.get("url")
+    if isinstance(site_url, str) and site_url:
+        sitemap_articles = await collect_articles_from_sitemaps(
             outlet_name,
-            info.get("url"),
+            site_url,
             client,
             days_back=days_back,
-            max_articles=50,
+            max_articles=MAX_ARTICLES_PER_OUTLET,
         )
-        outlet_articles.extend(site_articles)
-        logging.info(f"Primary site discovery found {len(site_articles)} articles for {outlet_name}")
-    else:
-        logging.warning(f"Outlet {outlet_name} has no URL configured for site fallback")
+        outlet_articles.extend(sitemap_articles)
+        logging.info(f"Sitemap discovery found {len(sitemap_articles)} article URLs for {outlet_name}")
 
-    rss_feeds = info.get("rss_feeds") or []
-    if rss_feeds:
-        rss_articles = await collect_articles_from_rss(outlet_name, rss_feeds, client, days_back)
-        outlet_articles.extend(rss_articles)
-        logging.info(f"Found {len(rss_articles)} articles in RSS for {outlet_name}")
+        wayback_articles = await collect_wayback_urls(
+            outlet_name,
+            site_url,
+            client,
+            days_back=days_back,
+            max_articles=max(100, MAX_ARTICLES_PER_OUTLET // 2),
+        )
+        outlet_articles.extend(wayback_articles)
+        if wayback_articles:
+            logging.info(f"Wayback discovery found {len(wayback_articles)} article URLs for {outlet_name}")
+
+        if len(outlet_articles) < max(30, MAX_ARTICLES_PER_OUTLET // 4):
+            site_articles = await collect_articles_from_site(
+                outlet_name,
+                site_url,
+                client,
+                days_back=days_back,
+                max_articles=max(50, MAX_ARTICLES_PER_OUTLET // 3),
+            )
+            outlet_articles.extend(site_articles)
+            logging.info(f"Crawler fallback found {len(site_articles)} article URLs for {outlet_name}")
     else:
-        logging.info(f"No RSS feeds configured for {outlet_name}; RSS fallback skipped")
+        logging.warning(f"Outlet {outlet_name} has no URL configured for web discovery")
 
     deduped_for_outlet: dict[str, dict[str, str]] = {}
     for article in outlet_articles:
@@ -385,7 +591,7 @@ async def process_outlet(outlet, client, days_back):
     if deduped_list:
         return deduped_list
 
-    logging.warning(f"No articles found for {outlet_name} from RSS or site fallback")
+    logging.warning(f"No articles found for {outlet_name} via web discovery")
     return []
 
 def save_to_db(valid_articles):
@@ -401,28 +607,98 @@ def save_to_db(valid_articles):
             for article in valid_articles:
                 # We must convert date string to datetime to avoid Prisma validation error
                 dt = datetime.strptime(article['date'], '%Y-%m-%d %H:%M:%S')
+                base_create = {
+                    'outlet': article['outlet'],
+                    'date': dt,
+                    'title': article['title'],
+                    'url': article['url'],
+                    'text': article['text'],
+                }
+                base_update = {
+                    'text': article['text'],
+                    'title': article['title'],
+                }
 
-                db.article.upsert(
-                    where={'url': article['url']},
-                    data={
-                        'create': {
-                            'outlet': article['outlet'],
-                            'date': dt,
-                            'title': article['title'],
-                            'url': article['url'],
-                            'text': article['text']
-                        },
-                        'update': {
-                            'text': article['text'],
-                            'title': article['title']
-                        }
-                    }
-                )
+                # Store raw_html when Prisma schema/client includes it.
+                if article.get('raw_html'):
+                    base_create['raw_html'] = article['raw_html']
+                    base_update['raw_html'] = article['raw_html']
+
+                try:
+                    data_payload = cast(Any, {
+                        'create': base_create,
+                        'update': base_update,
+                    })
+                    db.article.upsert(
+                        where={'url': article['url']},
+                        data=data_payload
+                    )
+                except Exception as e:
+                    message = str(e)
+                    if 'raw_html' in message:
+                        # Backward compatibility until prisma client is regenerated.
+                        base_create.pop('raw_html', None)
+                        base_update.pop('raw_html', None)
+                        fallback_payload = cast(Any, {
+                            'create': base_create,
+                            'update': base_update,
+                        })
+                        db.article.upsert(
+                            where={'url': article['url']},
+                            data=fallback_payload
+                        )
+                    else:
+                        raise
             logging.info(f"Saved {len(valid_articles)} articles to DB")
         finally:
             db.disconnect()
     except Exception as e:
         logging.error(f"DB Error while saving articles: {e}")
+
+
+@retry(
+    stop=stop_after_attempt(SCRAPE_MAX_RETRIES),
+    wait=wait_exponential(multiplier=1.5, min=1.5, max=6),
+    before_sleep=_log_retry_before_sleep,
+    retry_error_callback=_scrape_retry_error_callback,
+    reraise=False,
+)
+async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[str, str]:
+    response = await _get_with_semaphore(client, url)
+    raw_html = response.text
+    extracted_json = trafilatura.extract(
+        raw_html,
+        output_format='json',
+        with_metadata=True,
+        include_comments=False,
+        include_tables=False,
+    )
+
+    extracted_text = ""
+    title = ""
+    published = None
+    if extracted_json:
+        payload = json.loads(extracted_json)
+        extracted_text = payload.get('text') or ""
+        title = payload.get('title') or ""
+        published = _parse_metadata_datetime(payload.get('date'))
+
+    if not extracted_text:
+        extracted_text = trafilatura.extract(
+            raw_html,
+            include_comments=False,
+            include_tables=False,
+        ) or ""
+
+    if not extracted_text.strip():
+        raise ValueError("Trafilatura returned empty text")
+
+    return {
+        'raw_html': raw_html,
+        'text': extracted_text,
+        'title': title,
+        'date': (published or datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
+    }
 
 
 async def collect_data(days_back=90):
@@ -439,9 +715,8 @@ async def collect_data(days_back=90):
 
     try:
         timeout = httpx.Timeout(REQUEST_TIMEOUT_SECONDS)
-        headers = {"User-Agent": USER_AGENT}
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-            # 1. Gather URLs and metadata from site first, then RSS fallback
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # 1. Gather URLs and metadata from sitemaps first, then fallback discovery.
             outlet_results = await asyncio.gather(*(process_outlet(outlet, client, days_back) for outlet in outlets))
             all_articles = [article for result in outlet_results for article in result]
 
@@ -463,9 +738,14 @@ async def collect_data(days_back=90):
             async def process_article(article: dict[str, str]) -> dict[str, str]:
                 nonlocal progress_count
 
-                content = await scrape_article_content(article['url'], client)
+                payload = await scrape_article_payload(article['url'], client)
                 processed = dict(article)
-                processed['text'] = content
+                processed['text'] = payload['text']
+                processed['raw_html'] = payload['raw_html']
+                if payload.get('title'):
+                    processed['title'] = payload['title']
+                if payload.get('date'):
+                    processed['date'] = payload['date']
 
                 async with progress_lock:
                     progress_count += 1
@@ -491,9 +771,7 @@ async def collect_data(days_back=90):
 
 if __name__ == "__main__":
     try:
-        # For MVP, try to collect what's available now
-        # Note: RSS only gives recent articles. To get 3 months, we'd need to scrape archives
-        # Let's start with site crawling + RSS fallback and keep the pipeline resilient.
+        # Sitemap-first web backfill for historical outlet profiling.
         asyncio.run(collect_data(days_back=90))
     except Exception as e:
         sentry_sdk.capture_exception(e)
