@@ -6,8 +6,9 @@ import random
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -26,6 +27,9 @@ MAX_ARTICLES_PER_OUTLET = int(os.getenv("MAX_ARTICLES_PER_OUTLET", "300"))
 MAX_SITEMAP_URLS_PER_OUTLET = int(os.getenv("MAX_SITEMAP_URLS_PER_OUTLET", "4000"))
 MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "0.5"))
 MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2.0"))
+SAVE_CHUNK_SIZE = int(os.getenv("SAVE_CHUNK_SIZE", "100"))
+DB_CONNECT_MAX_RETRIES = int(os.getenv("DB_CONNECT_MAX_RETRIES", "5"))
+DB_CONNECT_BACKOFF_BASE_SECONDS = float(os.getenv("DB_CONNECT_BACKOFF_BASE_SECONDS", "1.5"))
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -51,6 +55,7 @@ _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
 _DOMAIN_LOCKS: dict[str, asyncio.Lock] = {}
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _ROBOTS_CACHE: dict[str, RobotFileParser] = {}
+FALLBACK_JSONL_PATH = Path(__file__).resolve().parents[2] / "data" / "db_fallback_articles.jsonl"
 
 
 def is_article_url(url: str) -> bool:
@@ -109,10 +114,94 @@ async def _throttle_domain(domain: str) -> None:
 def _normalize_outlet_url(url: str) -> str:
     return url.strip().rstrip("/")
 
-def load_outlets_from_db():
+
+def _normalize_database_url_for_neon(database_url: str) -> str:
+    if not database_url:
+        return database_url
+
+    normalized = database_url
+    if normalized.startswith("postgres://"):
+        normalized = normalized.replace("postgres://", "postgresql://", 1)
+
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower()
+    if "neon.tech" not in host:
+        return normalized
+
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "sslmode" not in {k.lower(): v for k, v in query.items()}:
+        query["sslmode"] = "require"
+        parsed = parsed._replace(query=urlencode(query))
+        return urlunparse(parsed)
+
+    return normalized
+
+
+def _create_prisma_client():
     from prisma import Prisma
 
-    db = Prisma()
+    database_url = os.getenv("DATABASE_URL", "")
+    if database_url:
+        os.environ["DATABASE_URL"] = _normalize_database_url_for_neon(database_url)
+
+    return Prisma()
+
+
+def _append_articles_to_fallback_jsonl(articles: list[dict[str, str]]) -> None:
+    if not articles:
+        return
+
+    FALLBACK_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with FALLBACK_JSONL_PATH.open("a", encoding="utf-8") as handle:
+        for article in articles:
+            handle.write(json.dumps(article, ensure_ascii=True) + "\n")
+
+    logging.warning(
+        "Database unreachable. Appended %s articles to fallback queue at %s",
+        len(articles),
+        str(FALLBACK_JSONL_PATH),
+    )
+
+
+def _load_fallback_articles() -> list[dict[str, str]]:
+    if not FALLBACK_JSONL_PATH.exists():
+        return []
+
+    records: list[dict[str, str]] = []
+    with FALLBACK_JSONL_PATH.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                records.append({k: str(v) if v is not None else "" for k, v in payload.items()})
+
+    return records
+
+
+def _clear_fallback_articles() -> None:
+    if FALLBACK_JSONL_PATH.exists():
+        FALLBACK_JSONL_PATH.unlink()
+
+
+def replay_fallback_articles() -> None:
+    pending = _load_fallback_articles()
+    if not pending:
+        return
+
+    logging.info("Replaying %s fallback articles from %s", len(pending), str(FALLBACK_JSONL_PATH))
+    if save_to_db(pending, allow_fallback=False):
+        _clear_fallback_articles()
+        logging.info("Fallback replay succeeded; cleared local fallback queue")
+    else:
+        logging.warning("Fallback replay failed; keeping queued records on disk")
+
+def load_outlets_from_db():
+    db = _create_prisma_client()
     db.connect()
     try:
         outlets = db.outlet.find_many()
@@ -615,32 +704,32 @@ async def process_outlet(outlet, client, days_back):
     logging.warning(f"No articles found for {outlet_name} via web discovery")
     return []
 
-def save_to_db(valid_articles):
+def save_to_db(valid_articles: list[dict[str, str]], allow_fallback: bool = True) -> bool:
     if not valid_articles:
         logging.warning("No valid articles collected.")
-        return
+        return True
 
-    try:
-        from prisma import Prisma
-        db = Prisma()
-        db.connect()
+    for attempt in range(1, DB_CONNECT_MAX_RETRIES + 1):
+        db = _create_prisma_client()
         try:
+            db.connect()
+
             for article in valid_articles:
-                # We must convert date string to datetime to avoid Prisma validation error
-                dt = datetime.strptime(article['date'], '%Y-%m-%d %H:%M:%S')
+                date_raw = article.get('date') or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                dt = datetime.strptime(date_raw, '%Y-%m-%d %H:%M:%S')
+
                 base_create = {
-                    'outlet': article['outlet'],
+                    'outlet': article.get('outlet', ''),
                     'date': dt,
-                    'title': article['title'],
-                    'url': article['url'],
-                    'text': article['text'],
+                    'title': article.get('title', article.get('url', '')),
+                    'url': article.get('url', ''),
+                    'text': article.get('text', ''),
                 }
                 base_update = {
-                    'text': article['text'],
-                    'title': article['title'],
+                    'text': article.get('text', ''),
+                    'title': article.get('title', article.get('url', '')),
                 }
 
-                # Store raw_html when Prisma schema/client includes it.
                 if article.get('raw_html'):
                     base_create['raw_html'] = article['raw_html']
                     base_update['raw_html'] = article['raw_html']
@@ -651,13 +740,12 @@ def save_to_db(valid_articles):
                         'update': base_update,
                     })
                     db.article.upsert(
-                        where={'url': article['url']},
+                        where={'url': article.get('url', '')},
                         data=data_payload
                     )
                 except Exception as e:
                     message = str(e)
                     if 'raw_html' in message:
-                        # Backward compatibility until prisma client is regenerated.
                         base_create.pop('raw_html', None)
                         base_update.pop('raw_html', None)
                         fallback_payload = cast(Any, {
@@ -665,16 +753,37 @@ def save_to_db(valid_articles):
                             'update': base_update,
                         })
                         db.article.upsert(
-                            where={'url': article['url']},
+                            where={'url': article.get('url', '')},
                             data=fallback_payload
                         )
                     else:
                         raise
-            logging.info(f"Saved {len(valid_articles)} articles to DB")
+
+            logging.info("Saved %s articles to DB", len(valid_articles))
+            return True
+        except Exception as e:
+            wait_seconds = DB_CONNECT_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+            logging.warning(
+                "DB save attempt %s/%s failed: %s",
+                attempt,
+                DB_CONNECT_MAX_RETRIES,
+                str(e),
+            )
+            if attempt < DB_CONNECT_MAX_RETRIES:
+                logging.info("Retrying DB save in %.1fs", wait_seconds)
+                time.sleep(wait_seconds)
+            else:
+                logging.error("DB save failed after %s attempts", DB_CONNECT_MAX_RETRIES)
+                if allow_fallback:
+                    _append_articles_to_fallback_jsonl(valid_articles)
+                return False
         finally:
-            db.disconnect()
-    except Exception as e:
-        logging.error(f"DB Error while saving articles: {e}")
+            try:
+                db.disconnect()
+            except Exception:
+                pass
+
+    return False
 
 
 @retry(
@@ -733,6 +842,8 @@ async def collect_data(days_back=90):
         logging.warning("No outlets configured in DB. Add outlets before running scraper.")
         return
 
+    await asyncio.to_thread(replay_fallback_articles)
+
     _REQUEST_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
     try:
@@ -754,12 +865,8 @@ async def collect_data(days_back=90):
             logging.info(f"Scraping full content for {len(all_articles)} articles concurrently...")
 
             total_articles = len(all_articles)
-            progress_count = 0
-            progress_lock = asyncio.Lock()
 
             async def process_article(article: dict[str, str]) -> dict[str, str]:
-                nonlocal progress_count
-
                 payload = await scrape_article_payload(article['url'], client)
                 processed = dict(article)
                 processed['text'] = payload['text']
@@ -769,32 +876,49 @@ async def collect_data(days_back=90):
                 if payload.get('date'):
                     processed['date'] = payload['date']
 
-                async with progress_lock:
-                    progress_count += 1
-                    if progress_count % 10 == 0 or progress_count == total_articles:
-                        logging.info(f"Scraping progress: {progress_count}/{total_articles}")
-
                 return processed
 
-            processed_results = await asyncio.gather(
-                *(process_article(art) for art in all_articles),
-                return_exceptions=True,
-            )
-            failed_count = sum(1 for r in processed_results if isinstance(r, Exception))
+            tasks = [asyncio.create_task(process_article(art)) for art in all_articles]
+            failed_count = 0
+            completed_count = 0
+            valid_count = 0
+            chunk_buffer: list[dict[str, str]] = []
+
+            for task in asyncio.as_completed(tasks):
+                completed_count += 1
+                if completed_count % 10 == 0 or completed_count == total_articles:
+                    logging.info(f"Scraping progress: {completed_count}/{total_articles}")
+
+                try:
+                    result = await task
+                except Exception as e:
+                    failed_count += 1
+                    logging.debug(f"Article scrape task failed: {e}")
+                    continue
+
+                text = result.get('text') if isinstance(result, dict) else None
+                if not isinstance(text, str) or len(text.strip()) <= 50:
+                    continue
+
+                chunk_buffer.append(result)
+                valid_count += 1
+
+                if len(chunk_buffer) >= SAVE_CHUNK_SIZE:
+                    chunk = chunk_buffer[:SAVE_CHUNK_SIZE]
+                    del chunk_buffer[:SAVE_CHUNK_SIZE]
+                    await asyncio.to_thread(save_to_db, chunk)
+
             if failed_count:
                 logging.warning(f"{failed_count} articles failed during content scraping and were skipped")
 
-            all_articles = [r for r in processed_results if isinstance(r, dict)]
+            if chunk_buffer:
+                await asyncio.to_thread(save_to_db, chunk_buffer)
 
-            # Filter out articles where we couldn't get text
-            valid_articles = [a for a in all_articles if a.get('text') and len(a['text'].strip()) > 50]
-
-            # 3. Save to DB
-            if not valid_articles:
+            if valid_count == 0:
                 logging.warning("No valid articles collected.")
                 return
 
-            await asyncio.to_thread(save_to_db, valid_articles)
+            logging.info("Scrape stage persisted %s valid articles", valid_count)
     finally:
         _REQUEST_SEMAPHORE = None
 
