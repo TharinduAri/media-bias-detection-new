@@ -1,4 +1,4 @@
-import { fetchArticleOutlets, fetchArticles } from "@/lib/api";
+import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles } from "@/lib/api";
 import RawArticlesView from "@/components/RawArticlesView";
 
 export const metadata = {
@@ -8,6 +8,7 @@ export const metadata = {
 
 export default async function RawArticlesPage() {
     const outlets = await fetchArticleOutlets().catch(() => [] as string[]);
+    const outletCounts = await fetchArticleOutletCounts().catch(() => []);
     const firstOutlet = outlets[0] ?? "";
     const initialArticles = firstOutlet
         ? await fetchArticles(firstOutlet, 50, 0).catch(() => [])
@@ -20,7 +21,7 @@ export default async function RawArticlesPage() {
             <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 py-10 transition-colors duration-200">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-lg mt-0.5">
+                        <div className="w-10 h-10 rounded-xl bg-linear-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-lg mt-0.5">
                             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
                             </svg>
@@ -45,6 +46,7 @@ export default async function RawArticlesPage() {
             <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
                 <RawArticlesView
                     outlets={outlets}
+                    outletCounts={outletCounts}
                     initialOutlet={firstOutlet}
                     initialArticles={initialArticles}
                 />

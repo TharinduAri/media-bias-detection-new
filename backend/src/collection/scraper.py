@@ -44,7 +44,7 @@ SKIP_PATTERNS = [
     '/sports-news/', '/technology-news/', '/entertainment-news/',
     '/hot-news/', '/author-biography/', '/more', 'news_archive',
     '/index.php', '/rss', '/mobi/', 'disqus', 'exchange-rates',
-    'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab',
+    'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab', '?p=',
 ]
 SITE_DISCOVERY_MAX_SEEN_URLS = 75
 SITE_DISCOVERY_MAX_KNOWN_URLS = 120
@@ -453,8 +453,9 @@ async def collect_wayback_urls(
     if not _looks_like_wayback_target(domain):
         return []
 
-    since = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y%m%d")
-    until = datetime.utcnow().strftime("%Y%m%d")
+    now_utc = datetime.now(timezone.utc)
+    since = (now_utc - timedelta(days=days_back)).strftime("%Y%m%d")
+    until = now_utc.strftime("%Y%m%d")
     params = {
         "url": f"{domain}/*",
         "output": "json",
@@ -498,7 +499,7 @@ async def collect_wayback_urls(
         try:
             dt = datetime.strptime(ts[:14], "%Y%m%d%H%M%S")
         except ValueError:
-            dt = datetime.utcnow()
+            dt = datetime.now(timezone.utc).replace(tzinfo=None)
 
         seen.add(original_url)
         items.append(
@@ -525,13 +526,6 @@ def _log_retry_before_sleep(retry_state: RetryCallState) -> None:
     )
 
 
-def _scrape_retry_error_callback(retry_state: RetryCallState) -> str:
-    exc = retry_state.outcome.exception() if retry_state.outcome else None
-    url = retry_state.args[0] if retry_state.args else "unknown"
-    logging.error(f"Failed to scrape content from {url} after {SCRAPE_MAX_RETRIES} attempts: {exc}")
-    return ""
-
-
 def _scrape_payload_retry_error_callback(retry_state: RetryCallState) -> dict[str, str]:
     exc = retry_state.outcome.exception() if retry_state.outcome else None
     url = retry_state.args[0] if retry_state.args else "unknown"
@@ -552,28 +546,6 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     return True
 
 
-@retry(
-    stop=stop_after_attempt(SCRAPE_MAX_RETRIES),
-    wait=wait_exponential(multiplier=1.5, min=1.5, max=6),
-    retry=retry_if_exception(_is_retryable_exception),
-    before_sleep=_log_retry_before_sleep,
-    retry_error_callback=_scrape_retry_error_callback,
-    reraise=False,
-)
-async def scrape_article_content(url, client):
-    response = await _get_with_semaphore(client, url)
-    extracted = trafilatura.extract(
-        response.text,
-        include_comments=False,
-        include_tables=False,
-    )
-
-    if not extracted or not extracted.strip():
-        raise ValueError("Trafilatura returned empty text")
-
-    return extracted
-
-
 async def collect_articles_from_site(outlet_name, site_url, client, days_back=90, max_articles=50):
     """Fallback discovery: crawl site URLs and extract metadata with trafilatura."""
     articles_data = []
@@ -581,12 +553,19 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
 
     try:
         logging.info(f"Starting primary site discovery for {outlet_name}: {site_url}")
-        _, known_urls = await asyncio.to_thread(
-            focused_crawler,
-            site_url,
-            max_seen_urls=SITE_DISCOVERY_MAX_SEEN_URLS,
-            max_known_urls=SITE_DISCOVERY_MAX_KNOWN_URLS,
-        )
+        try:
+            _, known_urls = await asyncio.wait_for(
+                asyncio.to_thread(
+                    focused_crawler,
+                    site_url,
+                    max_seen_urls=SITE_DISCOVERY_MAX_SEEN_URLS,
+                    max_known_urls=SITE_DISCOVERY_MAX_KNOWN_URLS,
+                ),
+                timeout=60.0,
+            )
+        except asyncio.TimeoutError:
+            logging.warning(f"Crawler timed out for {outlet_name}")
+            return articles_data
         candidate_urls = [u for u in _coerce_known_urls(known_urls, site_url) if is_article_url(u)]
 
         async def process_url(article_url: str) -> dict[str, str] | None:
@@ -842,9 +821,8 @@ async def collect_data(days_back=90):
         logging.warning("No outlets configured in DB. Add outlets before running scraper.")
         return
 
-    await asyncio.to_thread(replay_fallback_articles)
-
     _REQUEST_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    await asyncio.to_thread(replay_fallback_articles)
 
     try:
         timeout = httpx.Timeout(REQUEST_TIMEOUT_SECONDS)
@@ -891,6 +869,8 @@ async def collect_data(days_back=90):
 
                 try:
                     result = await task
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     failed_count += 1
                     logging.debug(f"Article scrape task failed: {e}")

@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import distinct
+from sqlalchemy import distinct, func
 
 from .. import models, schemas
 from ..database import get_db
@@ -30,6 +30,21 @@ def get_article_outlets(db: Session = Depends(get_db)):
     """Return list of distinct outlet names that have articles in the DB."""
     rows = db.query(distinct(models.Article.outlet)).order_by(models.Article.outlet.asc()).all()
     return [r[0] for r in rows]
+
+
+@router.get("/outlet-counts", response_model=List[schemas.ArticleOutletCountResponse])
+def get_article_outlet_counts(db: Session = Depends(get_db)):
+    """Return total raw-article count per outlet."""
+    rows = (
+        db.query(models.Article.outlet, func.count(models.Article.id).label("total_articles"))
+        .group_by(models.Article.outlet)
+        .order_by(models.Article.outlet.asc())
+        .all()
+    )
+    return [
+        {"outlet": outlet, "total_articles": int(total_articles or 0)}
+        for outlet, total_articles in rows
+    ]
 
 
 @router.get("/", response_model=List[schemas.ArticleResponse])

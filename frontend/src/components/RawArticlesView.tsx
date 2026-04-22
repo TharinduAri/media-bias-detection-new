@@ -1,17 +1,18 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { ArticleData, deleteArticle, fetchArticles } from "@/lib/api";
+import { ArticleData, ArticleOutletCountData, deleteArticle, fetchArticles } from "@/lib/api";
 
 interface Props {
     outlets: string[];
+    outletCounts: ArticleOutletCountData[];
     initialOutlet: string;
     initialArticles: ArticleData[];
 }
 
 const PAGE_SIZE = 50;
 
-export default function RawArticlesView({ outlets, initialOutlet, initialArticles }: Props) {
+export default function RawArticlesView({ outlets, outletCounts, initialOutlet, initialArticles }: Props) {
     const [selectedOutlet, setSelectedOutlet] = useState<string>(initialOutlet);
     const [articles, setArticles] = useState<ArticleData[]>(initialArticles);
     const [offset, setOffset] = useState(initialArticles.length);
@@ -75,6 +76,7 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
     const filtered = articles.filter(a =>
         !search || a.title.toLowerCase().includes(search.toLowerCase())
     );
+    const outletTotals = new Map(outletCounts.map((entry) => [entry.outlet, entry.total_articles]));
 
     return (
         <div className="flex flex-col gap-6">
@@ -92,7 +94,13 @@ export default function RawArticlesView({ outlets, initialOutlet, initialArticle
                             }
             `}
                     >
-                        {outlet}
+                        <span>{outlet}</span>
+                        <span className={`ml-2 inline-flex min-w-8 items-center justify-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${selectedOutlet === outlet
+                            ? "bg-white/20 text-white"
+                            : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-200"
+                            }`}>
+                            {outletTotals.get(outlet) ?? 0}
+                        </span>
                     </button>
                 ))}
             </div>

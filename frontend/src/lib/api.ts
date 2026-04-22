@@ -153,9 +153,20 @@ export interface ArticleData {
   created_at: string;
 }
 
+export interface ArticleOutletCountData {
+  outlet: string;
+  total_articles: number;
+}
+
 export async function fetchArticleOutlets(): Promise<string[]> {
   const res = await fetch(`${API_BASE_URL}/articles/outlets`, { cache: 'no-store' });
   if (!res.ok) throw new Error("Failed to fetch article outlets");
+  return res.json();
+}
+
+export async function fetchArticleOutletCounts(): Promise<ArticleOutletCountData[]> {
+  const res = await fetch(`${API_BASE_URL}/articles/outlet-counts`, { cache: 'no-store' });
+  if (!res.ok) throw new Error("Failed to fetch article outlet counts");
   return res.json();
 }
 
