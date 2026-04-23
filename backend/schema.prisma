@@ -15,6 +15,7 @@ model Article {
   date              DateTime
   title             String
   url               String   @unique
+  raw_html          String?
   text              String?
   clean_text        String?
   sentences         Json?

@@ -11,7 +11,6 @@ export default function OutletManager() {
 
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
-  const [rssText, setRssText] = useState("");
 
   const loadOutlets = async () => {
     setIsFetching(true);
@@ -37,11 +36,6 @@ export default function OutletManager() {
       return;
     }
 
-    const rssFeeds = rssText
-      .split(/[\n,]/)
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-
     setIsLoading(true);
     setMessage(null);
 
@@ -49,12 +43,10 @@ export default function OutletManager() {
       await createOutlet({
         name: name.trim(),
         url: url.trim(),
-        rss_feeds: rssFeeds,
       });
 
       setName("");
       setUrl("");
-      setRssText("");
       setMessage({ text: "Outlet added successfully.", type: "success" });
       await loadOutlets();
     } catch (error) {
@@ -113,12 +105,6 @@ export default function OutletManager() {
         >
           {isLoading ? "Adding..." : "Add Outlet"}
         </button>
-        <textarea
-          value={rssText}
-          onChange={(e) => setRssText(e.target.value)}
-          placeholder="RSS feed URLs (comma or newline separated)"
-          className={`${inputClass} md:col-span-3 min-h-22`}
-        />
       </form>
 
       {message && (
@@ -133,7 +119,6 @@ export default function OutletManager() {
             <tr className="text-left border-b border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400">
               <th className="py-2 pr-3">Name</th>
               <th className="py-2 pr-3">Site URL</th>
-              <th className="py-2">RSS Feeds</th>
               <th className="py-2 text-right">Actions</th>
             </tr>
           </thead>
@@ -145,9 +130,6 @@ export default function OutletManager() {
                   <a href={outlet.url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-600 dark:text-blue-400">
                     {outlet.url}
                   </a>
-                </td>
-                <td className="py-2 text-gray-700 dark:text-gray-300">
-                  {(outlet.rss_feeds || []).length > 0 ? (outlet.rss_feeds || []).join(", ") : "—"}
                 </td>
                 <td className="py-2 text-right">
                   <button
@@ -161,7 +143,7 @@ export default function OutletManager() {
             ))}
             {!isFetching && outlets.length === 0 && (
               <tr>
-                <td className="py-3 text-gray-500 dark:text-gray-400" colSpan={4}>No outlets configured yet.</td>
+                <td className="py-3 text-gray-500 dark:text-gray-400" colSpan={3}>No outlets configured yet.</td>
               </tr>
             )}
           </tbody>

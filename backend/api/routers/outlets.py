@@ -25,12 +25,10 @@ def create_outlet(payload: schemas.OutletCreateRequest, db: Session = Depends(ge
     if existing:
         raise HTTPException(status_code=409, detail="Outlet with this name already exists")
 
-    normalized_feeds = [feed.strip() for feed in payload.rss_feeds if feed and feed.strip()]
-
     outlet = models.Outlet(
         name=payload.name.strip(),
         url=payload.url.strip(),
-        rss_feeds=normalized_feeds,
+        rss_feeds=[],
         created_at=datetime.utcnow(),
     )
 
