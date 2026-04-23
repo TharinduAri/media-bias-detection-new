@@ -25,3 +25,15 @@ class Outlet(Base):
     url = Column(String)
     rss_feeds = Column(JSON, nullable=True)
     created_at = Column(DateTime)
+
+
+class ScrapeRunLog(Base):
+    __tablename__ = "ScrapeRunLog"
+
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    log_lines = Column(JSON, nullable=False)
+    created_at = Column(DateTime)

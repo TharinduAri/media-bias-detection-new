@@ -3,12 +3,14 @@ import sys
 import subprocess
 import threading
 from datetime import datetime
+from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from .. import models, schemas
+from ..database import SessionLocal, get_db
 
 router = APIRouter(
     prefix="/api/v1/system",
@@ -20,6 +22,8 @@ STAGES = [
 ]
 
 _state_lock = threading.Lock()
+_scrape_log_table_ready = False
+_scrape_log_table_lock = threading.Lock()
 _pipeline_state: dict = {
     "running": False,
     "status": "idle",  # "idle" | "running" | "done" | "error"
@@ -42,16 +46,77 @@ def _append_log(line: str):
         _pipeline_state["logs"].append(line)
 
 
+def _ensure_scrape_log_table() -> None:
+    global _scrape_log_table_ready
+    if _scrape_log_table_ready:
+        return
+
+    with _scrape_log_table_lock:
+        if _scrape_log_table_ready:
+            return
+
+        session = SessionLocal()
+        try:
+            session.execute(
+                text(
+                    '''
+                    CREATE TABLE IF NOT EXISTS "ScrapeRunLog" (
+                        id SERIAL PRIMARY KEY,
+                        started_at TIMESTAMP NOT NULL,
+                        finished_at TIMESTAMP NOT NULL,
+                        status VARCHAR(32) NOT NULL,
+                        error TEXT NULL,
+                        log_lines JSON NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                    '''
+                )
+            )
+            session.commit()
+            _scrape_log_table_ready = True
+        finally:
+            session.close()
+
+
+def _persist_scrape_run_log(
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    error: Optional[str],
+    log_lines: List[str],
+) -> None:
+    _ensure_scrape_log_table()
+
+    session = SessionLocal()
+    try:
+        log_row = models.ScrapeRunLog(
+            started_at=started_at,
+            finished_at=finished_at,
+            status=status,
+            error=error,
+            log_lines=log_lines,
+            created_at=datetime.utcnow(),
+        )
+        session.add(log_row)
+        session.commit()
+    finally:
+        session.close()
+
+
 def run_scraper_task():
     backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     script_path = os.path.join(backend_dir, "src", "collection", "scraper.py")
+    started_at = datetime.utcnow()
+    run_logs: List[str] = ["Scraper started..."]
+    run_status = "done"
+    run_error: Optional[str] = None
 
     _update_state(
         running=True,
         status="running",
         current_stage_index=0,
-        logs=["Scraper started..."],
-        started_at=datetime.utcnow().isoformat(),
+        logs=list(run_logs),
+        started_at=started_at.isoformat(),
         finished_at=None,
         error=None,
     )
@@ -68,19 +133,24 @@ def run_scraper_task():
         for line in proc.stdout:  # type: ignore
             stripped = line.rstrip()
             if stripped:
+                run_logs.append(stripped)
                 _append_log(stripped)
         proc.wait()
 
         if proc.returncode != 0:
+            run_status = "error"
+            run_error = f"Scraper failed with exit code {proc.returncode}"
+            run_logs.append(f"Scraper failed (exit {proc.returncode})")
             _update_state(
                 running=False,
                 status="error",
                 finished_at=datetime.utcnow().isoformat(),
-                error=f"Scraper failed with exit code {proc.returncode}",
+                error=run_error,
             )
             _append_log(f"Scraper failed (exit {proc.returncode})")
             return
 
+        run_logs.append("Scraper completed successfully")
         _append_log("Scraper completed successfully")
         _update_state(
             running=False,
@@ -89,19 +159,51 @@ def run_scraper_task():
             finished_at=datetime.utcnow().isoformat(),
         )
     except Exception as exc:
+        run_status = "error"
+        run_error = str(exc)
+        run_logs.append(f"Error running scraper: {str(exc)}")
         _append_log(f"Error running scraper: {str(exc)}")
         _update_state(
             running=False,
             status="error",
             finished_at=datetime.utcnow().isoformat(),
-            error=str(exc),
+            error=run_error,
         )
+    finally:
+        finished_at = datetime.utcnow()
+        try:
+            _persist_scrape_run_log(started_at, finished_at, run_status, run_error, run_logs)
+        except Exception:
+            # Do not fail scraper flow if persisting logs fails.
+            pass
 
 
 @router.get("/pipeline-status")
 def get_pipeline_status():
     with _state_lock:
         return dict(_pipeline_state)
+
+
+@router.get("/scrape-logs", response_model=List[schemas.ScrapeRunLogResponse])
+def list_scrape_logs(
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    _ensure_scrape_log_table()
+    rows = (
+        db.query(models.ScrapeRunLog)
+        .order_by(models.ScrapeRunLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return rows
+
+
+@router.get("/scrape-logs/latest", response_model=Optional[schemas.ScrapeRunLogResponse])
+def latest_scrape_log(db: Session = Depends(get_db)):
+    _ensure_scrape_log_table()
+    row = db.query(models.ScrapeRunLog).order_by(models.ScrapeRunLog.id.desc()).first()
+    return row
 
 
 @router.post("/clean-and-rescrape")

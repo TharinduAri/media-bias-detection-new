@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 class OutletResponse(BaseModel):
     id: int
@@ -30,3 +30,15 @@ class ArticleResponse(BaseModel):
 class ArticleOutletCountResponse(BaseModel):
     outlet: str
     total_articles: int
+
+
+class ScrapeRunLogResponse(BaseModel):
+    id: int
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    error: Optional[str] = None
+    log_lines: List[str]
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)

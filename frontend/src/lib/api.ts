@@ -44,6 +44,16 @@ export interface PipelineStatus {
   error: string | null;
 }
 
+export interface ScrapeRunLogData {
+  id: number;
+  started_at: string;
+  finished_at: string;
+  status: "done" | "error" | string;
+  error: string | null;
+  log_lines: string[];
+  created_at: string | null;
+}
+
 export async function triggerCleanScrape(): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API_BASE_URL}/system/clean-and-rescrape`, {
     method: "POST",
@@ -71,6 +81,13 @@ export async function triggerCleanDb(): Promise<{ status: string; message: strin
 export async function fetchPipelineStatus(): Promise<PipelineStatus> {
   const res = await fetch(`${API_BASE_URL}/system/pipeline-status`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch scraper status");
+  return res.json();
+}
+
+export async function fetchScrapeLogs(limit = 10): Promise<ScrapeRunLogData[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await fetch(`${API_BASE_URL}/system/scrape-logs?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch scrape logs");
   return res.json();
 }
 

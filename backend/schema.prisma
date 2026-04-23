@@ -32,3 +32,13 @@ model Outlet {
   rss_feeds  Json?
   created_at DateTime @default(now())
 }
+
+model ScrapeRunLog {
+  id         Int      @id @default(autoincrement())
+  started_at DateTime
+  finished_at DateTime
+  status     String
+  error      String?
+  log_lines  Json
+  created_at DateTime @default(now())
+}
