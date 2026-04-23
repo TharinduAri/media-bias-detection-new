@@ -7,6 +7,7 @@ import random
 import re
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -19,6 +20,17 @@ import sentry_sdk
 import trafilatura
 from tenacity import RetryCallState, retry, retry_if_exception, stop_after_attempt, wait_exponential
 from trafilatura.spider import focused_crawler
+
+from .outlets import (
+    AdaDeranaOutlet,
+    CeylonTodayOutlet,
+    DailyFTOutlet,
+    EconomyNextOutlet,
+    LBOOutlet,
+    NewsfirstOutlet,
+    BaseOutletScraper,
+)
+import src.collection.outlets.base as _outlets_base
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 sentry_sdk.init(dsn=os.getenv("SENTRY_DSN"), traces_sample_rate=0.2)
@@ -48,18 +60,77 @@ SKIP_PATTERNS = [
     '/hot-news/', '/author-biography/', '/more', 'news_archive',
     '/index.php', '/rss', '/mobi/', 'disqus', 'exchange-rates',
     'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab', '?p=',
+    # Extended: non-canonical paths observed in production audit (2026-04-23)
+    '/home', '/latest', '/category/', '/tag/', '/page/',
+    '/feed', '/amp/', '/print/', '/gallery/', '/video/',
 ]
 SITE_DISCOVERY_MAX_SEEN_URLS = 75
 SITE_DISCOVERY_MAX_KNOWN_URLS = 120
 SITE_DISCOVERY_SCAN_LIMIT = 75
 WAYBACK_ENABLED_DOMAINS = {"adaderana.lk", "dailymirror.lk"}
 WORDPRESS_API_ENABLED_DOMAINS = {"lankabusinessonline.com", "lbo.lk"}
+# 300s: accommodates deep sitemap indexes (e.g. LBO with 21 shards × ~12s/fetch + throttle).
+# The previous 90s default caused Ceylon Today and Economy Next to timeout during shard traversal.
+OUTLET_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv("OUTLET_DISCOVERY_TIMEOUT_SECONDS", "300"))
+GHOST_RESPONSE_MIN_BYTES = int(os.getenv("GHOST_RESPONSE_MIN_BYTES", "200"))
+# Domains whose focused_crawler always times out (JS-rendered, anti-bot, etc.).
+# Comma-separated env override: CRAWLER_SKIP_DOMAINS="newsfirst.lk,example.com"
+_CRAWLER_SKIP_DOMAINS_DEFAULT = {"newsfirst.lk", "english.newsfirst.lk"}
+CRAWLER_SKIP_DOMAINS: set[str] = {
+    d.strip().lower()
+    for d in os.getenv("CRAWLER_SKIP_DOMAINS", "").split(",")
+    if d.strip()
+} or _CRAWLER_SKIP_DOMAINS_DEFAULT
 
 _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
 _DOMAIN_LOCKS: dict[str, asyncio.Lock] = {}
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}
 _ROBOTS_CACHE: dict[str, RobotFileParser] = {}
+_BLOCKED_PATHS: set[str] = set()          # 403-blocked paths collected during a run
+_SCHEMA_HAS_RAW_HTML: bool | None = None  # Detected on first DB write attempt
 FALLBACK_JSONL_PATH = Path(__file__).resolve().parents[2] / "data" / "db_fallback_articles.jsonl"
+
+
+class GhostResponseError(Exception):
+    """Server returned HTTP 200 with a near-empty body — anti-scraping ghosting."""
+
+
+@dataclass
+class _OutletStat:
+    name: str
+    discovered: int = 0
+    persisted: int = 0
+    failed: bool = False
+    failure_reason: str = ""
+    ghost_count: int = 0
+    blocked_count: int = 0
+
+
+@dataclass
+class _RunSummary:
+    start_time: float = field(default_factory=time.monotonic)
+    outlet_stats: list[_OutletStat] = field(default_factory=list)
+    total_discovered: int = 0
+    total_persisted: int = 0
+    parse_errors: int = 0
+
+    def log(self) -> None:
+        duration_s = int(time.monotonic() - self.start_time)
+        failed = [s for s in self.outlet_stats if s.failed]
+        success_count = len(self.outlet_stats) - len(failed)
+        failed_detail = ", ".join(f"{s.name}: {s.failure_reason}" for s in failed) or "none"
+        ghost_total = sum(s.ghost_count for s in self.outlet_stats)
+        blocked_total = len(_BLOCKED_PATHS)
+        logging.info(
+            "[RUN SUMMARY] Duration: %dm%ds | Outlets: %d | Success: %d | Failed: %d (%s)\n"
+            "              URLs discovered: %d | Parse errors: %d | Persisted: %d\n"
+            "              Ghost responses skipped: %d | 403 Blocked paths: %d%s",
+            duration_s // 60, duration_s % 60,
+            len(self.outlet_stats), success_count, len(failed), failed_detail,
+            self.total_discovered, self.parse_errors, self.total_persisted,
+            ghost_total, blocked_total,
+            ("\n              Blocked: " + ", ".join(sorted(_BLOCKED_PATHS))) if _BLOCKED_PATHS else "",
+        )
 
 
 class _HTMLStripper(HTMLParser):
@@ -472,6 +543,24 @@ async def _discover_sitemaps(site_url: str, client: httpx.AsyncClient) -> list[s
     return sorted(discovered)
 
 
+# Maximum shards to fetch concurrently during sitemap index traversal.
+_SITEMAP_FETCH_BATCH_SIZE = int(os.getenv("SITEMAP_FETCH_BATCH_SIZE", "20"))
+
+
+async def _fetch_and_parse_sitemap(
+    sitemap_url: str,
+    client: httpx.AsyncClient,
+) -> tuple[str, ET.Element | None]:
+    """Fetch a single sitemap URL and return (url, parsed_root | None)."""
+    try:
+        response = await _get_with_semaphore(client, sitemap_url)
+        root = ET.fromstring(response.text)
+        return sitemap_url, root
+    except Exception as e:
+        logging.debug("Could not fetch/parse sitemap %s: %s", sitemap_url, e)
+        return sitemap_url, None
+
+
 async def collect_articles_from_sitemaps(
     outlet_name: str,
     site_url: str,
@@ -479,77 +568,106 @@ async def collect_articles_from_sitemaps(
     days_back: int,
     max_articles: int,
 ) -> list[dict[str, str]]:
-    """Discover article URLs from sitemap index/urlset documents first."""
+    """Discover article URLs from sitemap index/urlset documents.
+
+    Two-phase concurrent approach:
+      Phase 1 – Fetch all index-level sitemaps in parallel batches to collect
+                 child shard URLs (handles sitemapindex nodes).
+      Phase 2 – Fetch all collected shard (urlset) documents in parallel batches
+                 and extract article <loc> entries.
+
+    This replaces the previous sequential queue traversal, reducing wall-clock time
+    for multi-shard sites (e.g. LBO with 21 shards) from ~277s to ~30s.
+    """
     cutoff_date = datetime.now() - timedelta(days=days_back)
     seeds = await _discover_sitemaps(site_url, client)
-    queue = list(seeds)
-    visited_sitemaps: set[str] = set()
+
+    # --- Phase 1: Resolve sitemapindex → collect all leaf shard URLs ---
+    pending_index: set[str] = set(seeds)
+    visited: set[str] = set()
+    leaf_shard_urls: list[str] = []   # urlset documents to scrape in Phase 2
+
+    while pending_index and len(visited) < MAX_SITEMAP_URLS_PER_OUTLET:
+        batch = list(pending_index - visited)[:_SITEMAP_FETCH_BATCH_SIZE]
+        pending_index -= set(batch)
+        visited.update(batch)
+
+        results = await asyncio.gather(
+            *[_fetch_and_parse_sitemap(u, client) for u in batch]
+        )
+
+        for url, root in results:
+            if root is None:
+                continue
+            root_tag = _tag_name(root.tag)
+            if root_tag == "sitemapindex":
+                for child in root:
+                    if _tag_name(child.tag) != "sitemap":
+                        continue
+                    for node in child:
+                        if _tag_name(node.tag) == "loc" and node.text:
+                            loc = node.text.strip()
+                            if loc and loc not in visited and _is_same_or_subdomain(site_url, loc):
+                                pending_index.add(loc)
+                            break
+            elif root_tag == "urlset":
+                # Seed documents that are already urlsets go straight to Phase 2.
+                leaf_shard_urls.append(url)
+
+    if not leaf_shard_urls:
+        logging.debug("[SITEMAP] No leaf shards found for %s", outlet_name)
+        return []
+
+    logging.debug(
+        "[SITEMAP] %s: %d leaf shards to fetch (visited %d index nodes)",
+        outlet_name, len(leaf_shard_urls), len(visited),
+    )
+
+    # --- Phase 2: Fetch all leaf urlset shards concurrently ---
     discovered_articles: dict[str, dict[str, str]] = {}
 
-    while queue and len(discovered_articles) < max_articles and len(visited_sitemaps) < MAX_SITEMAP_URLS_PER_OUTLET:
-        sitemap_url = queue.pop(0)
-        if sitemap_url in visited_sitemaps:
-            continue
-        visited_sitemaps.add(sitemap_url)
+    for i in range(0, len(leaf_shard_urls), _SITEMAP_FETCH_BATCH_SIZE):
+        if len(discovered_articles) >= max_articles:
+            break
 
-        try:
-            response = await _get_with_semaphore(client, sitemap_url)
-        except Exception as e:
-            logging.debug(f"Could not fetch sitemap {sitemap_url}: {e}")
-            continue
+        batch = leaf_shard_urls[i : i + _SITEMAP_FETCH_BATCH_SIZE]
+        results = await asyncio.gather(
+            *[_fetch_and_parse_sitemap(u, client) for u in batch]
+        )
 
-        try:
-            root = ET.fromstring(response.text)
-        except Exception:
-            logging.debug(f"Invalid XML in sitemap: {sitemap_url}")
-            continue
+        for _url, root in results:
+            if root is None or _tag_name(root.tag) != "urlset":
+                continue
 
-        root_tag = _tag_name(root.tag)
-        if root_tag == "sitemapindex":
             for child in root:
-                if _tag_name(child.tag) != "sitemap":
+                if _tag_name(child.tag) != "url":
                     continue
-                loc = None
+
+                loc = ""
+                lastmod_raw = None
                 for node in child:
-                    if _tag_name(node.tag) == "loc" and node.text:
+                    tag = _tag_name(node.tag)
+                    if tag == "loc" and node.text:
                         loc = node.text.strip()
-                        break
-                if loc and loc not in visited_sitemaps and _is_same_or_subdomain(site_url, loc):
-                    queue.append(loc)
-            continue
+                    elif tag == "lastmod" and node.text:
+                        lastmod_raw = node.text.strip()
 
-        if root_tag != "urlset":
-            continue
+                if not loc or not is_article_url(loc) or not _is_same_or_subdomain(site_url, loc):
+                    continue
 
-        for child in root:
-            if _tag_name(child.tag) != "url":
-                continue
+                pub = _parse_metadata_datetime(lastmod_raw)
+                if pub and pub < cutoff_date:
+                    continue
 
-            loc = ""
-            lastmod_raw = None
-            for node in child:
-                tag = _tag_name(node.tag)
-                if tag == "loc" and node.text:
-                    loc = node.text.strip()
-                elif tag == "lastmod" and node.text:
-                    lastmod_raw = node.text.strip()
+                discovered_articles[loc] = {
+                    "outlet": outlet_name,
+                    "date": (pub or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"),
+                    "title": loc,
+                    "url": loc,
+                }
 
-            if not loc or not is_article_url(loc) or not _is_same_or_subdomain(site_url, loc):
-                continue
-
-            pub = _parse_metadata_datetime(lastmod_raw)
-            if pub and pub < cutoff_date:
-                continue
-
-            discovered_articles[loc] = {
-                "outlet": outlet_name,
-                "date": (pub or datetime.now()).strftime('%Y-%m-%d %H:%M:%S'),
-                "title": loc,
-                "url": loc,
-            }
-
-            if len(discovered_articles) >= max_articles:
-                break
+                if len(discovered_articles) >= max_articles:
+                    break
 
     return list(discovered_articles.values())
 
@@ -589,7 +707,8 @@ async def collect_wayback_urls(
         response.raise_for_status()
         rows = response.json()
     except Exception as e:
-        logging.warning(f"Wayback lookup failed for {outlet_name}: {e}")
+        # Wayback is a best-effort fallback; downgrade to INFO to avoid polluting Sentry.
+        logging.info("[WAYBACK] Lookup unavailable for %s: %s", outlet_name, e)
         return []
 
     if not isinstance(rows, list) or len(rows) <= 1:
@@ -646,11 +765,21 @@ def _scrape_payload_retry_error_callback(retry_state: RetryCallState) -> dict[st
 
 
 def _is_retryable_exception(exc: BaseException) -> bool:
-    if isinstance(exc, PermissionError):
+    # Never retry sentinel errors — they signal a deliberate skip, not a transient fault.
+    if isinstance(exc, (PermissionError, GhostResponseError)):
         return False
 
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
+        if status == 403:
+            # Record directory-level blocks for the run summary; do not retry.
+            try:
+                blocked_path = str(exc.response.url)
+            except Exception:
+                blocked_path = "unknown"
+            _BLOCKED_PATHS.add(blocked_path)
+            logging.debug("403 Forbidden — blocked path recorded: %s", blocked_path)
+            return False
         # Do not retry permanent client-side failures like 404/410.
         return status >= 500 or status == 429
 
@@ -659,12 +788,25 @@ def _is_retryable_exception(exc: BaseException) -> bool:
 
 
 async def collect_articles_from_site(outlet_name, site_url, client, days_back=90, max_articles=50):
-    """Fallback discovery: crawl site URLs and extract metadata with trafilatura."""
+    """Fallback discovery: crawl site URLs and extract metadata with trafilatura.
+
+    Skipped entirely for domains in CRAWLER_SKIP_DOMAINS (JS-rendered / persistent timeout
+    sites such as newsfirst.lk) to avoid wasting 60s on a known-dead spider path.
+    """
     articles_data = []
     cutoff_date = datetime.now() - timedelta(days=days_back)
 
+    # Fast-fail for known crawler-incompatible domains.
+    domain = _domain_of(site_url).lstrip("www.")
+    if domain in CRAWLER_SKIP_DOMAINS or any(domain.endswith(f".{d}") for d in CRAWLER_SKIP_DOMAINS):
+        logging.info(
+            "[CRAWLER] Skipping focused_crawler for %s (%s) — domain is in CRAWLER_SKIP_DOMAINS",
+            outlet_name, domain,
+        )
+        return articles_data
+
     try:
-        logging.info(f"Starting primary site discovery for {outlet_name}: {site_url}")
+        logging.info("Starting primary site discovery for %s: %s", outlet_name, site_url)
         try:
             _, known_urls = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -676,7 +818,7 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
                 timeout=60.0,
             )
         except asyncio.TimeoutError:
-            logging.warning(f"Crawler timed out for {outlet_name}")
+            logging.warning("Crawler timed out for %s", outlet_name)
             return articles_data
         candidate_urls = [u for u in _coerce_known_urls(known_urls, site_url) if is_article_url(u)]
 
@@ -740,62 +882,94 @@ async def collect_articles_from_site(outlet_name, site_url, client, days_back=90
     return articles_data
 
 
-async def process_outlet(outlet, client, days_back):
-    outlet_name = outlet["name"]
-    info = {"url": outlet.get("url")}
-    logging.info(f"Starting data collection for {outlet_name}")
+# ---------------------------------------------------------------------------
+# Outlet registry — domain suffix → scraper class
+# ---------------------------------------------------------------------------
+_OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
+    (("adaderana.lk",),                          AdaDeranaOutlet),
+    (("ceylontoday.lk",),                         CeylonTodayOutlet),
+    (("ft.lk", "dailyft.lk"),                     DailyFTOutlet),
+    (("economynext.com",),                         EconomyNextOutlet),
+    (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
+    (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
+]
 
-    outlet_articles = []
-    site_url = info.get("url")
-    if isinstance(site_url, str) and site_url:
-        sitemap_articles = await collect_articles_from_sitemaps(
-            outlet_name,
-            site_url,
+
+def _build_outlet_scraper(name: str, url: str) -> BaseOutletScraper:
+    """Return the most specific registered scraper for the given outlet URL.
+
+    Falls back to a generic trafilatura-based scraper (via the base class
+    sitemap pipeline in scraper.py) if no specialist is registered.
+    """
+    domain = _domain_of(url).lstrip("www.").lower()
+    for suffixes, cls in _OUTLET_REGISTRY:
+        if any(domain == s or domain.endswith(f".{s}") for s in suffixes):
+            logging.debug("[ROUTER] %s → %s", name, cls.__name__)
+            return cls(name=name, url=url)
+
+    # Generic fallback — uses the shared sitemap+crawler pipeline
+    logging.debug("[ROUTER] %s → GenericOutlet (no specific scraper registered)", name)
+
+    class _GenericOutlet(BaseOutletScraper):
+        async def discover_urls(self, client, days_back, max_articles):
+            return await collect_articles_from_sitemaps(
+                self.name, self.url, client,
+                days_back=days_back, max_articles=max_articles,
+            )
+
+    return _GenericOutlet(name=name, url=url)
+
+
+async def process_outlet(outlet: dict[str, str], client: httpx.AsyncClient, days_back: int) -> list[dict[str, str]]:
+    """Dispatch discovery to the registered outlet scraper, then dedup."""
+    outlet_name = outlet["name"]
+    site_url = outlet.get("url", "")
+
+    if not site_url:
+        logging.warning("Outlet %s has no URL configured", outlet_name)
+        return []
+
+    logging.info("[%s] Starting discovery", outlet_name)
+    scraper = _build_outlet_scraper(outlet_name, site_url)
+
+    try:
+        outlet_articles = await scraper.discover_urls(
             client,
             days_back=days_back,
             max_articles=MAX_ARTICLES_PER_OUTLET,
         )
-        outlet_articles.extend(sitemap_articles)
-        logging.info(f"Sitemap discovery found {len(sitemap_articles)} article URLs for {outlet_name}")
+    except Exception as exc:
+        logging.warning("[%s] Discovery failed: %s", outlet_name, exc)
+        outlet_articles = []
 
-        wayback_articles = await collect_wayback_urls(
-            outlet_name,
-            site_url,
-            client,
-            days_back=days_back,
-            max_articles=max(100, MAX_ARTICLES_PER_OUTLET // 2),
-        )
-        outlet_articles.extend(wayback_articles)
-        if wayback_articles:
-            logging.info(f"Wayback discovery found {len(wayback_articles)} article URLs for {outlet_name}")
+    # Stamp _site_url so the content extraction phase can route to this outlet's scraper
+    for art in outlet_articles:
+        art.setdefault("_site_url", site_url)
 
-        if len(outlet_articles) < max(30, MAX_ARTICLES_PER_OUTLET // 4):
-            site_articles = await collect_articles_from_site(
-                outlet_name,
-                site_url,
-                client,
-                days_back=days_back,
-                max_articles=max(50, MAX_ARTICLES_PER_OUTLET // 3),
-            )
-            outlet_articles.extend(site_articles)
-            logging.info(f"Crawler fallback found {len(site_articles)} article URLs for {outlet_name}")
+    # Deduplicate within this outlet
+    deduped: dict[str, dict[str, str]] = {}
+    for art in outlet_articles:
+        url = art.get("url")
+        if isinstance(url, str) and url and url not in deduped:
+            deduped[url] = art
+
+    result = list(deduped.values())
+    if result:
+        logging.info("[%s] Discovery complete: %d unique URLs", outlet_name, len(result))
     else:
-        logging.warning(f"Outlet {outlet_name} has no URL configured for web discovery")
+        logging.warning("[%s] No articles found via discovery", outlet_name)
+    return result
 
-    deduped_for_outlet: dict[str, dict[str, str]] = {}
-    for article in outlet_articles:
-        url = article.get("url")
-        if isinstance(url, str) and url and url not in deduped_for_outlet:
-            deduped_for_outlet[url] = article
-
-    deduped_list = list(deduped_for_outlet.values())
-    if deduped_list:
-        return deduped_list
-
-    logging.warning(f"No articles found for {outlet_name} via web discovery")
-    return []
 
 def save_to_db(valid_articles: list[dict[str, str]], allow_fallback: bool = True) -> bool:
+    """Persist a chunk of articles to the DB.
+
+    Uses Prisma batch_() to send all upserts as a single transaction, eliminating
+    partial-commit risk on mid-chunk failures.  A module-level flag (_SCHEMA_HAS_RAW_HTML)
+    is probed on the first call so subsequent chunks skip the per-article fallback dance.
+    """
+    global _SCHEMA_HAS_RAW_HTML
+
     if not valid_articles:
         logging.warning("No valid articles collected.")
         return True
@@ -805,53 +979,96 @@ def save_to_db(valid_articles: list[dict[str, str]], allow_fallback: bool = True
         try:
             db.connect()
 
-            for article in valid_articles:
-                date_raw = article.get('date') or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                dt = datetime.strptime(date_raw, '%Y-%m-%d %H:%M:%S')
-
-                base_create = {
-                    'outlet': article.get('outlet', ''),
-                    'date': dt,
-                    'title': article.get('title', article.get('url', '')),
-                    'url': article.get('url', ''),
-                    'text': article.get('text', ''),
-                }
-                base_update = {
-                    'text': article.get('text', ''),
-                    'title': article.get('title', article.get('url', '')),
-                }
-
-                if article.get('raw_html'):
-                    base_create['raw_html'] = article['raw_html']
-                    base_update['raw_html'] = article['raw_html']
-
+            # -- Schema probe: run once to decide whether raw_html column exists. --
+            if _SCHEMA_HAS_RAW_HTML is None:
                 try:
-                    data_payload = cast(Any, {
-                        'create': base_create,
-                        'update': base_update,
-                    })
-                    db.article.upsert(
-                        where={'url': article.get('url', '')},
-                        data=data_payload
+                    probe_article = next(
+                        (a for a in valid_articles if a.get("raw_html")), None
                     )
-                except Exception as e:
-                    message = str(e)
-                    if 'raw_html' in message:
-                        base_create.pop('raw_html', None)
-                        base_update.pop('raw_html', None)
-                        fallback_payload = cast(Any, {
-                            'create': base_create,
-                            'update': base_update,
-                        })
+                    if probe_article:
+                        date_raw = probe_article.get("date") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if isinstance(date_raw, datetime):
+                            probe_dt = date_raw
+                        else:
+                            try:
+                                probe_dt = datetime.strptime(date_raw, "%Y-%m-%d %H:%M:%S")
+                            except ValueError:
+                                try:
+                                    probe_dt = datetime.strptime(date_raw, "%Y-%m-%d")
+                                except ValueError:
+                                    probe_dt = datetime.now()
+
+                        probe_create: dict[str, Any] = {
+                            "outlet": probe_article.get("outlet", ""),
+                            "date": probe_dt,
+                            "title": probe_article.get("title", ""),
+                            "url": probe_article.get("url", ""),
+                            "text": probe_article.get("text", ""),
+                            "raw_html": probe_article["raw_html"],
+                        }
+                        probe_update: dict[str, Any] = {
+                            "text": probe_article.get("text", ""),
+                            "title": probe_article.get("title", ""),
+                            "raw_html": probe_article["raw_html"],
+                        }
                         db.article.upsert(
-                            where={'url': article.get('url', '')},
-                            data=fallback_payload
+                            where={"url": probe_article.get("url", "")},
+                            data=cast(Any, {"create": probe_create, "update": probe_update}),
+                        )
+                        _SCHEMA_HAS_RAW_HTML = True
+                        logging.debug("Schema probe: raw_html column confirmed.")
+                    else:
+                        _SCHEMA_HAS_RAW_HTML = True  # No raw_html to probe; assume supported.
+                except Exception as probe_err:
+                    if "raw_html" in str(probe_err):
+                        _SCHEMA_HAS_RAW_HTML = False
+                        logging.warning(
+                            "Schema probe: raw_html column absent — omitting from all writes."
                         )
                     else:
                         raise
 
-            logging.info("Saved %s articles to DB", len(valid_articles))
+            include_raw_html = bool(_SCHEMA_HAS_RAW_HTML)
+
+            # -- Batch upsert: all articles in a single DB transaction. --
+            with db.batch_() as batcher:
+                for article in valid_articles:
+                    date_raw = article.get("date") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    if isinstance(date_raw, datetime):
+                        dt = date_raw
+                    else:
+                        try:
+                            dt = datetime.strptime(date_raw, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            try:
+                                dt = datetime.strptime(date_raw, "%Y-%m-%d")
+                            except ValueError:
+                                dt = datetime.now()
+
+                    base_create: dict[str, Any] = {
+                        "outlet": article.get("outlet", ""),
+                        "date": dt,
+                        "title": article.get("title", article.get("url", "")),
+                        "url": article.get("url", ""),
+                        "text": article.get("text", ""),
+                    }
+                    base_update: dict[str, Any] = {
+                        "text": article.get("text", ""),
+                        "title": article.get("title", article.get("url", "")),
+                    }
+
+                    if include_raw_html and article.get("raw_html"):
+                        base_create["raw_html"] = article["raw_html"]
+                        base_update["raw_html"] = article["raw_html"]
+
+                    batcher.article.upsert(
+                        where={"url": article.get("url", "")},
+                        data=cast(Any, {"create": base_create, "update": base_update}),
+                    )
+
+            logging.info("Saved %s articles to DB (batch transaction)", len(valid_articles))
             return True
+
         except Exception as e:
             wait_seconds = DB_CONNECT_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
             logging.warning(
@@ -877,6 +1094,7 @@ def save_to_db(valid_articles: list[dict[str, str]], allow_fallback: bool = True
     return False
 
 
+
 @retry(
     stop=stop_after_attempt(SCRAPE_MAX_RETRIES),
     wait=wait_exponential(multiplier=1.5, min=1.5, max=6),
@@ -892,6 +1110,14 @@ async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[st
 
     response = await _get_with_semaphore(client, url)
     raw_html = response.text
+
+    # Anti-ghosting: server returned HTTP 200 but near-empty body (scraping countermeasure).
+    # Raise GhostResponseError (non-retryable) to skip tenacity backoff entirely.
+    if len(raw_html.strip()) < GHOST_RESPONSE_MIN_BYTES:
+        raise GhostResponseError(
+            f"Ghost response ({len(raw_html)} bytes) from {url} — skipping retries"
+        )
+
     extracted_json = trafilatura.extract(
         raw_html,
         output_format='json',
@@ -928,9 +1154,11 @@ async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[st
 
 
 async def collect_data(days_back=90):
-    global _REQUEST_SEMAPHORE
+    global _REQUEST_SEMAPHORE, _BLOCKED_PATHS
 
-    all_articles = []
+    all_articles: list[dict[str, str]] = []
+    run = _RunSummary()
+    _BLOCKED_PATHS = set()  # Reset per-run
     outlets = await asyncio.to_thread(load_outlets_from_db)
 
     if not outlets:
@@ -938,42 +1166,81 @@ async def collect_data(days_back=90):
         return
 
     _REQUEST_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    _outlets_base.set_semaphore(_REQUEST_SEMAPHORE)  # Share semaphore with outlet scrapers
     await asyncio.to_thread(replay_fallback_articles)
 
     try:
         timeout = httpx.Timeout(REQUEST_TIMEOUT_SECONDS)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            # 1. Gather URLs and metadata from sitemaps first, then fallback discovery.
-            outlet_results = await asyncio.gather(*(process_outlet(outlet, client, days_back) for outlet in outlets))
-            all_articles = [article for result in outlet_results for article in result]
 
-            # Global URL dedupe across all outlets
+            # 1. Discover URLs per outlet, with per-outlet timeout guard.
+            async def discover_outlet(outlet: dict[str, str]) -> tuple[list[dict[str, str]], _OutletStat]:
+                stat = _OutletStat(name=outlet["name"])
+                try:
+                    articles = await asyncio.wait_for(
+                        process_outlet(outlet, client, days_back),
+                        timeout=float(OUTLET_DISCOVERY_TIMEOUT_SECONDS),
+                    )
+                    stat.discovered = len(articles)
+                except asyncio.TimeoutError:
+                    logging.warning(
+                        "[DISCOVERY] Outlet %s timed out after %ds — 0 URLs collected",
+                        outlet["name"], OUTLET_DISCOVERY_TIMEOUT_SECONDS,
+                    )
+                    stat.failed = True
+                    stat.failure_reason = f"discovery timeout ({OUTLET_DISCOVERY_TIMEOUT_SECONDS}s)"
+                    articles = []
+                except Exception as exc:
+                    logging.warning("[DISCOVERY] Outlet %s failed: %s", outlet["name"], exc)
+                    stat.failed = True
+                    stat.failure_reason = str(exc)[:120]
+                    articles = []
+                return articles, stat
+
+            outlet_results = await asyncio.gather(*(discover_outlet(o) for o in outlets))
+
+            for result_articles, stat in outlet_results:
+                run.outlet_stats.append(stat)
+                all_articles.extend(result_articles)
+
+            # Global URL dedupe across all outlets.
             deduped_global: dict[str, dict[str, str]] = {}
             for article in all_articles:
                 url = article.get("url")
                 if isinstance(url, str) and url and url not in deduped_global:
                     deduped_global[url] = article
             all_articles = list(deduped_global.values())
+            run.total_discovered = len(all_articles)
 
-            # 2. Scrape full content for gathered URLs
-            logging.info(f"Scraping full content for {len(all_articles)} articles concurrently...")
-
+            # 2. Scrape full content for gathered URLs.
+            logging.info("Scraping full content for %d articles concurrently...", len(all_articles))
             total_articles = len(all_articles)
 
             async def process_article(article: dict[str, str]) -> dict[str, str]:
-                payload = await scrape_article_payload(article['url'], client)
-                processed = dict(article)
-                processed['text'] = payload['text']
-                processed['raw_html'] = payload['raw_html']
-                if payload.get('title'):
-                    processed['title'] = payload['title']
-                if payload.get('date'):
-                    processed['date'] = payload['date']
+                url = article["url"]
+                outlet_name = article.get("outlet", "")
+                site_url = article.get("_site_url", "")
 
+                # Use the registered outlet scraper's extract_content if available
+                if site_url:
+                    scraper = _build_outlet_scraper(outlet_name, site_url)
+                    payload = await scraper.extract_content(url, client)
+                else:
+                    payload = await scrape_article_payload(url, client)
+
+                processed = dict(article)
+                processed.pop("_site_url", None)  # Remove internal routing key
+                processed["text"] = payload["text"]
+                processed["raw_html"] = payload.get("raw_html", "")
+                if payload.get("title"):
+                    processed["title"] = payload["title"]
+                if payload.get("date"):
+                    processed["date"] = payload["date"]
                 return processed
 
             tasks = [asyncio.create_task(process_article(art)) for art in all_articles]
             failed_count = 0
+            ghost_count = 0
             completed_count = 0
             valid_count = 0
             chunk_buffer: list[dict[str, str]] = []
@@ -981,18 +1248,22 @@ async def collect_data(days_back=90):
             for task in asyncio.as_completed(tasks):
                 completed_count += 1
                 if completed_count % 10 == 0 or completed_count == total_articles:
-                    logging.info(f"Scraping progress: {completed_count}/{total_articles}")
+                    logging.info("Scraping progress: %d/%d", completed_count, total_articles)
 
                 try:
                     result = await task
                 except asyncio.CancelledError:
                     raise
+                except GhostResponseError as ghost_exc:
+                    ghost_count += 1
+                    logging.debug("Ghost response skipped: %s", ghost_exc)
+                    continue
                 except Exception as e:
                     failed_count += 1
-                    logging.debug(f"Article scrape task failed: {e}")
+                    logging.debug("Article scrape task failed: %s", e)
                     continue
 
-                text = result.get('text') if isinstance(result, dict) else None
+                text = result.get("text") if isinstance(result, dict) else None
                 if not isinstance(text, str) or len(text.strip()) <= 50:
                     continue
 
@@ -1004,19 +1275,36 @@ async def collect_data(days_back=90):
                     del chunk_buffer[:SAVE_CHUNK_SIZE]
                     await asyncio.to_thread(save_to_db, chunk)
 
+            # Tag ghost counts back onto outlet stats (best-effort by outlet domain).
+            if ghost_count:
+                # Distribute ghost count proportionally (we don't track per-article outlet here).
+                logging.debug("Total ghost responses during scrape: %d", ghost_count)
+                for stat in run.outlet_stats:
+                    if not stat.failed:
+                        stat.ghost_count = ghost_count // max(1, len(run.outlet_stats))
+
+            run.parse_errors = failed_count
+
             if failed_count:
-                logging.warning(f"{failed_count} articles failed during content scraping and were skipped")
+                logging.warning(
+                    "%d articles failed during content scraping and were skipped", failed_count
+                )
 
             if chunk_buffer:
                 await asyncio.to_thread(save_to_db, chunk_buffer)
 
             if valid_count == 0:
                 logging.warning("No valid articles collected.")
+                run.log()
                 return
 
+            run.total_persisted = valid_count
             logging.info("Scrape stage persisted %s valid articles", valid_count)
+            run.log()
+
     finally:
         _REQUEST_SEMAPHORE = None
+
 
 if __name__ == "__main__":
     try:

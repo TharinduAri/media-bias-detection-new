@@ -121,7 +121,7 @@ def run_scraper_task():
         error=None,
     )
 
-    cmd = [sys.executable, script_path]
+    cmd = [sys.executable, "-m", "src.collection.scraper"]
     try:
         proc = subprocess.Popen(
             cmd,
@@ -129,6 +129,7 @@ def run_scraper_task():
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            cwd=backend_dir,
         )
         for line in proc.stdout:  # type: ignore
             stripped = line.rstrip()

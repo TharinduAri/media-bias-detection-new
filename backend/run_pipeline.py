@@ -24,7 +24,8 @@ STAGES = [
 
 
 def run_stage(script_path: str, python_exec: str | None = sys.executable):
-    cmd = [str(python_exec or "python"), str(script_path)]
+    module_name = script_path.replace(".py", "").replace("/", ".").replace("\\", ".")
+    cmd = [str(python_exec or "python"), "-m", module_name]
     logging.info("Running: %s", " ".join(cmd))
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     out = str(proc.stdout).strip() if proc.stdout else ""

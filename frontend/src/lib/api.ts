@@ -12,6 +12,14 @@ export interface CreateOutletPayload {
   url: string;
 }
 
+export interface OutletRegistryEntry {
+  domain: string;
+  scraper_class: string;
+  discovery: string;
+  extraction: string;
+  notes: string;
+}
+
 export interface ArticleData {
   id: number;
   outlet: string;
@@ -94,6 +102,12 @@ export async function fetchScrapeLogs(limit = 10): Promise<ScrapeRunLogData[]> {
 export async function fetchOutlets(): Promise<OutletData[]> {
   const res = await fetch(`${API_BASE_URL}/outlets/`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch outlets");
+  return res.json();
+}
+
+export async function fetchOutletRegistry(): Promise<OutletRegistryEntry[]> {
+  const res = await fetch(`${API_BASE_URL}/outlets/registry`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch outlet registry");
   return res.json();
 }
 
