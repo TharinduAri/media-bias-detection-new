@@ -6,8 +6,7 @@ import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
 const navLinks = [
-    { href: "/", label: "Dashboard" },
-    { href: "/raw-articles", label: "Raw Articles" },
+    { href: "/", label: "Scraping Workspace" },
 ];
 
 function ThemeToggle() {
@@ -54,7 +53,7 @@ export default function NavHeader() {
                 <div className="flex items-center justify-between h-16">
                     {/* Brand */}
                     <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-inner">
+                        <div className="w-8 h-8 rounded-lg bg-linear-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-inner">
                             <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                             </svg>
@@ -87,7 +86,7 @@ export default function NavHeader() {
                     `}
                                     >
                                         {isActive && (
-                                            <span className="absolute inset-x-3 bottom-0.5 h-0.5 rounded-full bg-gradient-to-r from-blue-400 to-violet-500" />
+                                            <span className="absolute inset-x-3 bottom-0.5 h-0.5 rounded-full bg-linear-to-r from-blue-400 to-violet-500" />
                                         )}
                                         {label}
                                     </Link>

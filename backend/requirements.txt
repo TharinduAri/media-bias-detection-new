@@ -1,8 +1,5 @@
 prisma
 python-dotenv
-pandas
-plotly
-spacy
 httpx
 tenacity
 trafilatura
@@ -12,4 +9,3 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 lxml_html_clean
-vaderSentiment

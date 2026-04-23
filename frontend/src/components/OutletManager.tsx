@@ -82,7 +82,7 @@ export default function OutletManager() {
     <section className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 shadow-sm transition-colors duration-200">
       <div className="mb-3">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">News Outlets</h2>
-        <p className="text-sm text-gray-600 dark:text-gray-400">Add outlets to include them in the scraping and bias pipeline.</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400">Add outlets to include them in raw article scraping.</p>
       </div>
 
       <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
