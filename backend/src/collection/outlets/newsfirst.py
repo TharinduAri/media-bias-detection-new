@@ -52,8 +52,8 @@ class NewsfirstOutlet(BaseOutletScraper):
     Does NOT use focused_crawler (permanent spider timeout for JS-rendered sites).
     """
 
-    def __init__(self, url: str):
-        super().__init__(url)
+    def __init__(self, name: str, url: str, **kwargs):
+        super().__init__(name, url)
         self._cdx_cache: dict[str, str] = {}
 
     async def discover_urls(

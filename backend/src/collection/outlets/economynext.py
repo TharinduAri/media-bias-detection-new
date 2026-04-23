@@ -97,19 +97,27 @@ class EconomyNextOutlet(BaseOutletScraper):
                     break
 
                 html = resp.text
-                # Find all h2 and h3 blocks
-                blocks = re.findall(r'<h[23][^>]*>(.*?)</h[23]>', html, flags=re.DOTALL | re.IGNORECASE)
+                import bs4
+                soup = bs4.BeautifulSoup(html, "html.parser")
+                links = soup.select("article a[href], .entry-title a[href], h2 a[href], h3 a[href]")
+                
                 page_found = 0
-                for block in blocks:
-                    matches = re.findall(r'href=[\'"](https?://(?:www\.)?economynext\.com/[^\'"]+)[\'"]', block, flags=re.IGNORECASE)
-                    for link in matches:
-                        if "?p=" in link or self.should_skip_url(link):
-                            continue
-                        if link not in articles:
-                            articles[link] = self._article_stub(link)
-                            page_found += 1
+                for a_tag in links:
+                    href = a_tag.get("href")
+                    if not href:
+                        continue
+                    
+                    from urllib.parse import urljoin
+                    link = urljoin(url, href)
+                    
+                    if "economynext.com" not in link or "?p=" in link or self.should_skip_url(link):
+                        continue
+                    if link not in articles:
+                        articles[link] = self._article_stub(link)
+                        page_found += 1
                 
                 if page_found == 0:
+                    logger.debug("[EconomyNext] 0 links found on %s. HTML snippet: %s", url, html[:500])
                     break  # No new valid links, probably empty page
                 
                 page += 1

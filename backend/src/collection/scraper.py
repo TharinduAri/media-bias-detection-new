@@ -1309,7 +1309,7 @@ async def collect_data(days_back=90):
 if __name__ == "__main__":
     try:
         # Sitemap-first web backfill for historical outlet profiling.
-        asyncio.run(collect_data(days_back=90))
+        asyncio.run(collect_data(days_back=3650))
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise
