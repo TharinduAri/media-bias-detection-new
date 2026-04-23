@@ -161,7 +161,11 @@ async def _throttle(domain: str) -> None:
     async with lock:
         now = time.monotonic()
         last = _DOMAIN_LAST_REQUEST_AT.get(domain, 0.0)
-        jitter = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+        
+        min_delay = 1.0 if "economynext.com" in domain else MIN_DELAY_SECONDS
+        max_delay = max(min_delay, MAX_DELAY_SECONDS)
+        
+        jitter = random.uniform(min_delay, max_delay)
         wait = max(0.0, (last + jitter) - now)
         if wait > 0:
             await asyncio.sleep(wait)

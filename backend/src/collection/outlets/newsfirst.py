@@ -52,6 +52,10 @@ class NewsfirstOutlet(BaseOutletScraper):
     Does NOT use focused_crawler (permanent spider timeout for JS-rendered sites).
     """
 
+    def __init__(self, url: str):
+        super().__init__(url)
+        self._cdx_cache: dict[str, str] = {}
+
     async def discover_urls(
         self,
         client: httpx.AsyncClient,
@@ -61,177 +65,82 @@ class NewsfirstOutlet(BaseOutletScraper):
         articles: dict[str, dict[str, str]] = {}
         cutoff = datetime.now() - timedelta(days=days_back)
 
-        # 1. RSS feeds
-        for path in _RSS_CANDIDATES:
+        # 1. Category listing pages
+        category_paths = ["/local", "/world", "/business", "/sports", "/latest", "/featured"]
+        for path in category_paths:
             if len(articles) >= max_articles:
-                break
-            rss_urls = await self._try_rss(client, f"{self.url}{path}", cutoff, max_articles)
-            for art in rss_urls:
-                articles[art["url"]] = art
-            if rss_urls:
-                logger.info("[Newsfirst] RSS %s yielded %d URLs", path, len(rss_urls))
-                break  # Use first working RSS feed
-
-        # 2. Standard sitemap.xml attempt (might work if WP sitemap is enabled)
-        if len(articles) < max(20, max_articles // 4):
-            sitemap_urls = await self._try_sitemap(client, cutoff, max_articles)
-            for art in sitemap_urls:
-                if art["url"] not in articles:
-                    articles[art["url"]] = art
-            if sitemap_urls:
-                logger.info("[Newsfirst] Sitemap yielded %d URLs", len(sitemap_urls))
-
-        # 3. Homepage link-scraping fallback
-        if len(articles) < max(10, max_articles // 8):
-            link_urls = await self._homepage_link_scrape(client, cutoff, max_articles)
-            for art in link_urls:
-                if art["url"] not in articles:
-                    articles[art["url"]] = art
-            if link_urls:
-                logger.info("[Newsfirst] Homepage scrape yielded %d URLs", len(link_urls))
-
-        if not articles:
-            logger.warning(
-                "[Newsfirst] All discovery strategies returned 0 URLs. "
-                "Site may be fully blocking automated access."
-            )
-        else:
-            logger.info("[Newsfirst] Total discovered: %d URLs", len(articles))
-
-        return list(articles.values())[:max_articles]
-
-    # -- RSS ---------------------------------------------------------------- #
-
-    async def _try_rss(
-        self,
-        client: httpx.AsyncClient,
-        rss_url: str,
-        cutoff: datetime,
-        max_articles: int,
-    ) -> list[dict[str, str]]:
-        import xml.etree.ElementTree as ET
-        try:
-            resp = await fetch(client, rss_url)
-            root = ET.fromstring(resp.text)
-        except Exception as exc:
-            logger.debug("[Newsfirst] RSS %s unavailable: %s", rss_url, exc)
-            return []
-
-        items: list[dict[str, str]] = []
-        channel = root.find("channel")
-        entries = channel.findall("item") if channel is not None else root.findall(".//item")
-        for item in entries:
-            link_el = item.find("link")
-            pub_el = item.find("pubDate")
-            title_el = item.find("title")
-            url = (link_el.text or "").strip() if link_el is not None else ""
-            if not url or self.should_skip_url(url):
-                continue
-            pub = self._parse_dt(pub_el.text if pub_el is not None else None)
-            if pub and pub < cutoff:
-                continue
-            title = (title_el.text or "").strip() if title_el is not None else ""
-            items.append(self._article_stub(url, pub, title))
-            if len(items) >= max_articles:
-                break
-
-        return items
-
-    # -- Sitemap ------------------------------------------------------------ #
-
-    async def _try_sitemap(
-        self, client: httpx.AsyncClient, cutoff: datetime, max_articles: int
-    ) -> list[dict[str, str]]:
-        root = await self._fetch_xml(client, f"{self.url}/wp-sitemap.xml")
-        if root is None:
-            root = await self._fetch_xml(client, f"{self.url}/sitemap.xml")
-        if root is None:
-            return []
-
-        urls: dict[str, dict[str, str]] = {}
-        tag = self._tag(root.tag)
-        if tag == "sitemapindex":
-            # Only follow post shards, not taxonomy/etc.
-            import asyncio
-            shard_urls = []
-            for child in root:
-                if self._tag(child.tag) != "sitemap":
-                    continue
-                for node in child:
-                    if self._tag(node.tag) == "loc" and node.text:
-                        loc = node.text.strip()
-                        if "posts-post" in loc or "post-sitemap" in loc:
-                            shard_urls.append(loc)
-            shard_roots = await asyncio.gather(
-                *[self._fetch_xml(client, u) for u in shard_urls[:10]]
-            )
-            for shard in shard_roots:
-                if shard is None or self._tag(shard.tag) != "urlset":
-                    continue
-                self._parse_urlset(shard, cutoff, urls, max_articles)
-        elif tag == "urlset":
-            self._parse_urlset(root, cutoff, urls, max_articles)
-
-        return list(urls.values())
-
-    def _parse_urlset(
-        self, root: object, cutoff: datetime,
-        urls: dict[str, dict[str, str]], max_articles: int
-    ) -> None:
-        import xml.etree.ElementTree as ET
-        assert isinstance(root, ET.Element)
-        for child in root:
-            if self._tag(child.tag) != "url":
-                continue
-            loc = lastmod = None
-            for node in child:
-                t = self._tag(node.tag)
-                if t == "loc" and node.text:
-                    loc = node.text.strip()
-                elif t == "lastmod" and node.text:
-                    lastmod = node.text.strip()
-            if not loc or self.should_skip_url(loc):
-                continue
-            pub = self._parse_dt(lastmod)
-            if pub and pub < cutoff:
-                continue
-            urls[loc] = self._article_stub(loc, pub)
-            if len(urls) >= max_articles:
-                break
-
-    # -- Homepage link-scraping fallback ------------------------------------ #
-
-    async def _homepage_link_scrape(
-        self, client: httpx.AsyncClient, cutoff: datetime, max_articles: int
-    ) -> list[dict[str, str]]:
-        urls: dict[str, dict[str, str]] = {}
-        for path in _CATEGORY_PATHS:
-            if len(urls) >= max_articles:
                 break
             try:
                 resp = await fetch(client, f"{self.url}{path}")
                 html = resp.text
             except Exception as exc:
-                logger.debug("[Newsfirst] Link-scrape %s failed: %s", path, exc)
+                logger.debug("[Newsfirst] Category scrape %s failed: %s", path, exc)
                 continue
 
             for match in _ARTICLE_URL_RE.finditer(html):
                 candidate = match.group(0).rstrip('"\'')
-                if candidate in urls or self.should_skip_url(candidate):
+                if candidate in articles or self.should_skip_url(candidate):
                     continue
-                urls[candidate] = self._article_stub(candidate)
-                if len(urls) >= max_articles:
-                    break
+                articles[candidate] = self._article_stub(candidate)
 
-        return list(urls.values())
+        logger.info("[Newsfirst] Discovered %d URLs via category scrape", len(articles))
+
+        # 2. Wayback CDX API
+        if len(articles) < max_articles:
+            cdx_url = (
+                "https://web.archive.org/cdx/search/cdx"
+                "?url=english.newsfirst.lk/*"
+                "&output=json&fl=timestamp,original"
+                "&filter=statuscode:200&filter=mimetype:text/html"
+                "&collapse=urlkey&from=20130101&to=20261231"
+                f"&limit={max_articles}&offset=0"
+            )
+            try:
+                resp = await client.get(cdx_url, timeout=20.0)
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 1:
+                    for row in data[1:]:
+                        if len(row) >= 2:
+                            ts, orig_url = row[0], row[1]
+                            if re.search(r'english\.newsfirst\.lk/20\d\d/\d\d/\d\d/', orig_url):
+                                if orig_url not in articles and not self.should_skip_url(orig_url):
+                                    self._cdx_cache[orig_url] = ts
+                                    articles[orig_url] = self._article_stub(orig_url)
+                                    if len(articles) >= max_articles:
+                                        break
+            except Exception as exc:
+                logger.debug("[Newsfirst] CDX fetch failed: %s", exc)
+
+        logger.info("[Newsfirst] Total discovered: %d URLs", len(articles))
+        return list(articles.values())[:max_articles]
 
     # -- Content extraction ------------------------------------------------- #
 
     async def extract_content(
         self, url: str, client: httpx.AsyncClient
     ) -> dict[str, str]:
-        resp = await fetch(client, url, follow_redirects=True)
-        raw_html = resp.text
+        import trafilatura
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        try:
+            # 20s timeout as requested
+            resp = await client.get(url, follow_redirects=True, timeout=20.0, headers=headers)
+            resp.raise_for_status()
+            raw_html = resp.text
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                ts = self._cdx_cache.get(url)
+                if ts:
+                    archive_url = f"https://web.archive.org/web/{ts}/{url}"
+                    logger.debug("[Newsfirst] 404 on live URL, falling back to Wayback: %s", archive_url)
+                    resp = await client.get(archive_url, follow_redirects=True, timeout=20.0, headers=headers)
+                    resp.raise_for_status()
+                    raw_html = resp.text
+                else:
+                    raise
+            else:
+                raise
+
         result = extract_with_trafilatura(raw_html, url)
         result["raw_html"] = raw_html
         return result

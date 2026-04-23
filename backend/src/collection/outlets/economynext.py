@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 
 import httpx
@@ -73,117 +74,48 @@ class EconomyNextOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
         cutoff = datetime.now() - timedelta(days=days_back)
+        
+        categories = [
+            "economy", "finance/banking", "markets/stocks-companies", "politics",
+            "business", "energy", "logistics", "world", "opinion", "sci-tech/ict", "culture/sports"
+        ]
 
-        # Primary: WordPress sitemap index
-        wp_urls = await self._wp_sitemap_discover(client, days_back, max_articles)
-        for art in wp_urls:
-            articles[art["url"]] = art
-        logger.info("[EconomyNext] WP sitemap: %d URLs", len(articles))
+        # Step 1 & 2: Iterate categories and paginate to exhaustion
+        for cat in categories:
+            page = 1
+            while len(articles) < max_articles:
+                url = f"{self.url}/{cat}/page/{page}/"
+                try:
+                    resp = await fetch(client, url, extra_headers=_BROWSER_HEADERS)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        break  # Exhausted this category
+                    logger.debug("[EconomyNext] HTTP error %s on %s", exc.response.status_code, url)
+                    break
+                except Exception as exc:
+                    logger.debug("[EconomyNext] Error fetching %s: %s", url, exc)
+                    break
 
-        # Fallback: RSS if sitemap was thin
-        if len(articles) < max(20, max_articles // 6):
-            rss_urls = await self._rss_discover(client, days_back, max_articles - len(articles))
-            for art in rss_urls:
-                if art["url"] not in articles:
-                    articles[art["url"]] = art
-            if rss_urls:
-                logger.info("[EconomyNext] RSS added %d URLs", len(rss_urls))
+                html = resp.text
+                # Find all h2 and h3 blocks
+                blocks = re.findall(r'<h[23][^>]*>(.*?)</h[23]>', html, flags=re.DOTALL | re.IGNORECASE)
+                page_found = 0
+                for block in blocks:
+                    matches = re.findall(r'href=[\'"](https?://(?:www\.)?economynext\.com/[^\'"]+)[\'"]', block, flags=re.IGNORECASE)
+                    for link in matches:
+                        if "?p=" in link or self.should_skip_url(link):
+                            continue
+                        if link not in articles:
+                            articles[link] = self._article_stub(link)
+                            page_found += 1
+                
+                if page_found == 0:
+                    break  # No new valid links, probably empty page
+                
+                page += 1
 
+        logger.info("[EconomyNext] Discovered %d URLs via category pagination", len(articles))
         return list(articles.values())[:max_articles]
-
-    # -- WordPress sitemap -------------------------------------------------- #
-
-    async def _wp_sitemap_discover(
-        self, client: httpx.AsyncClient, days_back: int, max_articles: int
-    ) -> list[dict[str, str]]:
-        cutoff = datetime.now() - timedelta(days=days_back)
-        index_root = await self._fetch_xml(client, f"{self.url}/wp-sitemap.xml")
-        if index_root is None:
-            return []
-
-        # Collect all post shards from the index
-        shard_urls: list[str] = []
-        if self._tag(index_root.tag) == "sitemapindex":
-            for child in index_root:
-                if self._tag(child.tag) != "sitemap":
-                    continue
-                for node in child:
-                    if self._tag(node.tag) == "loc" and node.text:
-                        loc = node.text.strip()
-                        # Only take post shards, skip taxonomy/page shards
-                        if "posts-post" in loc:
-                            shard_urls.append(loc)
-        elif self._tag(index_root.tag) == "urlset":
-            shard_urls = [f"{self.url}/wp-sitemap.xml"]
-
-        if not shard_urls:
-            return []
-
-        # Fetch shards concurrently in batches of 20
-        articles: dict[str, dict[str, str]] = {}
-        batch_size = 20
-        for i in range(0, len(shard_urls), batch_size):
-            if len(articles) >= max_articles:
-                break
-            batch = shard_urls[i:i + batch_size]
-            roots = await asyncio.gather(*[self._fetch_xml(client, u) for u in batch])
-            for root in roots:
-                if root is None or self._tag(root.tag) != "urlset":
-                    continue
-                for child in root:
-                    if self._tag(child.tag) != "url":
-                        continue
-                    loc = lastmod = None
-                    for node in child:
-                        t = self._tag(node.tag)
-                        if t == "loc" and node.text:
-                            loc = node.text.strip()
-                        elif t == "lastmod" and node.text:
-                            lastmod = node.text.strip()
-                    if not loc or self.should_skip_url(loc):
-                        continue
-                    pub = self._parse_dt(lastmod)
-                    if pub and pub < cutoff:
-                        continue
-                    articles[loc] = self._article_stub(loc, pub)
-                    if len(articles) >= max_articles:
-                        break
-
-        return list(articles.values())
-
-    # -- RSS fallback ------------------------------------------------------- #
-
-    async def _rss_discover(
-        self, client: httpx.AsyncClient, days_back: int, max_articles: int
-    ) -> list[dict[str, str]]:
-        import xml.etree.ElementTree as ET
-        cutoff = datetime.now() - timedelta(days=days_back)
-        try:
-            resp = await fetch(client, f"{self.url}/feed",
-                               extra_headers=_BROWSER_HEADERS)
-            root = ET.fromstring(resp.text)
-        except Exception as exc:
-            logger.debug("[EconomyNext] RSS fallback failed: %s", exc)
-            return []
-
-        items: list[dict[str, str]] = []
-        channel = root.find("channel")
-        entries = channel.findall("item") if channel is not None else []
-        for item in entries:
-            link_el = item.find("link")
-            pub_el = item.find("pubDate")
-            title_el = item.find("title")
-            url = (link_el.text or "").strip() if link_el is not None else ""
-            if not url or self.should_skip_url(url):
-                continue
-            pub = self._parse_dt(pub_el.text if pub_el is not None else None)
-            if pub and pub < cutoff:
-                continue
-            title = (title_el.text or "").strip() if title_el is not None else ""
-            items.append(self._article_stub(url, pub, title))
-            if len(items) >= max_articles:
-                break
-        return items
 
     # -- Content extraction ------------------------------------------------- #
 
