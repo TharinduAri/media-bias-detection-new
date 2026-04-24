@@ -12,7 +12,7 @@ from .outlets import (
     AdaDeranaOutlet,
     CeylonTodayOutlet,
     DailyFTOutlet,
-    EconomyNextOutlet,
+    # EconomyNextOutlet,
     LBOOutlet,
     NewsfirstOutlet,
     BaseOutletScraper,
@@ -116,7 +116,7 @@ _OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
     (("adaderana.lk",),                          AdaDeranaOutlet),
     (("ceylontoday.lk",),                         CeylonTodayOutlet),
     (("ft.lk", "dailyft.lk"),                     DailyFTOutlet),
-    (("economynext.com",),                         EconomyNextOutlet),
+    # (("economynext.com",),                         EconomyNextOutlet),
     (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
     (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
 ]

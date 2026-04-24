@@ -61,6 +61,10 @@ _BROWSER_HEADERS = {
 class EconomyNextOutlet(BaseOutletScraper):
     """Economy Next (economynext.com) — adversarial WordPress scraper."""
 
+    def __init__(self, name: str, url: str, **kwargs):
+        super().__init__(name, url)
+        self._cdx_cache: dict[str, str] = {}
+
     def should_skip_url(self, url: str) -> bool:
         if not super().should_skip_url(url) is False:
             return True
@@ -75,59 +79,32 @@ class EconomyNextOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
         
-        # 1. Try RSS feed
+        # 1. Wayback CDX API (Live site returns 403 Forbidden for discovery)
+        cdx_url = (
+            "https://web.archive.org/cdx/search/cdx"
+            "?url=economynext.com/*"
+            "&output=json&fl=timestamp,original"
+            "&filter=statuscode:200&filter=mimetype:text/html"
+            "&collapse=urlkey&from=20230101&to=20261231"
+            f"&limit={max_articles}&offset=0"
+        )
         try:
-            resp = await fetch(client, f"{self.url}/feed", extra_headers=_BROWSER_HEADERS)
-            import xml.etree.ElementTree as ET
-            # Use raw string or remove namespaces manually if needed, but standard XML usually works with .//item
-            root = ET.fromstring(resp.text)
-            for item in root.findall(".//item"):
-                link = item.findtext("link")
-                if link and not self.should_skip_url(link):
-                    if link not in articles:
-                        articles[link] = self._article_stub(link)
-                if len(articles) >= max_articles:
-                    break
+            resp = await client.get(cdx_url, timeout=20.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 1:
+                for row in data[1:]:
+                    if len(row) >= 2:
+                        ts, orig_url = row[0], row[1]
+                        if not self.should_skip_url(orig_url) and orig_url not in articles:
+                            self._cdx_cache[orig_url] = ts
+                            articles[orig_url] = self._article_stub(orig_url)
+                            if len(articles) >= max_articles:
+                                break
         except Exception as exc:
-            logger.debug("[EconomyNext] RSS feed fetch failed: %s", exc)
+            logger.debug("[EconomyNext] CDX fetch failed: %s", exc)
 
-        # 2. Try Sitemap Index if RSS did not return enough URLs
-        if len(articles) < max_articles:
-            try:
-                resp = await fetch(client, f"{self.url}/sitemap_index.xml", extra_headers=_BROWSER_HEADERS)
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(resp.text)
-                
-                # Sitemaps use namespaces
-                ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-                sitemaps = root.findall(".//sm:sitemap", namespaces=ns)
-                
-                # Fetch recent post sitemaps
-                for sitemap in sitemaps:
-                    loc = sitemap.findtext("sm:loc", namespaces=ns)
-                    if loc and "post" in loc:
-                        try:
-                            await asyncio.sleep(2.5)  # 2.5s delay to prevent rate limit / HTTP 500
-                            sub_resp = await fetch(client, loc, extra_headers=_BROWSER_HEADERS)
-                            sub_root = ET.fromstring(sub_resp.text)
-                            urls = sub_root.findall(".//sm:url", namespaces=ns)
-                            
-                            for url_tag in urls:
-                                link = url_tag.findtext("sm:loc", namespaces=ns)
-                                if link and not self.should_skip_url(link):
-                                    if link not in articles:
-                                        articles[link] = self._article_stub(link)
-                                if len(articles) >= max_articles:
-                                    break
-                        except Exception as e:
-                            logger.debug("[EconomyNext] Failed to fetch sub-sitemap %s: %s", loc, e)
-                    
-                    if len(articles) >= max_articles:
-                        break
-            except Exception as exc:
-                logger.debug("[EconomyNext] Sitemap fetch failed: %s", exc)
-
-        logger.info("[EconomyNext] Total discovered: %d URLs", len(articles))
+        logger.info("[EconomyNext] Total discovered: %d URLs via Wayback Machine", len(articles))
         return list(articles.values())[:max_articles]
 
     # -- Content extraction ------------------------------------------------- #
@@ -136,9 +113,23 @@ class EconomyNextOutlet(BaseOutletScraper):
         self, url: str, client: httpx.AsyncClient
     ) -> dict[str, str]:
         """Economy Next-specific extraction with ghost detection and browser headers."""
-        resp = await fetch(client, url, extra_headers=_BROWSER_HEADERS,
-                           follow_redirects=True)
-        raw_html = resp.text
+        try:
+            resp = await fetch(client, url, extra_headers=_BROWSER_HEADERS,
+                               follow_redirects=True)
+            raw_html = resp.text
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 404, 500, 503):
+                ts = self._cdx_cache.get(url)
+                if ts:
+                    archive_url = f"https://web.archive.org/web/{ts}/{url}"
+                    logger.debug("[EconomyNext] %d on live URL, falling back to Wayback: %s", exc.response.status_code, archive_url)
+                    resp = await client.get(archive_url, follow_redirects=True, timeout=20.0, headers=_BROWSER_HEADERS)
+                    resp.raise_for_status()
+                    raw_html = resp.text
+                else:
+                    raise
+            else:
+                raise
 
         # Economy Next ghost: 200 OK with tiny body — raise non-retryable sentinel
         if len(raw_html.strip()) < _EN_GHOST_THRESHOLD:
