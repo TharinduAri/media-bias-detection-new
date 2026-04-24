@@ -34,10 +34,10 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from .base import (
-    BaseOutletScraper, GhostResponseError, fetch,
-    extract_with_trafilatura, _domain_of,
-)
+from .base import BaseOutletScraper
+from src.collection.core.http_client import GhostResponseError, fetch
+from src.collection.core.extraction import extract_with_trafilatura
+from src.collection.core.utils import domain_of
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +49,11 @@ _CIRCUIT_BREAKER_RATIO = 0.50
 _EN_GHOST_THRESHOLD = 500   # Economy Next ghosted pages tend to be < 500 bytes
 
 _BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://economynext.com/",
-    "Sec-Fetch-Site": "same-origin",
+    "Referer": "https://google.com",
+    "Sec-Fetch-Site": "cross-site",
     "Sec-Fetch-Mode": "navigate",
 }
 
@@ -73,56 +74,60 @@ class EconomyNextOutlet(BaseOutletScraper):
         max_articles: int,
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
-        cutoff = datetime.now() - timedelta(days=days_back)
         
-        categories = [
-            "economy", "finance/banking", "markets/stocks-companies", "politics",
-            "business", "energy", "logistics", "world", "opinion", "sci-tech/ict", "culture/sports"
-        ]
-
-        # Step 1 & 2: Iterate categories and paginate to exhaustion
-        for cat in categories:
-            page = 1
-            while len(articles) < max_articles:
-                url = f"{self.url}/{cat}/page/{page}/"
-                try:
-                    resp = await fetch(client, url, extra_headers=_BROWSER_HEADERS)
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 404:
-                        break  # Exhausted this category
-                    logger.debug("[EconomyNext] HTTP error %s on %s", exc.response.status_code, url)
-                    break
-                except Exception as exc:
-                    logger.debug("[EconomyNext] Error fetching %s: %s", url, exc)
-                    break
-
-                html = resp.text
-                import bs4
-                soup = bs4.BeautifulSoup(html, "html.parser")
-                links = soup.select("article a[href], .entry-title a[href], h2 a[href], h3 a[href]")
-                
-                page_found = 0
-                for a_tag in links:
-                    href = a_tag.get("href")
-                    if not href:
-                        continue
-                    
-                    from urllib.parse import urljoin
-                    link = urljoin(url, href)
-                    
-                    if "economynext.com" not in link or "?p=" in link or self.should_skip_url(link):
-                        continue
+        # 1. Try RSS feed
+        try:
+            resp = await fetch(client, f"{self.url}/feed", extra_headers=_BROWSER_HEADERS)
+            import xml.etree.ElementTree as ET
+            # Use raw string or remove namespaces manually if needed, but standard XML usually works with .//item
+            root = ET.fromstring(resp.text)
+            for item in root.findall(".//item"):
+                link = item.findtext("link")
+                if link and not self.should_skip_url(link):
                     if link not in articles:
                         articles[link] = self._article_stub(link)
-                        page_found += 1
-                
-                if page_found == 0:
-                    logger.debug("[EconomyNext] 0 links found on %s. HTML snippet: %s", url, html[:500])
-                    break  # No new valid links, probably empty page
-                
-                page += 1
+                if len(articles) >= max_articles:
+                    break
+        except Exception as exc:
+            logger.debug("[EconomyNext] RSS feed fetch failed: %s", exc)
 
-        logger.info("[EconomyNext] Discovered %d URLs via category pagination", len(articles))
+        # 2. Try Sitemap Index if RSS did not return enough URLs
+        if len(articles) < max_articles:
+            try:
+                resp = await fetch(client, f"{self.url}/sitemap_index.xml", extra_headers=_BROWSER_HEADERS)
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(resp.text)
+                
+                # Sitemaps use namespaces
+                ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+                sitemaps = root.findall(".//sm:sitemap", namespaces=ns)
+                
+                # Fetch recent post sitemaps
+                for sitemap in sitemaps:
+                    loc = sitemap.findtext("sm:loc", namespaces=ns)
+                    if loc and "post" in loc:
+                        try:
+                            await asyncio.sleep(2.5)  # 2.5s delay to prevent rate limit / HTTP 500
+                            sub_resp = await fetch(client, loc, extra_headers=_BROWSER_HEADERS)
+                            sub_root = ET.fromstring(sub_resp.text)
+                            urls = sub_root.findall(".//sm:url", namespaces=ns)
+                            
+                            for url_tag in urls:
+                                link = url_tag.findtext("sm:loc", namespaces=ns)
+                                if link and not self.should_skip_url(link):
+                                    if link not in articles:
+                                        articles[link] = self._article_stub(link)
+                                if len(articles) >= max_articles:
+                                    break
+                        except Exception as e:
+                            logger.debug("[EconomyNext] Failed to fetch sub-sitemap %s: %s", loc, e)
+                    
+                    if len(articles) >= max_articles:
+                        break
+            except Exception as exc:
+                logger.debug("[EconomyNext] Sitemap fetch failed: %s", exc)
+
+        logger.info("[EconomyNext] Total discovered: %d URLs", len(articles))
         return list(articles.values())[:max_articles]
 
     # -- Content extraction ------------------------------------------------- #

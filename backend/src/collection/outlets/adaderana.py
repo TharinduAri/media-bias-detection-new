@@ -20,7 +20,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .base import BaseOutletScraper, GhostResponseError, fetch, extract_with_trafilatura
+from .base import BaseOutletScraper
+from src.collection.core.http_client import GhostResponseError, fetch
+from src.collection.core.extraction import extract_with_trafilatura
 
 logger = logging.getLogger(__name__)
 

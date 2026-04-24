@@ -31,7 +31,9 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from .base import BaseOutletScraper, fetch, extract_with_trafilatura
+from .base import BaseOutletScraper
+from src.collection.core.http_client import fetch
+from src.collection.core.extraction import extract_with_trafilatura
 
 logger = logging.getLogger(__name__)
 
@@ -63,29 +65,62 @@ class NewsfirstOutlet(BaseOutletScraper):
         max_articles: int,
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
-        cutoff = datetime.now() - timedelta(days=days_back)
 
-        # 1. Category listing pages
-        category_paths = ["/local", "/world", "/business", "/sports", "/latest", "/featured"]
-        for path in category_paths:
-            if len(articles) >= max_articles:
-                break
-            try:
-                resp = await fetch(client, f"{self.url}{path}")
-                html = resp.text
-            except Exception as exc:
-                logger.debug("[Newsfirst] Category scrape %s failed: %s", path, exc)
-                continue
+        # 1. RSS Feed First (Most Reliable)
+        try:
+            resp = await fetch(client, f"{self.url}/feed")
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.text)
+            for item in root.findall(".//item"):
+                link = item.findtext("link")
+                if link and not self.should_skip_url(link):
+                    if link not in articles:
+                        articles[link] = self._article_stub(link)
+                if len(articles) >= max_articles:
+                    break
+            logger.info("[Newsfirst] Discovered %d URLs via RSS feed", len(articles))
+        except Exception as exc:
+            logger.debug("[Newsfirst] RSS feed fetch failed: %s", exc)
 
-            for match in _ARTICLE_URL_RE.finditer(html):
-                candidate = match.group(0).rstrip('"\'')
-                if candidate in articles or self.should_skip_url(candidate):
-                    continue
-                articles[candidate] = self._article_stub(candidate)
+        # 2. Category listing pages with specific CSS selectors (Fallback)
+        if len(articles) < max_articles:
+            category_paths = ["/local", "/world", "/business", "/sports", "/latest", "/featured"]
+            for path in category_paths:
+                if len(articles) >= max_articles:
+                    break
+                try:
+                    resp = await fetch(client, f"{self.url}{path}")
+                    html = resp.text
+                    import bs4
+                    soup = bs4.BeautifulSoup(html, "html.parser")
+                    
+                    # Target specific headline containers as per instructions
+                    links = soup.select(".news-block-one a[href], .news-block-two a[href], div.news-block-one > div.inner-box > div.lower-content > h3 > a")
+                    
+                    for a_tag in links:
+                        href = a_tag.get("href")
+                        if not href:
+                            continue
+                            
+                        from urllib.parse import urljoin
+                        candidate = urljoin(f"{self.url}{path}", href)
+                        
+                        if _ARTICLE_URL_RE.match(candidate):
+                            if candidate not in articles and not self.should_skip_url(candidate):
+                                articles[candidate] = self._article_stub(candidate)
+                                
+                    # Also try the regex as an ultimate fallback on the page HTML
+                    for match in _ARTICLE_URL_RE.finditer(html):
+                        candidate = match.group(0).rstrip('"\'')
+                        if candidate not in articles and not self.should_skip_url(candidate):
+                            articles[candidate] = self._article_stub(candidate)
+                            
+                except Exception as exc:
+                    logger.debug("[Newsfirst] Category scrape %s failed: %s", path, exc)
 
-        logger.info("[Newsfirst] Discovered %d URLs via category scrape", len(articles))
+            logger.info("[Newsfirst] Discovered %d URLs total after category scrape", len(articles))
 
-        # 2. Wayback CDX API
+        # 3. Wayback CDX API
         if len(articles) < max_articles:
             cdx_url = (
                 "https://web.archive.org/cdx/search/cdx"
