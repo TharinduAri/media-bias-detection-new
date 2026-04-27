@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 
 import httpx
@@ -33,6 +34,7 @@ SCRAPE_MAX_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 12
 MAX_CONCURRENT_REQUESTS = 10
 MAX_ARTICLES_PER_OUTLET = int(os.getenv("MAX_ARTICLES_PER_OUTLET", "300"))
+DAYS_BACK = int(os.getenv("DAYS_BACK", "28"))
 SAVE_CHUNK_SIZE = int(os.getenv("SAVE_CHUNK_SIZE", "100"))
 OUTLET_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv("OUTLET_DISCOVERY_TIMEOUT_SECONDS", "300"))
 
@@ -162,6 +164,32 @@ async def process_outlet(outlet: dict[str, str], client: httpx.AsyncClient, days
         logging.warning("[%s] Discovery failed: %s", outlet_name, exc)
         outlet_articles = []
 
+    # Date filter safety net — catches any articles that outlet-level scrapers
+    # failed to filter by date themselves
+    from datetime import timezone as _tz
+    _cutoff = datetime.now(_tz.utc) - timedelta(days=days_back)
+    _filtered = []
+    _skipped = 0
+    for _art in outlet_articles:
+        _raw_date = _art.get("date")
+        if _raw_date:
+            try:
+                _parsed = datetime.fromisoformat(str(_raw_date))
+                if _parsed.tzinfo is None:
+                    _parsed = _parsed.replace(tzinfo=_tz.utc)
+                if _parsed < _cutoff:
+                    _skipped += 1
+                    continue
+            except (ValueError, TypeError):
+                pass  # Unparseable date — keep article, do not silently drop
+        _filtered.append(_art)
+    if _skipped:
+        logging.info(
+            "[%s] Date filter dropped %d articles older than %d days",
+            outlet_name, _skipped, days_back,
+        )
+    outlet_articles = _filtered
+
     for art in outlet_articles:
         art.setdefault("_site_url", site_url)
 
@@ -198,7 +226,7 @@ async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[st
     return extract_with_trafilatura(raw_html, url)
 
 
-async def collect_data(days_back=90):
+async def collect_data(days_back=DAYS_BACK):
     all_articles: list[dict[str, str]] = []
     run = _RunSummary()
     clear_blocked_paths()
@@ -346,7 +374,7 @@ async def collect_data(days_back=90):
 
 if __name__ == "__main__":
     try:
-        asyncio.run(collect_data(days_back=3650))
+        asyncio.run(collect_data(days_back=DAYS_BACK))
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise

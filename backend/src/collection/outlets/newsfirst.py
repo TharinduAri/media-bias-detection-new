@@ -71,11 +71,21 @@ class NewsfirstOutlet(BaseOutletScraper):
             resp = await fetch(client, f"{self.url}/feed")
             import xml.etree.ElementTree as ET
             root = ET.fromstring(resp.text)
+            from datetime import timezone as _tz
+            _cutoff = datetime.now(_tz.utc) - timedelta(days=days_back)
             for item in root.findall(".//item"):
                 link = item.findtext("link")
-                if link and not self.should_skip_url(link):
-                    if link not in articles:
-                        articles[link] = self._article_stub(link)
+                if not link or self.should_skip_url(link):
+                    continue
+                pub_raw = item.findtext("pubDate")
+                pub = self._parse_dt(pub_raw)
+                if pub:
+                    if pub.tzinfo is None:
+                        pub = pub.replace(tzinfo=_tz.utc)
+                    if pub < _cutoff:
+                        continue
+                if link not in articles:
+                    articles[link] = self._article_stub(link, pub)
                 if len(articles) >= max_articles:
                     break
             logger.info("[Newsfirst] Discovered %d URLs via RSS feed", len(articles))
@@ -122,12 +132,16 @@ class NewsfirstOutlet(BaseOutletScraper):
 
         # 3. Wayback CDX API
         if len(articles) < max_articles:
+            from datetime import timezone as _tz
+            _now = datetime.now(_tz.utc)
+            _since = (_now - timedelta(days=days_back)).strftime("%Y%m%d")
+            _until = _now.strftime("%Y%m%d")
             cdx_url = (
                 "https://web.archive.org/cdx/search/cdx"
                 "?url=english.newsfirst.lk/*"
                 "&output=json&fl=timestamp,original"
                 "&filter=statuscode:200&filter=mimetype:text/html"
-                "&collapse=urlkey&from=20130101&to=20261231"
+                f"&collapse=urlkey&from={_since}&to={_until}"
                 f"&limit={max_articles}&offset=0"
             )
             try:

@@ -80,12 +80,16 @@ class EconomyNextOutlet(BaseOutletScraper):
         articles: dict[str, dict[str, str]] = {}
         
         # 1. Wayback CDX API (Live site returns 403 Forbidden for discovery)
+        from datetime import timezone as _tz
+        _now = datetime.now(_tz.utc)
+        _since = (_now - timedelta(days=days_back)).strftime("%Y%m%d")
+        _until = _now.strftime("%Y%m%d")
         cdx_url = (
             "https://web.archive.org/cdx/search/cdx"
             "?url=economynext.com/*"
             "&output=json&fl=timestamp,original"
             "&filter=statuscode:200&filter=mimetype:text/html"
-            "&collapse=urlkey&from=20230101&to=20261231"
+            f"&collapse=urlkey&from={_since}&to={_until}"
             f"&limit={max_articles}&offset=0"
         )
         try:
