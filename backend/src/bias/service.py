@@ -228,7 +228,10 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
                 stats["sentiment_bias_sum"] += bias_score
                 stats["sentiment_score_sum"] += sentiment.score
                 stats["articles_scored"] += 1
-                stats["topics_covered"] += 1
+
+            # Count unique topics covered by each outlet
+            for outlet in cluster_outlets:
+                outlet_stats[outlet]["topics_covered"] += 1
 
             if coverage_majority:
                 for outlet in outlets:

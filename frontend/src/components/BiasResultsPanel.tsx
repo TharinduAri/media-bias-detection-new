@@ -61,13 +61,13 @@ export default function BiasResultsPanel({ outlets }: Props) {
   const profileStats = useMemo(() => {
     if (!profile) return [] as Array<{ label: string; value: string }>;
     return [
-      { label: "Sentiment bias avg", value: profile.sentiment_bias_avg.toFixed(3) },
-      { label: "Sentiment score avg", value: profile.sentiment_score_avg.toFixed(3) },
-      { label: "Articles scored", value: String(profile.articles_scored) },
-      { label: "Topics covered", value: String(profile.topics_covered) },
-      { label: "Topics considered", value: String(profile.topics_considered) },
-      { label: "Coverage missing (majority)", value: String(profile.coverage_missing_majority) },
-      { label: "Coverage bias rate", value: profile.coverage_bias_rate.toFixed(3) },
+      { label: "Sentiment bias avg", description: "Avg. difference from group mean", value: profile.sentiment_bias_avg.toFixed(3) },
+      { label: "Sentiment score avg", description: "Avg. raw sentiment score", value: profile.sentiment_score_avg.toFixed(3) },
+      { label: "Articles scored", description: "Total articles analyzed", value: String(profile.articles_scored) },
+      { label: "Topics covered", description: "Topics with at least one article", value: String(profile.topics_covered) },
+      { label: "Topics considered", description: "Major topics analyzed in window", value: String(profile.topics_considered) },
+      { label: "Coverage missing (majority)", description: "Major topics missed by this outlet", value: String(profile.coverage_missing_majority) },
+      { label: "Coverage bias rate", description: "Ratio of missed major topics", value: profile.coverage_bias_rate.toFixed(3) },
     ];
   }, [profile]);
 
@@ -206,9 +206,14 @@ export default function BiasResultsPanel({ outlets }: Props) {
             {profile && (
               <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
                 {profileStats.map((item) => (
-                  <div key={item.label} className="flex items-center justify-between">
-                    <span>{item.label}</span>
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">{item.value}</span>
+                  <div key={item.label} className="flex items-start justify-between py-1 border-b border-slate-100/50 dark:border-slate-800/50 last:border-0">
+                    <div className="flex flex-col">
+                      <span className="font-medium text-slate-700 dark:text-slate-200">{item.label}</span>
+                      {item.description && (
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 italic">({item.description})</span>
+                      )}
+                    </div>
+                    <span className="font-bold text-slate-900 dark:text-slate-100">{item.value}</span>
                   </div>
                 ))}
               </div>
@@ -253,8 +258,14 @@ export default function BiasResultsPanel({ outlets }: Props) {
                   <thead className="text-[11px] uppercase text-slate-400">
                     <tr>
                       <th className="pb-2">Outlet</th>
-                      <th className="pb-2">Sentiment Bias</th>
-                      <th className="pb-2">Coverage Bias</th>
+                      <th className="pb-2">
+                        Sentiment Bias
+                        <div className="text-[9px] lowercase font-normal italic leading-tight">(avg. deviation)</div>
+                      </th>
+                      <th className="pb-2">
+                        Coverage Bias
+                        <div className="text-[9px] lowercase font-normal italic leading-tight">(missed major topics)</div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
