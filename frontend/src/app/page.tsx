@@ -3,7 +3,6 @@ import CleanScrapeButton from "@/components/CleanScrapeButton";
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import OutletManager from "@/components/OutletManager";
 import RawArticlesView from "@/components/RawArticlesView";
-import ScrapeLogsPanel from "@/components/ScrapeLogsPanel";
 
 export const metadata = {
   title: "Scraping Workspace | Media Bias Control Center",
@@ -16,7 +15,6 @@ export default async function Home() {
   const initialArticles = firstOutlet
     ? await fetchArticles(firstOutlet, 50, 0).catch(() => [])
     : [];
-  const scrapeLogs = await fetchScrapeLogs(10).catch(() => []);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 pb-20 transition-colors duration-200">
@@ -48,7 +46,6 @@ export default async function Home() {
           initialOutlet={firstOutlet}
           initialArticles={initialArticles}
         />
-        <ScrapeLogsPanel initialLogs={scrapeLogs} />
       </main>
     </div>
   );

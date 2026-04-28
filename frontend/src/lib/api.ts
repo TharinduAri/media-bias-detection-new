@@ -64,6 +64,34 @@ export interface ScrapeRunLogData {
   created_at: string | null;
 }
 
+export interface ArticleBiasScoreData {
+  id: number;
+  article_id: number;
+  outlet: string;
+  topic_key: string;
+  sentiment_label: string;
+  sentiment_score: number;
+  sentiment_confidence: number;
+  sentiment_bias: number;
+  group_sentiment_mean: number;
+  coverage_majority: boolean;
+  coverage_present: boolean;
+  created_at: string;
+}
+
+export interface OutletBiasProfileData {
+  id: number;
+  outlet: string;
+  sentiment_bias_avg: number;
+  sentiment_score_avg: number;
+  articles_scored: number;
+  topics_covered: number;
+  topics_considered: number;
+  coverage_missing_majority: number;
+  coverage_bias_rate: number;
+  updated_at: string;
+}
+
 export interface BiasRunResponse {
   status: string;
   message: string;
@@ -198,5 +226,41 @@ export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
     throw new Error(body?.detail || "Failed to run bias analysis");
   }
 
+  return res.json();
+}
+
+export async function fetchBiasProfile(outletName: string): Promise<OutletBiasProfileData> {
+  const res = await fetch(`${API_BASE_URL}/bias/outlets/${encodeURIComponent(outletName)}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to fetch outlet bias profile");
+  }
+  return res.json();
+}
+
+export async function compareBiasProfiles(outlets: string[]): Promise<OutletBiasProfileData[]> {
+  const res = await fetch(`${API_BASE_URL}/bias/compare`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ outlets }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to compare bias profiles");
+  }
+  return res.json();
+}
+
+export async function fetchArticleBiasScore(articleId: number): Promise<ArticleBiasScoreData> {
+  const res = await fetch(`${API_BASE_URL}/bias/articles/${articleId}`, { cache: "no-store" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to fetch article bias score");
+  }
   return res.json();
 }

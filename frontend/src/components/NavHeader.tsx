@@ -7,6 +7,8 @@ import { useEffect, useState } from "react";
 
 const navLinks = [
     { href: "/", label: "Scraping Workspace" },
+    { href: "/bias", label: "Bias Results" },
+    { href: "/logs", label: "Scrape Logs" },
 ];
 
 function ThemeToggle() {
