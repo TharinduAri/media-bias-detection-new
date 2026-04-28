@@ -15,6 +15,22 @@ interface Props {
   outlets: string[];
 }
 
+function formatBias(score: number): string {
+  const magnitude = Math.abs(score);
+  if (magnitude >= 0.6) return score > 0 ? "Strongly positive" : "Strongly negative";
+  if (magnitude >= 0.35) return score > 0 ? "Moderately positive" : "Moderately negative";
+  if (magnitude >= 0.15) return score > 0 ? "Slightly positive" : "Slightly negative";
+  return "Neutral";
+}
+
+function formatSentiment(label: string, confidence: number): string {
+  const clean = label.replace(/_/g, " ");
+  const cap = clean.charAt(0).toUpperCase() + clean.slice(1);
+  if (confidence >= 0.75) return `${cap} (high confidence)`;
+  if (confidence >= 0.55) return `${cap} (medium confidence)`;
+  return `${cap} (low confidence)`;
+}
+
 export default function BiasResultsPanel({ outlets }: Props) {
   const [selectedOutlet, setSelectedOutlet] = useState(outlets[0] ?? "");
   const [profile, setProfile] = useState<OutletBiasProfileData | null>(null);
@@ -37,6 +53,7 @@ export default function BiasResultsPanel({ outlets }: Props) {
   const [biasOffset, setBiasOffset] = useState(0);
   const [biasHasMore, setBiasHasMore] = useState(true);
   const [biasOutletFilter, setBiasOutletFilter] = useState("");
+  const [biasSort, setBiasSort] = useState<"most_biased" | "newest" | "outlet">("most_biased");
 
   const compareEnabled = compareSelections.length >= 2;
   const biasLimit = 50;
@@ -130,6 +147,17 @@ export default function BiasResultsPanel({ outlets }: Props) {
     setBiasHasMore(true);
     loadBiasArticles(0, true);
   }, [biasOutletFilter]);
+
+  const sortedBiasArticles = useMemo(() => {
+    const items = [...biasArticles];
+    if (biasSort === "newest") {
+      return items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
+    if (biasSort === "outlet") {
+      return items.sort((a, b) => a.outlet.localeCompare(b.outlet));
+    }
+    return items.sort((a, b) => Math.abs(b.sentiment_bias) - Math.abs(a.sentiment_bias));
+  }, [biasArticles, biasSort]);
 
   return (
     <section className="space-y-6">
@@ -324,6 +352,15 @@ export default function BiasResultsPanel({ outlets }: Props) {
                     </option>
                   ))}
                 </select>
+                <select
+                  value={biasSort}
+                  onChange={(event) => setBiasSort(event.target.value as "most_biased" | "newest" | "outlet")}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
+                >
+                  <option value="most_biased">Most biased</option>
+                  <option value="newest">Newest</option>
+                  <option value="outlet">Outlet</option>
+                </select>
                 <button
                   onClick={() => loadBiasArticles(0, true)}
                   disabled={biasLoading}
@@ -351,7 +388,7 @@ export default function BiasResultsPanel({ outlets }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {biasArticles.map((row) => (
+                  {sortedBiasArticles.map((row) => (
                     <tr key={row.id} className="border-t border-slate-200/60 dark:border-slate-700/60">
                       <td className="py-2 min-w-[220px]">
                         <a
@@ -365,10 +402,12 @@ export default function BiasResultsPanel({ outlets }: Props) {
                       </td>
                       <td className="py-2 font-semibold text-slate-900 dark:text-slate-100">{row.outlet}</td>
                       <td className="py-2">
-                        {row.sentiment_label} ({row.sentiment_score.toFixed(2)})
+                        {formatSentiment(row.sentiment_label, row.sentiment_score)}
                       </td>
-                      <td className="py-2">{row.sentiment_bias.toFixed(3)}</td>
-                      <td className="py-2">{row.coverage_majority ? "Majority" : "Minority"}</td>
+                      <td className="py-2">
+                        {formatBias(row.sentiment_bias)} ({row.sentiment_bias.toFixed(3)})
+                      </td>
+                      <td className="py-2">{row.coverage_majority ? "Covered by most outlets" : "Limited coverage"}</td>
                       <td className="py-2">
                         {new Date(row.date).toLocaleDateString("en-GB")}
                       </td>
