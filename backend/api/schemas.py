@@ -44,3 +44,47 @@ class ScrapeRunLogResponse(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class BiasRunResponse(BaseModel):
+    status: str
+    message: str
+    processed_articles: int
+    topics_processed: int
+    profiles_updated: int
+
+
+class ArticleBiasScoreResponse(BaseModel):
+    id: int
+    article_id: int
+    outlet: str
+    topic_key: str
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_confidence: float
+    sentiment_bias: float
+    group_sentiment_mean: float
+    coverage_majority: bool
+    coverage_present: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OutletBiasProfileResponse(BaseModel):
+    id: int
+    outlet: str
+    sentiment_bias_avg: float
+    sentiment_score_avg: float
+    articles_scored: int
+    topics_covered: int
+    topics_considered: int
+    coverage_missing_majority: int
+    coverage_bias_rate: float
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OutletCompareRequest(BaseModel):
+    outlets: List[str]

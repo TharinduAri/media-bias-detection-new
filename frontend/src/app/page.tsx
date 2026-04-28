@@ -1,5 +1,6 @@
 import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles, fetchScrapeLogs } from "@/lib/api";
 import CleanScrapeButton from "@/components/CleanScrapeButton";
+import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import OutletManager from "@/components/OutletManager";
 import RawArticlesView from "@/components/RawArticlesView";
 import ScrapeLogsPanel from "@/components/ScrapeLogsPanel";
@@ -22,7 +23,7 @@ export default async function Home() {
 
       {/* Page Sub-header */}
       <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 py-8 transition-colors duration-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
               Scraping Workspace
@@ -31,7 +32,10 @@ export default async function Home() {
               Manage outlets, trigger scraping, and browse stored raw articles.
             </p>
           </div>
-          <CleanScrapeButton />
+          <div className="flex flex-col items-end gap-3">
+            <BiasAnalysisButton />
+            <CleanScrapeButton />
+          </div>
         </div>
       </div>
 

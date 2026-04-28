@@ -64,6 +64,14 @@ export interface ScrapeRunLogData {
   created_at: string | null;
 }
 
+export interface BiasRunResponse {
+  status: string;
+  message: string;
+  processed_articles: number;
+  topics_processed: number;
+  profiles_updated: number;
+}
+
 export async function triggerCleanScrape(): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API_BASE_URL}/system/clean-and-rescrape`, {
     method: "POST",
@@ -174,6 +182,20 @@ export async function deleteArticle(articleId: number): Promise<{ status: string
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to delete article");
+  }
+
+  return res.json();
+}
+
+export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to run bias analysis");
   }
 
   return res.json();

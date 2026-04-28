@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.database import db_manager
-from api.routers import system, outlets, articles
+from api.routers import system, outlets, articles, bias
 
 
 @asynccontextmanager
@@ -35,6 +35,7 @@ app.add_middleware(
 app.include_router(system.router)
 app.include_router(outlets.router)
 app.include_router(articles.router)
+app.include_router(bias.router)
 
 @app.get("/")
 def read_root():
