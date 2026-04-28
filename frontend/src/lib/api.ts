@@ -119,6 +119,7 @@ export interface OutletBiasProfileData {
   topics_considered: number;
   coverage_missing_majority: number;
   coverage_bias_rate: number;
+  missed_topics: string[] | null;
   updated_at: string;
 }
 

@@ -71,6 +71,7 @@ class OutletBiasProfile(Base):
     topics_considered = Column(Integer, nullable=False)
     coverage_missing_majority = Column(Integer, nullable=False)
     coverage_bias_rate = Column(Float, nullable=False)
+    missed_topics = Column(JSON, nullable=True)
     updated_at = Column(DateTime, nullable=False)
 
 

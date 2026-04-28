@@ -103,6 +103,7 @@ class OutletBiasProfileResponse(BaseModel):
     topics_considered: int
     coverage_missing_majority: int
     coverage_bias_rate: float
+    missed_topics: Optional[List[str]] = None
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

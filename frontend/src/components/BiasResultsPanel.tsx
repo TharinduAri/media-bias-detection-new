@@ -218,6 +218,19 @@ export default function BiasResultsPanel({ outlets }: Props) {
                 ))}
               </div>
             )}
+            {profile && profile.missed_topics && profile.missed_topics.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+                <h4 className="text-[11px] font-bold uppercase text-slate-400 mb-2">Missed Major Stories</h4>
+                <div className="max-h-32 overflow-y-auto space-y-1.5 pr-1">
+                  {profile.missed_topics.map((topic, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[10px] text-slate-600 dark:text-slate-400 leading-tight">
+                      <span className="w-1 h-1 rounded-full bg-red-400 flex-shrink-0" />
+                      <span>{topic}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-3">
