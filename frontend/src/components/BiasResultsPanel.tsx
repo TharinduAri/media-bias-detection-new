@@ -53,7 +53,7 @@ export default function BiasResultsPanel({ outlets }: Props) {
   const [biasOffset, setBiasOffset] = useState(0);
   const [biasHasMore, setBiasHasMore] = useState(true);
   const [biasOutletFilter, setBiasOutletFilter] = useState("");
-  const [biasSort, setBiasSort] = useState<"most_biased" | "newest" | "outlet">("most_biased");
+  const [biasSort, setBiasSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
 
   const compareEnabled = compareSelections.length >= 2;
   const biasLimit = 50;
@@ -155,6 +155,9 @@ export default function BiasResultsPanel({ outlets }: Props) {
     }
     if (biasSort === "outlet") {
       return items.sort((a, b) => a.outlet.localeCompare(b.outlet));
+    }
+    if (biasSort === "topic") {
+      return items.sort((a, b) => a.topic_key.localeCompare(b.topic_key));
     }
     return items.sort((a, b) => Math.abs(b.sentiment_bias) - Math.abs(a.sentiment_bias));
   }, [biasArticles, biasSort]);
@@ -354,12 +357,15 @@ export default function BiasResultsPanel({ outlets }: Props) {
                 </select>
                 <select
                   value={biasSort}
-                  onChange={(event) => setBiasSort(event.target.value as "most_biased" | "newest" | "outlet")}
+                  onChange={(event) =>
+                    setBiasSort(event.target.value as "most_biased" | "newest" | "outlet" | "topic")
+                  }
                   className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
                 >
                   <option value="most_biased">Most biased</option>
                   <option value="newest">Newest</option>
                   <option value="outlet">Outlet</option>
+                  <option value="topic">Topic</option>
                 </select>
                 <button
                   onClick={() => loadBiasArticles(0, true)}

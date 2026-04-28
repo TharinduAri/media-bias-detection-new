@@ -19,6 +19,7 @@ DAYS_LOOKBACK = 28
 CLUSTER_DISTANCE_THRESHOLD = 0.35
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 SENTIMENT_MAX_LENGTH = 256
+MERGE_SIMILARITY_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,13 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
         clusters = _group_by_label(labels)
         run_logs.append(f"Topic groups formed: {len(clusters)}")
 
+        clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, unscored_articles)
+        if merge_stats["merged_clusters"]:
+            run_logs.append(
+                "Merged single-outlet clusters: "
+                f"{merge_stats['merged_clusters']} (articles merged: {merge_stats['merged_articles']})"
+            )
+
         sentiment_results = model_manager.analyze_sentiment(texts)
         run_logs.append("Computed sentiment scores.")
 
@@ -201,6 +209,9 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
             run_logs.append(f"Article bias scores saved: {len(article_scores)}")
         else:
             run_logs.append("No qualifying topic groups produced bias scores.")
+
+        skipped_articles = len(unscored_articles) - len(article_scores)
+        run_logs.append(f"Articles skipped due to single-outlet topics: {skipped_articles}")
 
         profiles = _build_profiles(outlet_stats, now)
         profiles_updated = _upsert_profiles(db, profiles)
@@ -318,6 +329,60 @@ def _init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, float]]:
         }
         for outlet in outlets
     }
+
+
+def _merge_single_outlet_clusters(
+    clusters: Dict[int, List[int]],
+    embeddings: np.ndarray,
+    articles: List[models.Article],
+) -> Tuple[Dict[int, List[int]], Dict[str, int]]:
+    merged_clusters = 0
+    merged_articles = 0
+    cluster_items: Dict[int, Dict[str, object]] = {}
+    for label, indices in clusters.items():
+        outlet_set = {articles[idx].outlet for idx in indices}
+        centroid = np.mean(embeddings[indices], axis=0)
+        cluster_items[label] = {"indices": list(indices), "outlets": outlet_set, "centroid": centroid}
+
+    labels = list(cluster_items.keys())
+    for label in labels:
+        item = cluster_items[label]
+        outlets = item["outlets"]
+        if len(outlets) >= 2:
+            continue
+
+        best_label = None
+        best_similarity = -1.0
+        for candidate_label, candidate in cluster_items.items():
+            if candidate_label == label:
+                continue
+            if outlets.intersection(candidate["outlets"]):
+                continue
+            similarity = _cosine_similarity(item["centroid"], candidate["centroid"])
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_label = candidate_label
+
+        if best_label is not None and best_similarity >= MERGE_SIMILARITY_THRESHOLD:
+            target = cluster_items[best_label]
+            target_indices = target["indices"]
+            target_indices.extend(item["indices"])
+            target["outlets"] = target["outlets"].union(outlets)
+            target["centroid"] = np.mean(embeddings[target_indices], axis=0)
+            merged_clusters += 1
+            merged_articles += len(item["indices"])
+            cluster_items.pop(label, None)
+
+    merged: Dict[int, List[int]] = {
+        label: item["indices"] for label, item in cluster_items.items()
+    }
+    return merged, {"merged_clusters": merged_clusters, "merged_articles": merged_articles}
+
+
+def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+    norm_a = vec_a / (np.linalg.norm(vec_a) + 1e-8)
+    norm_b = vec_b / (np.linalg.norm(vec_b) + 1e-8)
+    return float(np.dot(norm_a, norm_b))
 
 
 def _persist_bias_run_log(
