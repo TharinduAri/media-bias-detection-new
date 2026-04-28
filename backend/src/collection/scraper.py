@@ -226,11 +226,16 @@ async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[st
     return extract_with_trafilatura(raw_html, url)
 
 
-async def collect_data(days_back=DAYS_BACK):
+async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
     all_articles: list[dict[str, str]] = []
     run = _RunSummary()
     clear_blocked_paths()
     outlets = await asyncio.to_thread(load_outlets_from_db)
+    if target_outlet:
+        outlets = [o for o in outlets if o["name"].lower() == target_outlet.lower()]
+        if not outlets:
+            logging.warning("No outlet found matching: %s", target_outlet)
+            return
 
     if not outlets:
         logging.warning("No outlets configured in DB. Add outlets before running scraper.")
@@ -373,8 +378,14 @@ async def collect_data(days_back=DAYS_BACK):
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Run the media scraper.")
+    parser.add_argument("--outlet", type=str, help="Target outlet name to scrape")
+    parser.add_argument("--days-back", type=int, default=DAYS_BACK, help="Number of days to look back for articles")
+    args = parser.parse_args()
+
     try:
-        asyncio.run(collect_data(days_back=DAYS_BACK))
+        asyncio.run(collect_data(days_back=args.days_back, target_outlet=args.outlet))
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise

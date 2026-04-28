@@ -42,52 +42,83 @@ class DailyFTOutlet(BaseOutletScraper):
         articles: dict[str, dict[str, str]] = {}
         cutoff = datetime.now() - timedelta(days=days_back)
 
-        # Determine how many pages to fetch by probing concurrently.
-        # Start with pages 0..4 in the first batch, then continue if full.
-        page = 0
-        while len(articles) < max_articles and page < _MAX_SITEMAP_PAGES:
-            # Fetch a batch of pages concurrently
-            batch_size = min(5, _MAX_SITEMAP_PAGES - page)
-            pages_to_fetch = list(range(page, page + batch_size))
-            roots = await asyncio.gather(
-                *[self._fetch_xml(client, f"{self.url}/sitemaps/english-{p}")
-                  for p in pages_to_fetch]
-            )
-
-            got_full_page = False
-            for p, root in zip(pages_to_fetch, roots):
-                if root is None or self._tag(root.tag) != "urlset":
+        # 1. Discovery via Home Page (fastest for very recent articles)
+        try:
+            resp = await fetch(client, self.url)
+            import re
+            # Extract URLs like .../category/title/id-number
+            # IDs are usually at the end after a dash
+            urls = re.findall(r'href="(https://www\.ft\.lk/[^"]+-\d+)"', resp.text)
+            for url in urls:
+                if self.should_skip_url(url):
                     continue
+                # We don't have dates from the home page easily, but we'll get them during extraction
+                # or just use 'now' as a stub if we have to.
+                articles[url] = self._article_stub(url)
+        except Exception as e:
+            logger.warning("[DailyFT] Home page discovery failed: %s", e)
 
-                page_count = 0
-                for child in root:
-                    if self._tag(child.tag) != "url":
-                        continue
-                    loc = lastmod = None
-                    for node in child:
-                        t = self._tag(node.tag)
-                        if t == "loc" and node.text:
-                            loc = node.text.strip()
-                        elif t == "lastmod" and node.text:
-                            lastmod = node.text.strip()
-                    if not loc or self.should_skip_url(loc):
-                        continue
-                    pub = self._parse_dt(lastmod)
-                    if pub and pub < cutoff:
-                        continue
-                    articles[loc] = self._article_stub(loc, pub)
-                    page_count += 1
-                    if len(articles) >= max_articles:
-                        break
+        # 2. Discovery via Sitemap (robust for catching up)
+        # We need to find the latest english-N index. 
+        # We'll probe starting from a known high index and go up until 404.
+        latest_idx = 320000  # Known good as of April 2026
+        # Probe up in increments of 5000 to find the ceiling
+        for probe_idx in range(latest_idx, 500000, 5000):
+            try:
+                probe_resp = await client.head(f"{self.url}/sitemaps/english-{probe_idx}", timeout=5.0)
+                if probe_resp.status_code == 200:
+                    latest_idx = probe_idx
+                else:
+                    break
+            except:
+                break
+        
+        # Now crawl backwards from latest_idx
+        pages_to_crawl = []
+        for i in range(0, 5): # Check last 5 sitemap chunks (approx 5000 articles)
+            idx = latest_idx - (i * 1000)
+            if idx >= 0:
+                pages_to_crawl.append(f"{self.url}/sitemaps/english-{idx}")
 
-                if page_count >= _SITEMAP_PAGE_SIZE:
-                    got_full_page = True
+        logger.info("[DailyFT] Crawling sitemap pages: %s", pages_to_crawl)
+        roots = await asyncio.gather(
+            *[self._fetch_xml(client, url) for url in pages_to_crawl]
+        )
 
-            page += batch_size
-            if not got_full_page:
-                break  # Reached the last (partial) page
+        for root in roots:
+            if root is None or self._tag(root.tag) != "urlset":
+                continue
 
-        logger.info("[DailyFT] Discovered %d article URLs", len(articles))
+            for child in root:
+                if self._tag(child.tag) != "url":
+                    continue
+                
+                loc = None
+                pub_date = None
+                
+                # Check for <loc> and <news:news><news:publication_date>
+                for node in child:
+                    t = self._tag(node.tag)
+                    if t == "loc" and node.text:
+                        loc = node.text.strip()
+                    elif t == "news":
+                        # Parse news:publication_date
+                        for news_node in node:
+                            if self._tag(news_node.tag) == "publication_date" and news_node.text:
+                                pub_date = self._parse_dt(news_node.text.strip())
+                
+                if not loc or self.should_skip_url(loc):
+                    continue
+                
+                if pub_date and pub_date < cutoff:
+                    continue
+                
+                # If we already got it from home page, this will update it with a better date
+                articles[loc] = self._article_stub(loc, pub_date)
+                if len(articles) >= max_articles * 2: # Get plenty then trim
+                    break
+
+        logger.info("[DailyFT] Discovered %d article URLs total", len(articles))
         return list(articles.values())[:max_articles]
 
     async def extract_content(
