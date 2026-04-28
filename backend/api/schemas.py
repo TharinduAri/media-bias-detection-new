@@ -59,6 +59,7 @@ class ArticleBiasScoreResponse(BaseModel):
     article_id: int
     outlet: str
     topic_key: str
+    topic_label: Optional[str] = None
     sentiment_label: str
     sentiment_score: float
     sentiment_confidence: float
@@ -79,6 +80,7 @@ class ArticleBiasWithArticleResponse(BaseModel):
     date: datetime
     url: str
     topic_key: str
+    topic_label: Optional[str] = None
     sentiment_label: str
     sentiment_score: float
     sentiment_confidence: float
@@ -113,6 +115,7 @@ class OutletCompareRequest(BaseModel):
 
 class TopicSummaryResponse(BaseModel):
     topic_key: str
+    topic_label: Optional[str] = None
     article_count: int
 
 

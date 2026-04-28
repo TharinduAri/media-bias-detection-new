@@ -79,6 +79,7 @@ export interface ArticleBiasScoreData {
   article_id: number;
   outlet: string;
   topic_key: string;
+  topic_label?: string;
   sentiment_label: string;
   sentiment_score: number;
   sentiment_confidence: number;
@@ -97,6 +98,7 @@ export interface ArticleBiasWithArticleData {
   date: string;
   url: string;
   topic_key: string;
+  topic_label?: string;
   sentiment_label: string;
   sentiment_score: number;
   sentiment_confidence: number;
@@ -122,6 +124,7 @@ export interface OutletBiasProfileData {
 
 export interface TopicSummaryData {
   topic_key: string;
+  topic_label?: string;
   article_count: number;
 }
 

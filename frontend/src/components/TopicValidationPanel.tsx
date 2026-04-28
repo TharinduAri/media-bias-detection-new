@@ -72,7 +72,7 @@ export default function TopicValidationPanel() {
   }
 
   const filteredTopics = topics.filter(t => 
-    t.topic_key.toLowerCase().includes(searchTerm.toLowerCase())
+    (t.topic_label || t.topic_key).toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const getSentimentIcon = (score: number) => {
@@ -123,9 +123,9 @@ export default function TopicValidationPanel() {
                 className="w-full pl-4 pr-10 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl appearance-none focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm disabled:opacity-50"
               >
                 <option value="">Choose a topic (Sorted by article count)</option>
-                {topics.map((topic) => (
+                {filteredTopics.map((topic) => (
                   <option key={topic.topic_key} value={topic.topic_key}>
-                    {topic.topic_key} ({topic.article_count} articles)
+                    {topic.topic_label || topic.topic_key} ({topic.article_count} articles)
                   </option>
                 ))}
               </select>
