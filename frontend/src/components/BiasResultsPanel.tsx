@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   compareBiasProfiles,
+  fetchBiasArticles,
   fetchArticleBiasScore,
   fetchBiasProfile,
   ArticleBiasScoreData,
+  ArticleBiasWithArticleData,
   OutletBiasProfileData,
 } from "@/lib/api";
 
@@ -29,7 +31,15 @@ export default function BiasResultsPanel({ outlets }: Props) {
   const [articleResult, setArticleResult] = useState<ArticleBiasScoreData | null>(null);
   const [articleMessage, setArticleMessage] = useState<string | null>(null);
 
+  const [biasArticles, setBiasArticles] = useState<ArticleBiasWithArticleData[]>([]);
+  const [biasLoading, setBiasLoading] = useState(false);
+  const [biasMessage, setBiasMessage] = useState<string | null>(null);
+  const [biasOffset, setBiasOffset] = useState(0);
+  const [biasHasMore, setBiasHasMore] = useState(true);
+  const [biasOutletFilter, setBiasOutletFilter] = useState("");
+
   const compareEnabled = compareSelections.length >= 2;
+  const biasLimit = 50;
 
   const profileStats = useMemo(() => {
     if (!profile) return [] as Array<{ label: string; value: string }>;
@@ -95,6 +105,31 @@ export default function BiasResultsPanel({ outlets }: Props) {
       prev.includes(outlet) ? prev.filter((item) => item !== outlet) : [...prev, outlet]
     );
   };
+
+  const loadBiasArticles = async (newOffset: number, replace: boolean) => {
+    setBiasLoading(true);
+    setBiasMessage(null);
+    try {
+      const data = await fetchBiasArticles(
+        biasLimit,
+        newOffset,
+        biasOutletFilter ? biasOutletFilter : undefined
+      );
+      setBiasArticles((prev) => (replace ? data : [...prev, ...data]));
+      setBiasHasMore(data.length === biasLimit);
+      setBiasOffset(newOffset + data.length);
+    } catch (error) {
+      setBiasMessage(error instanceof Error ? error.message : "Failed to load bias articles.");
+    } finally {
+      setBiasLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setBiasOffset(0);
+    setBiasHasMore(true);
+    loadBiasArticles(0, true);
+  }, [biasOutletFilter]);
 
   return (
     <section className="space-y-6">
@@ -262,6 +297,106 @@ export default function BiasResultsPanel({ outlets }: Props) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+
+        <div className="px-5 pb-6">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-4 space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  All Bias-Scored Articles
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  All articles with their latest bias scores.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={biasOutletFilter}
+                  onChange={(event) => setBiasOutletFilter(event.target.value)}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
+                >
+                  <option value="">All outlets</option>
+                  {outlets.map((outlet) => (
+                    <option key={outlet} value={outlet}>
+                      {outlet}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => loadBiasArticles(0, true)}
+                  disabled={biasLoading}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {biasMessage && (
+              <p className="text-xs text-red-600 dark:text-red-400">{biasMessage}</p>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left text-slate-600 dark:text-slate-300">
+                <thead className="text-[11px] uppercase text-slate-400">
+                  <tr>
+                    <th className="pb-2">Title</th>
+                    <th className="pb-2">Outlet</th>
+                    <th className="pb-2">Sentiment</th>
+                    <th className="pb-2">Bias</th>
+                    <th className="pb-2">Coverage</th>
+                    <th className="pb-2">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {biasArticles.map((row) => (
+                    <tr key={row.id} className="border-t border-slate-200/60 dark:border-slate-700/60">
+                      <td className="py-2 min-w-[220px]">
+                        <a
+                          href={row.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-slate-900 dark:text-slate-100 font-medium hover:underline"
+                        >
+                          {row.title}
+                        </a>
+                      </td>
+                      <td className="py-2 font-semibold text-slate-900 dark:text-slate-100">{row.outlet}</td>
+                      <td className="py-2">
+                        {row.sentiment_label} ({row.sentiment_score.toFixed(2)})
+                      </td>
+                      <td className="py-2">{row.sentiment_bias.toFixed(3)}</td>
+                      <td className="py-2">{row.coverage_majority ? "Majority" : "Minority"}</td>
+                      <td className="py-2">
+                        {new Date(row.date).toLocaleDateString("en-GB")}
+                      </td>
+                    </tr>
+                  ))}
+                  {biasArticles.length === 0 && !biasLoading && (
+                    <tr>
+                      <td colSpan={6} className="py-6 text-center text-slate-400">
+                        No bias scores found yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span>{biasLoading ? "Loading..." : `${biasArticles.length} articles loaded`}</span>
+              {biasHasMore && (
+                <button
+                  onClick={() => loadBiasArticles(biasOffset, false)}
+                  disabled={biasLoading}
+                  className="rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-60"
+                >
+                  Load more
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

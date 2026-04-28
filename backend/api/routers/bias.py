@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -65,3 +65,43 @@ def get_article_bias(article_id: int, db: Session = Depends(get_db)):
     if not score:
         raise HTTPException(status_code=404, detail="Bias score not found for article")
     return score
+
+
+@router.get("/articles", response_model=list[schemas.ArticleBiasWithArticleResponse])
+def list_article_bias_scores(
+    outlet: str | None = Query(None, description="Filter by outlet name"),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    q = (
+        db.query(models.ArticleBiasScore, models.Article)
+        .join(models.Article, models.Article.id == models.ArticleBiasScore.article_id)
+        .order_by(models.ArticleBiasScore.created_at.desc())
+    )
+    if outlet:
+        q = q.filter(models.ArticleBiasScore.outlet == outlet)
+
+    rows = q.offset(offset).limit(limit).all()
+    results: list[schemas.ArticleBiasWithArticleResponse] = []
+    for score, article in rows:
+        results.append(
+            schemas.ArticleBiasWithArticleResponse(
+                id=score.id,
+                article_id=score.article_id,
+                outlet=score.outlet,
+                title=article.title,
+                date=article.date,
+                url=article.url,
+                topic_key=score.topic_key,
+                sentiment_label=score.sentiment_label,
+                sentiment_score=score.sentiment_score,
+                sentiment_confidence=score.sentiment_confidence,
+                sentiment_bias=score.sentiment_bias,
+                group_sentiment_mean=score.group_sentiment_mean,
+                coverage_majority=score.coverage_majority,
+                coverage_present=score.coverage_present,
+                created_at=score.created_at,
+            )
+        )
+    return results

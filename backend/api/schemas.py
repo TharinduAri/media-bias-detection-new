@@ -71,6 +71,26 @@ class ArticleBiasScoreResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ArticleBiasWithArticleResponse(BaseModel):
+    id: int
+    article_id: int
+    outlet: str
+    title: str
+    date: datetime
+    url: str
+    topic_key: str
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_confidence: float
+    sentiment_bias: float
+    group_sentiment_mean: float
+    coverage_majority: bool
+    coverage_present: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OutletBiasProfileResponse(BaseModel):
     id: int
     outlet: str

@@ -79,6 +79,24 @@ export interface ArticleBiasScoreData {
   created_at: string;
 }
 
+export interface ArticleBiasWithArticleData {
+  id: number;
+  article_id: number;
+  outlet: string;
+  title: string;
+  date: string;
+  url: string;
+  topic_key: string;
+  sentiment_label: string;
+  sentiment_score: number;
+  sentiment_confidence: number;
+  sentiment_bias: number;
+  group_sentiment_mean: number;
+  coverage_majority: boolean;
+  coverage_present: boolean;
+  created_at: string;
+}
+
 export interface OutletBiasProfileData {
   id: number;
   outlet: string;
@@ -261,6 +279,21 @@ export async function fetchArticleBiasScore(articleId: number): Promise<ArticleB
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to fetch article bias score");
+  }
+  return res.json();
+}
+
+export async function fetchBiasArticles(
+  limit = 50,
+  offset = 0,
+  outlet?: string
+): Promise<ArticleBiasWithArticleData[]> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (outlet) params.set("outlet", outlet);
+  const res = await fetch(`${API_BASE_URL}/bias/articles?${params.toString()}`, { cache: "no-store" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to fetch bias articles");
   }
   return res.json();
 }
