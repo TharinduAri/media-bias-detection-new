@@ -1,62 +1,12 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from typing import List, Optional
-
-class AggregatedSentimentResponse(BaseModel):
-    id: int
-    outlet: str
-    year_month: str
-    entity: str
-    label: str
-    avg_sentiment: float
-    total_mentions: int
-    article_count: int
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-class AggregatedCoverageResponse(BaseModel):
-    id: int
-    outlet: str
-    entity: str
-    label: str
-    total_mentions: int
-    article_count: int
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-class PotentialOmissionResponse(BaseModel):
-    id: int
-    entity: str
-    covered_mostly_by: str
-    max_mentions: int
-    omitted_by: str
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-class UIExplainDataResponse(BaseModel):
-    id: int
-    outlet: str
-    year_month: str
-    date: datetime
-    entity: str
-    label: str
-    sentiment: float
-    mention_count: int
-    article_url: str
-    example_sentence: str
-    example_sentence_score: float
-    abs_sentiment: float
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
+from typing import Optional, List
 
 class OutletResponse(BaseModel):
     id: int
     name: str
     url: str
+    rss_feeds: Optional[List[str]] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -64,6 +14,7 @@ class OutletResponse(BaseModel):
 class OutletCreateRequest(BaseModel):
     name: str
     url: str
+    rss_feeds: Optional[List[str]] = None
 
 class ArticleResponse(BaseModel):
     id: int
@@ -81,3 +32,91 @@ class ArticleResponse(BaseModel):
 class ArticleOutletCountResponse(BaseModel):
     outlet: str
     total_articles: int
+
+
+class ScrapeRunLogResponse(BaseModel):
+    id: int
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    error: Optional[str] = None
+    log_lines: List[str]
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BiasRunResponse(BaseModel):
+    status: str
+    message: str
+    processed_articles: int
+    topics_processed: int
+    profiles_updated: int
+
+
+class ArticleBiasScoreResponse(BaseModel):
+    id: int
+    article_id: int
+    outlet: str
+    topic_key: str
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_confidence: float
+    sentiment_bias: float
+    group_sentiment_mean: float
+    coverage_majority: bool
+    coverage_present: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ArticleBiasWithArticleResponse(BaseModel):
+    id: int
+    article_id: int
+    outlet: str
+    title: str
+    date: datetime
+    url: str
+    topic_key: str
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_confidence: float
+    sentiment_bias: float
+    group_sentiment_mean: float
+    coverage_majority: bool
+    coverage_present: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OutletBiasProfileResponse(BaseModel):
+    id: int
+    outlet: str
+    sentiment_bias_avg: float
+    sentiment_score_avg: float
+    articles_scored: int
+    topics_covered: int
+    topics_considered: int
+    coverage_missing_majority: int
+    coverage_bias_rate: float
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OutletCompareRequest(BaseModel):
+    outlets: List[str]
+
+
+class BiasRunLogResponse(BaseModel):
+    id: int
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    error: Optional[str] = None
+    log_lines: List[str]
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)

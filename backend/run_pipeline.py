@@ -4,10 +4,6 @@ run_pipeline.py
 
 Runs the full data pipeline sequentially:
   1. src/collection/scraper.py
-  2. src/processing/preprocessor.py
-  3. src/extraction/bias_extractor.py
-  4. src/aggregation/aggregator.py
-  5. src/explainability/explainer.py
 
 Usage:
   python run_pipeline.py         # execute all stages (stop on first failure)
@@ -24,15 +20,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 STAGES = [
     ("scraper", "src/collection/scraper.py"),
-    ("preprocessor", "src/processing/preprocessor.py"),
-    ("bias_extractor", "src/extraction/bias_extractor.py"),
-    ("aggregator", "src/aggregation/aggregator.py"),
-    ("explainer", "src/explainability/explainer.py"),
 ]
 
 
 def run_stage(script_path: str, python_exec: str | None = sys.executable):
-    cmd = [str(python_exec or "python"), str(script_path)]
+    module_name = script_path.replace(".py", "").replace("/", ".").replace("\\", ".")
+    cmd = [str(python_exec or "python"), "-m", module_name]
     logging.info("Running: %s", " ".join(cmd))
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     out = str(proc.stdout).strip() if proc.stdout else ""
@@ -46,10 +39,10 @@ def run_stage(script_path: str, python_exec: str | None = sys.executable):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the full media-bias pipeline.")
+    parser = argparse.ArgumentParser(description="Run scraping stages.")
     parser.add_argument("--dry-run", action="store_true", help="Print the commands without executing them")
     parser.add_argument("--continue-on-error", action="store_true", help="Continue to next stage even if a stage fails")
-    parser.add_argument("--stages", type=str, default="all", help="Comma-separated list of stage keys to run (e.g. 'scraper,aggregator') or 'all'")
+    parser.add_argument("--stages", type=str, default="all", help="Comma-separated list of stage keys to run (e.g. 'scraper') or 'all'")
     args = parser.parse_args()
 
     selected = [s for s, _ in STAGES]

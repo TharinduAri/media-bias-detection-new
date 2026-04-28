@@ -25,57 +25,20 @@ model Article {
   updated_at        DateTime @updatedAt
 }
 
-model AggregatedSentiment {
-  id             Int      @id @default(autoincrement())
-  outlet         String
-  year_month     String
-  entity         String
-  label          String
-  avg_sentiment  Float
-  total_mentions Int
-  article_count  Int
-  created_at     DateTime @default(now())
-}
-
-model AggregatedCoverage {
-  id             Int      @id @default(autoincrement())
-  outlet         String
-  entity         String
-  label          String
-  total_mentions Int
-  article_count  Int
-  created_at     DateTime @default(now())
-}
-
-model PotentialOmission {
-  id                Int      @id @default(autoincrement())
-  entity            String
-  covered_mostly_by String
-  max_mentions      Int
-  omitted_by        String
-  created_at        DateTime @default(now())
-}
-
-model UIExplainData {
-  id                     Int      @id @default(autoincrement())
-  outlet                 String
-  year_month             String
-  date                   DateTime
-  entity                 String
-  label                  String
-  sentiment              Float
-  mention_count          Int
-  article_url            String
-  example_sentence       String
-  example_sentence_score Float
-  abs_sentiment          Float
-  created_at             DateTime @default(now())
-}
-
 model Outlet {
   id         Int      @id @default(autoincrement())
   name       String   @unique
   url        String
   rss_feeds  Json?
+  created_at DateTime @default(now())
+}
+
+model ScrapeRunLog {
+  id         Int      @id @default(autoincrement())
+  started_at DateTime
+  finished_at DateTime
+  status     String
+  error      String?
+  log_lines  Json
   created_at DateTime @default(now())
 }

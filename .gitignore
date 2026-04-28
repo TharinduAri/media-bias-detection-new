@@ -30,3 +30,7 @@ build/
 
 # Prisma
 .prisma/
+
+# Data and Logs
+backend/data/
+*.jsonl

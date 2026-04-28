@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Media Bias Control Center",
-  description: "Analyzing sentiment, coverage, and omissions across Sri Lankan media.",
+  description: "Scrape outlets and manage stored raw articles.",
 };
 
 export default function RootLayout({

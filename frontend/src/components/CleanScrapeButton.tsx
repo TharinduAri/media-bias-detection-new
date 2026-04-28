@@ -9,7 +9,7 @@ import {
 } from "@/lib/api";
 
 const POLL_MS = 1500;
-const STAGE_ICONS = ["🔍", "✂️", "🧠", "📊", "💡"];
+const STAGE_ICONS = ["🔍"];
 
 // ─── Confirm Dialog ────────────────────────────────────────────────────────────
 function ConfirmDialog({
@@ -26,7 +26,7 @@ function ConfirmDialog({
     onCancel: () => void;
 }) {
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-100 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
             <div className="relative w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-6">
                 <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-2">{title}</h2>
@@ -82,7 +82,7 @@ function ProgressModal({
     const isRunning = status.status === "running";
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-100 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
 
             <div className="relative w-full max-w-2xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -104,14 +104,14 @@ function ProgressModal({
                         <div>
                             <h2 className="font-bold text-gray-900 dark:text-white text-base">
                                 {isDone
-                                    ? "Pipeline Complete!"
+                                    ? "Scraper Complete!"
                                     : isError
-                                        ? "Pipeline Error"
-                                        : "Running Pipeline…"}
+                                        ? "Scraper Error"
+                                        : "Running Scraper..."}
                             </h2>
                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                                 {isDone
-                                    ? "All stages completed successfully."
+                                    ? "Scrape finished successfully."
                                     : isError
                                         ? (status.error ?? "An error occurred.")
                                         : `Stage ${Math.min(status.current_stage_index + 1, totalStages)} of ${totalStages}`}
@@ -140,7 +140,7 @@ function ProgressModal({
                                     ? "bg-red-500"
                                     : isDone
                                         ? "bg-green-500"
-                                        : "bg-gradient-to-r from-blue-500 to-violet-500"
+                                        : "bg-linear-to-r from-blue-500 to-violet-500"
                                 }`}
                             style={{ width: `${progressPct}%` }}
                         />
@@ -286,10 +286,10 @@ export default function CleanScrapeButton() {
         try {
             await triggerCleanScrape();
         } catch (err) {
-            alert(err instanceof Error ? err.message : "Failed to start pipeline.");
+            alert(err instanceof Error ? err.message : "Failed to start scraper.");
             return;
         }
-        const initial = await fetchPipelineStatus().catch(() => null);
+                const initial = await fetchPipelineStatus().catch(() => null);
         setPipelineStatus(initial);
         setShowModal(true);
         startPolling();
@@ -338,15 +338,15 @@ export default function CleanScrapeButton() {
                     onClick={() => setConfirmAction("scrape")}
                     className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-md shadow-sm hover:bg-red-700 transition-colors"
                 >
-                    Clean &amp; Rescrape
+                    Clean &amp; Scrape
                 </button>
             </div>
 
             {/* Custom confirm dialog */}
             {confirmAction === "scrape" && (
                 <ConfirmDialog
-                    title="Clean &amp; Rescrape"
-                    message="This will wipe the entire database and restart the full scraping pipeline. This action cannot be undone. Continue?"
+                    title="Clean &amp; Scrape"
+                    message="This will wipe stored raw articles and restart scraping. This action cannot be undone. Continue?"
                     danger
                     onConfirm={confirmScrape}
                     onCancel={() => setConfirmAction(null)}
@@ -355,7 +355,7 @@ export default function CleanScrapeButton() {
             {confirmAction === "cleandb" && (
                 <ConfirmDialog
                     title="Clean Database"
-                    message="This will delete all data from the database without triggering a new scrape. This action cannot be undone. Continue?"
+                    message="This will delete stored raw articles without triggering a new scrape. This action cannot be undone. Continue?"
                     danger
                     onConfirm={confirmCleanDb}
                     onCancel={() => setConfirmAction(null)}

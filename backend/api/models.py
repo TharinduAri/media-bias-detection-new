@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Text
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, Float, Boolean, UniqueConstraint
 from .database import Base
 
 class Article(Base):
@@ -17,57 +17,6 @@ class Article(Base):
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
 
-class AggregatedSentiment(Base):
-    __tablename__ = "AggregatedSentiment"
-
-    id = Column(Integer, primary_key=True, index=True)
-    outlet = Column(String, index=True)
-    year_month = Column(String, index=True)
-    entity = Column(String, index=True)
-    label = Column(String)
-    avg_sentiment = Column(Float)
-    total_mentions = Column(Integer)
-    article_count = Column(Integer)
-    created_at = Column(DateTime)
-
-class AggregatedCoverage(Base):
-    __tablename__ = "AggregatedCoverage"
-
-    id = Column(Integer, primary_key=True, index=True)
-    outlet = Column(String, index=True)
-    entity = Column(String, index=True)
-    label = Column(String)
-    total_mentions = Column(Integer)
-    article_count = Column(Integer)
-    created_at = Column(DateTime)
-
-class PotentialOmission(Base):
-    __tablename__ = "PotentialOmission"
-
-    id = Column(Integer, primary_key=True, index=True)
-    entity = Column(String, index=True)
-    covered_mostly_by = Column(String)
-    max_mentions = Column(Integer)
-    omitted_by = Column(String)
-    created_at = Column(DateTime)
-
-class UIExplainData(Base):
-    __tablename__ = "UIExplainData"
-
-    id = Column(Integer, primary_key=True, index=True)
-    outlet = Column(String, index=True)
-    year_month = Column(String)
-    date = Column(DateTime)
-    entity = Column(String, index=True)
-    label = Column(String)
-    sentiment = Column(Float)
-    mention_count = Column(Integer)
-    article_url = Column(String)
-    example_sentence = Column(String)
-    example_sentence_score = Column(Float)
-    abs_sentiment = Column(Float)
-    created_at = Column(DateTime)
-
 class Outlet(Base):
     __tablename__ = "Outlet"
 
@@ -75,4 +24,62 @@ class Outlet(Base):
     name = Column(String, unique=True, index=True)
     url = Column(String)
     rss_feeds = Column(JSON, nullable=True)
+    created_at = Column(DateTime)
+
+
+class ScrapeRunLog(Base):
+    __tablename__ = "ScrapeRunLog"
+
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    log_lines = Column(JSON, nullable=False)
+    created_at = Column(DateTime)
+
+
+class ArticleBiasScore(Base):
+    __tablename__ = "ArticleBiasScore"
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, nullable=False, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    topic_key = Column(String, nullable=False, index=True)
+    sentiment_label = Column(String, nullable=False)
+    sentiment_score = Column(Float, nullable=False)
+    sentiment_confidence = Column(Float, nullable=False)
+    sentiment_bias = Column(Float, nullable=False)
+    group_sentiment_mean = Column(Float, nullable=False)
+    coverage_majority = Column(Boolean, nullable=False, default=False)
+    coverage_present = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (UniqueConstraint("article_id", name="uq_article_bias_article_id"),)
+
+
+class OutletBiasProfile(Base):
+    __tablename__ = "OutletBiasProfile"
+
+    id = Column(Integer, primary_key=True, index=True)
+    outlet = Column(String, unique=True, nullable=False, index=True)
+    sentiment_bias_avg = Column(Float, nullable=False)
+    sentiment_score_avg = Column(Float, nullable=False)
+    articles_scored = Column(Integer, nullable=False)
+    topics_covered = Column(Integer, nullable=False)
+    topics_considered = Column(Integer, nullable=False)
+    coverage_missing_majority = Column(Integer, nullable=False)
+    coverage_bias_rate = Column(Float, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+
+class BiasRunLog(Base):
+    __tablename__ = "BiasRunLog"
+
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    log_lines = Column(JSON, nullable=False)
     created_at = Column(DateTime)

@@ -1,39 +1,35 @@
 import os
 import sys
-import time
-import logging
 import subprocess
 import threading
 from datetime import datetime
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from typing import List, Optional
 
-from ..database import get_db
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from .. import models, schemas
+from ..database import SessionLocal, get_db
 
 router = APIRouter(
     prefix="/api/v1/system",
-    tags=["system"]
+    tags=["system"],
 )
 
-# ─────────────────────────────────────────────────────────────
-#  In-memory pipeline progress state
-# ─────────────────────────────────────────────────────────────
 STAGES = [
-    {"key": "scraper",        "label": "Scraping articles"},
-    {"key": "preprocessor",   "label": "Preprocessing text"},
-    {"key": "bias_extractor", "label": "Extracting bias signals"},
-    {"key": "aggregator",     "label": "Aggregating data"},
-    {"key": "explainer",      "label": "Building explainability"},
+    {"key": "scraper", "label": "Scraping articles"},
 ]
 
 _state_lock = threading.Lock()
+_scrape_log_table_ready = False
+_scrape_log_table_lock = threading.Lock()
 _pipeline_state: dict = {
     "running": False,
-    "status": "idle",          # "idle" | "running" | "done" | "error"
-    "current_stage_index": -1, # 0-based index into STAGES
+    "status": "idle",  # "idle" | "running" | "done" | "error"
+    "current_stage_index": -1,
     "stages": STAGES,
-    "logs": [],                # list of log line strings
+    "logs": [],
     "started_at": None,
     "finished_at": None,
     "error": None,
@@ -50,13 +46,82 @@ def _append_log(line: str):
         _pipeline_state["logs"].append(line)
 
 
-def _run_stage_tracked(script_path: str, stage_index: int, python_exec: str):
-    """Run a single pipeline script, streaming stdout/stderr into the state logs."""
-    _update_state(current_stage_index=stage_index)
-    stage_label = STAGES[stage_index]["label"]
-    _append_log(f"▶ Starting: {stage_label}")
+def _ensure_scrape_log_table() -> None:
+    global _scrape_log_table_ready
+    if _scrape_log_table_ready:
+        return
 
-    cmd = [python_exec, script_path]
+    with _scrape_log_table_lock:
+        if _scrape_log_table_ready:
+            return
+
+        session = SessionLocal()
+        try:
+            session.execute(
+                text(
+                    '''
+                    CREATE TABLE IF NOT EXISTS "ScrapeRunLog" (
+                        id SERIAL PRIMARY KEY,
+                        started_at TIMESTAMP NOT NULL,
+                        finished_at TIMESTAMP NOT NULL,
+                        status VARCHAR(32) NOT NULL,
+                        error TEXT NULL,
+                        log_lines JSON NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                    '''
+                )
+            )
+            session.commit()
+            _scrape_log_table_ready = True
+        finally:
+            session.close()
+
+
+def _persist_scrape_run_log(
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    error: Optional[str],
+    log_lines: List[str],
+) -> None:
+    _ensure_scrape_log_table()
+
+    session = SessionLocal()
+    try:
+        log_row = models.ScrapeRunLog(
+            started_at=started_at,
+            finished_at=finished_at,
+            status=status,
+            error=error,
+            log_lines=log_lines,
+            created_at=datetime.utcnow(),
+        )
+        session.add(log_row)
+        session.commit()
+    finally:
+        session.close()
+
+
+def run_scraper_task():
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    script_path = os.path.join(backend_dir, "src", "collection", "scraper.py")
+    started_at = datetime.utcnow()
+    run_logs: List[str] = ["Scraper started..."]
+    run_status = "done"
+    run_error: Optional[str] = None
+
+    _update_state(
+        running=True,
+        status="running",
+        current_stage_index=0,
+        logs=list(run_logs),
+        started_at=started_at.isoformat(),
+        finished_at=None,
+        error=None,
+    )
+
+    cmd = [sys.executable, "-m", "src.collection.scraper"]
     try:
         proc = subprocess.Popen(
             cmd,
@@ -64,130 +129,114 @@ def _run_stage_tracked(script_path: str, stage_index: int, python_exec: str):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            cwd=backend_dir,
         )
         for line in proc.stdout:  # type: ignore
             stripped = line.rstrip()
             if stripped:
+                run_logs.append(stripped)
                 _append_log(stripped)
         proc.wait()
+
         if proc.returncode != 0:
-            _append_log(f"✗ Stage failed (exit {proc.returncode}): {stage_label}")
-            return False
-        _append_log(f"✓ Done: {stage_label}")
-        return True
-    except Exception as e:
-        _append_log(f"✗ Error running {stage_label}: {str(e)}")
-        return False
-
-
-def run_pipeline_task():
-    """Background task: run all 5 pipeline stages and track progress."""
-    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    python_exec = sys.executable
-
-    _update_state(
-        running=True,
-        status="running",
-        current_stage_index=0,
-        logs=["Pipeline started…"],
-        started_at=datetime.utcnow().isoformat(),
-        finished_at=None,
-        error=None,
-    )
-
-    all_scripts = [
-        ("scraper",        "src/collection/scraper.py"),
-        ("preprocessor",   "src/processing/preprocessor.py"),
-        ("bias_extractor", "src/extraction/bias_extractor.py"),
-        ("aggregator",     "src/aggregation/aggregator.py"),
-        ("explainer",      "src/explainability/explainer.py"),
-    ]
-
-    start = time.time()
-    for idx, (key, rel_path) in enumerate(all_scripts):
-        script_path = os.path.join(backend_dir, rel_path)
-        success = _run_stage_tracked(script_path, idx, python_exec)
-        if not success:
+            run_status = "error"
+            run_error = f"Scraper failed with exit code {proc.returncode}"
+            run_logs.append(f"Scraper failed (exit {proc.returncode})")
             _update_state(
                 running=False,
                 status="error",
                 finished_at=datetime.utcnow().isoformat(),
-                error=f"Pipeline stopped at stage: {STAGES[idx]['label']}",
+                error=run_error,
             )
+            _append_log(f"Scraper failed (exit {proc.returncode})")
             return
 
-    elapsed = time.time() - start
-    _append_log(f"🎉 Pipeline completed in {elapsed:.1f}s")
-    _update_state(
-        running=False,
-        status="done",
-        current_stage_index=len(STAGES),  # all done
-        finished_at=datetime.utcnow().isoformat(),
-    )
+        run_logs.append("Scraper completed successfully")
+        _append_log("Scraper completed successfully")
+        _update_state(
+            running=False,
+            status="done",
+            current_stage_index=1,
+            finished_at=datetime.utcnow().isoformat(),
+        )
+    except Exception as exc:
+        run_status = "error"
+        run_error = str(exc)
+        run_logs.append(f"Error running scraper: {str(exc)}")
+        _append_log(f"Error running scraper: {str(exc)}")
+        _update_state(
+            running=False,
+            status="error",
+            finished_at=datetime.utcnow().isoformat(),
+            error=run_error,
+        )
+    finally:
+        finished_at = datetime.utcnow()
+        try:
+            _persist_scrape_run_log(started_at, finished_at, run_status, run_error, run_logs)
+        except Exception:
+            # Do not fail scraper flow if persisting logs fails.
+            pass
 
-
-# ─────────────────────────────────────────────────────────────
-#  Endpoints
-# ─────────────────────────────────────────────────────────────
 
 @router.get("/pipeline-status")
 def get_pipeline_status():
-    """Return the current pipeline execution state (poll this endpoint)."""
     with _state_lock:
         return dict(_pipeline_state)
 
 
+@router.get("/scrape-logs", response_model=List[schemas.ScrapeRunLogResponse])
+def list_scrape_logs(
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    _ensure_scrape_log_table()
+    rows = (
+        db.query(models.ScrapeRunLog)
+        .order_by(models.ScrapeRunLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return rows
+
+
+@router.get("/scrape-logs/latest", response_model=Optional[schemas.ScrapeRunLogResponse])
+def latest_scrape_log(db: Session = Depends(get_db)):
+    _ensure_scrape_log_table()
+    row = db.query(models.ScrapeRunLog).order_by(models.ScrapeRunLog.id.desc()).first()
+    return row
+
+
 @router.post("/clean-and-rescrape")
 def clean_and_rescrape(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Clean all data and trigger the full pipeline in the background."""
     with _state_lock:
         if _pipeline_state["running"]:
-            raise HTTPException(status_code=409, detail="Pipeline is already running.")
+            raise HTTPException(status_code=409, detail="Scraper is already running.")
 
     try:
-        tables = [
-            "UIExplainData",
-            "PotentialOmission",
-            "AggregatedCoverage",
-            "AggregatedSentiment",
-            "Article"
-        ]
-        for table in tables:
-            db.execute(text(f'DELETE FROM "{table}";'))
+        db.execute(text('DELETE FROM "Article";'))
         db.commit()
-    except Exception as e:
+    except Exception as exc:
         db.rollback()
-        logging.error(f"Database wipe failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database clean failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Article cleanup failed: {str(exc)}")
 
-    background_tasks.add_task(run_pipeline_task)
-
+    background_tasks.add_task(run_scraper_task)
     return {
         "status": "ok",
-        "message": "Database cleaned and rescrape pipeline started in the background."
+        "message": "Article table cleaned and scraper started in the background.",
     }
 
 
 @router.post("/clean-db")
 def clean_db_only(db: Session = Depends(get_db)):
-    """Clean all data from the database without triggering the pipeline."""
     try:
-        tables = [
-            "UIExplainData",
-            "PotentialOmission",
-            "AggregatedCoverage",
-            "AggregatedSentiment",
-            "Article"
-        ]
-        for table in tables:
-            db.execute(text(f'DELETE FROM "{table}";'))
+        db.execute(text('DELETE FROM "Article";'))
         db.commit()
-    except Exception as e:
+    except Exception as exc:
         db.rollback()
-        logging.error(f"Database wipe failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database clean failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Article cleanup failed: {str(exc)}")
 
     return {
         "status": "ok",
-        "message": "Database cleaned successfully."
+        "message": "Article table cleaned successfully.",
     }
