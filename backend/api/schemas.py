@@ -110,6 +110,12 @@ class OutletCompareRequest(BaseModel):
     outlets: List[str]
 
 
+
+class TopicSummaryResponse(BaseModel):
+    topic_key: str
+    article_count: int
+
+
 class BiasRunLogResponse(BaseModel):
     id: int
     started_at: datetime

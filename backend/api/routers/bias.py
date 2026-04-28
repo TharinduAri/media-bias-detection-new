@@ -67,9 +67,27 @@ def get_article_bias(article_id: int, db: Session = Depends(get_db)):
     return score
 
 
+@router.get("/topics", response_model=list[schemas.TopicSummaryResponse])
+def list_bias_topics(
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import func
+    rows = (
+        db.query(
+            models.ArticleBiasScore.topic_key,
+            func.count(models.ArticleBiasScore.id).label("article_count")
+        )
+        .group_by(models.ArticleBiasScore.topic_key)
+        .order_by(func.count(models.ArticleBiasScore.id).desc())
+        .all()
+    )
+    return [{"topic_key": r[0], "article_count": r[1]} for r in rows]
+
+
 @router.get("/articles", response_model=list[schemas.ArticleBiasWithArticleResponse])
 def list_article_bias_scores(
     outlet: str | None = Query(None, description="Filter by outlet name"),
+    topic_key: str | None = Query(None, description="Filter by topic key"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -77,10 +95,12 @@ def list_article_bias_scores(
     q = (
         db.query(models.ArticleBiasScore, models.Article)
         .join(models.Article, models.Article.id == models.ArticleBiasScore.article_id)
-        .order_by(models.ArticleBiasScore.created_at.desc())
+        .order_by(models.ArticleBiasScore.sentiment_bias.desc())
     )
     if outlet:
         q = q.filter(models.ArticleBiasScore.outlet == outlet)
+    if topic_key:
+        q = q.filter(models.ArticleBiasScore.topic_key == topic_key)
 
     rows = q.offset(offset).limit(limit).all()
     results: list[schemas.ArticleBiasWithArticleResponse] = []
@@ -105,6 +125,7 @@ def list_article_bias_scores(
             )
         )
     return results
+
 
 
 @router.get("/logs", response_model=list[schemas.BiasRunLogResponse])
