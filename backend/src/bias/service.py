@@ -9,14 +9,14 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import AgglomerativeClustering
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
-from sqlalchemy import distinct, exists
+from sqlalchemy import distinct, exists, func
 from sqlalchemy.orm import Session
 
 from api import models
-from api.database import Base, SessionLocal, db_manager
+from api.database import Base, db_manager
 
 DAYS_LOOKBACK = 28
-CLUSTER_DISTANCE_THRESHOLD = 0.35
+CLUSTER_DISTANCE_THRESHOLD = 0.5
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 SENTIMENT_MAX_LENGTH = 256
 MERGE_SIMILARITY_THRESHOLD = 0.5
@@ -92,6 +92,8 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
         unscored_articles = (
             db.query(models.Article)
             .filter(models.Article.date >= since)
+            .filter(models.Article.text.isnot(None))
+            .filter(func.length(models.Article.text) > 100)
             .filter(~exists().where(models.ArticleBiasScore.article_id == models.Article.id))
             .order_by(models.Article.date.desc())
             .all()
@@ -101,7 +103,7 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
 
         if not unscored_articles:
             run_logs.append("No unscored articles in the last 28 days.")
-            _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+            _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
             return {
                 "status": "ok",
                 "message": "No unscored articles found in the last 28 days.",
@@ -123,7 +125,7 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
 
         if len(unscored_articles) < 2:
             run_logs.append("Not enough articles to form topic groups.")
-            _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+            _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
             return {
                 "status": "ok",
                 "message": "Not enough articles to form topic groups.",
@@ -217,7 +219,7 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
         profiles_updated = _upsert_profiles(db, profiles)
         run_logs.append(f"Outlet profiles updated: {profiles_updated}")
 
-        _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+        _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
 
         return {
             "status": "ok",
@@ -230,7 +232,7 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
         run_status = "error"
         run_error = str(exc)
         run_logs.append(f"Error: {run_error}")
-        _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+        _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
         raise
 
 
@@ -344,6 +346,7 @@ def _merge_single_outlet_clusters(
         centroid = np.mean(embeddings[indices], axis=0)
         cluster_items[label] = {"indices": list(indices), "outlets": outlet_set, "centroid": centroid}
 
+    # Snapshot labels so we can safely mutate cluster_items during the merge loop.
     labels = list(cluster_items.keys())
     for label in labels:
         item = cluster_items[label]
@@ -386,6 +389,7 @@ def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
 
 
 def _persist_bias_run_log(
+    db: Session,
     started_at: datetime,
     finished_at: datetime,
     status: str,
@@ -393,17 +397,13 @@ def _persist_bias_run_log(
     log_lines: List[str],
 ) -> None:
     ensure_bias_tables()
-    session = SessionLocal()
-    try:
-        log_row = models.BiasRunLog(
-            started_at=started_at,
-            finished_at=finished_at,
-            status=status,
-            error=error,
-            log_lines=log_lines,
-            created_at=datetime.utcnow(),
-        )
-        session.add(log_row)
-        session.commit()
-    finally:
-        session.close()
+    log_row = models.BiasRunLog(
+        started_at=started_at,
+        finished_at=finished_at,
+        status=status,
+        error=error,
+        log_lines=log_lines,
+        created_at=datetime.utcnow(),
+    )
+    db.add(log_row)
+    db.commit()
