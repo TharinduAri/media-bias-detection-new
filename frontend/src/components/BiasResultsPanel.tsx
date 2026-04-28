@@ -157,7 +157,7 @@ export default function BiasResultsPanel({ outlets }: Props) {
       return items.sort((a, b) => a.outlet.localeCompare(b.outlet));
     }
     if (biasSort === "topic") {
-      return items.sort((a, b) => a.topic_key.localeCompare(b.topic_key));
+      return items.sort((a, b) => (a.topic_label || a.topic_key).localeCompare(b.topic_label || b.topic_key));
     }
     return items.sort((a, b) => Math.abs(b.sentiment_bias) - Math.abs(a.sentiment_bias));
   }, [biasArticles, biasSort]);

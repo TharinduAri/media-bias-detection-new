@@ -46,6 +46,7 @@ class ArticleBiasScore(Base):
     article_id = Column(Integer, nullable=False, index=True)
     outlet = Column(String, nullable=False, index=True)
     topic_key = Column(String, nullable=False, index=True)
+    topic_label = Column(String, nullable=True)
     sentiment_label = Column(String, nullable=False)
     sentiment_score = Column(Float, nullable=False)
     sentiment_confidence = Column(Float, nullable=False)

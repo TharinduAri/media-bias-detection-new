@@ -75,13 +75,14 @@ def list_bias_topics(
     rows = (
         db.query(
             models.ArticleBiasScore.topic_key,
+            func.max(models.ArticleBiasScore.topic_label).label("topic_label"),
             func.count(models.ArticleBiasScore.id).label("article_count")
         )
         .group_by(models.ArticleBiasScore.topic_key)
         .order_by(func.count(models.ArticleBiasScore.id).desc())
         .all()
     )
-    return [{"topic_key": r[0], "article_count": r[1]} for r in rows]
+    return [{"topic_key": r[0], "topic_label": r[1], "article_count": r[2]} for r in rows]
 
 
 @router.get("/articles", response_model=list[schemas.ArticleBiasWithArticleResponse])
@@ -114,6 +115,7 @@ def list_article_bias_scores(
                 date=article.date,
                 url=article.url,
                 topic_key=score.topic_key,
+                topic_label=score.topic_label,
                 sentiment_label=score.sentiment_label,
                 sentiment_score=score.sentiment_score,
                 sentiment_confidence=score.sentiment_confidence,

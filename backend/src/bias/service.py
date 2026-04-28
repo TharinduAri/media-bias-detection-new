@@ -9,6 +9,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import AgglomerativeClustering
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
+from keybert import KeyBERT
 from sqlalchemy import distinct, exists, func
 from sqlalchemy.orm import Session
 
@@ -16,7 +17,7 @@ from api import models
 from api.database import Base, db_manager
 
 DAYS_LOOKBACK = 28
-CLUSTER_DISTANCE_THRESHOLD = 0.7
+CLUSTER_DISTANCE_THRESHOLD = 0.6
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 SENTIMENT_MAX_LENGTH = 256
 MERGE_SIMILARITY_THRESHOLD = 0.5
@@ -42,6 +43,7 @@ class BiasModelManager:
             tokenizer=tokenizer,
             device=-1,
         )
+        self.kw_model = KeyBERT(model=self.embedding_model)
 
     def embed(self, texts: List[str]) -> np.ndarray:
         return np.asarray(self.embedding_model.encode(texts, normalize_embeddings=True))
@@ -57,6 +59,29 @@ class BiasModelManager:
             )
         return mapped
 
+    def generate_topic_label(self, titles: List[str]) -> str:
+        if not titles:
+            return "Unknown Topic"
+        
+        try:
+            combined_text = " ".join(titles)
+            # Extract single most representative 2-4 word keyphrase
+            keywords = self.kw_model.extract_keywords(
+                combined_text, 
+                keyphrase_ngram_range=(2, 4), 
+                stop_words='english', 
+                top_n=1
+            )
+            
+            if keywords:
+                label = keywords[0][0]
+                return label.title()
+            
+            # Fallback: first title truncated
+            return titles[0][:50].strip().title()
+        except Exception:
+            return titles[0][:50].strip().title()
+
 
 _MODEL_MANAGER: BiasModelManager | None = None
 
@@ -68,15 +93,16 @@ def get_models() -> BiasModelManager:
     return _MODEL_MANAGER
 
 
-def ensure_bias_tables() -> None:
-    Base.metadata.create_all(
-        bind=db_manager.engine,
-        tables=[
-            models.ArticleBiasScore.__table__,
-            models.OutletBiasProfile.__table__,
-            models.BiasRunLog.__table__,
-        ],
-    )
+def ensure_bias_tables(drop_first: bool = False) -> None:
+    target_tables = [
+        models.ArticleBiasScore.__table__,
+        models.OutletBiasProfile.__table__,
+        models.BiasRunLog.__table__,
+    ]
+    if drop_first:
+        Base.metadata.drop_all(bind=db_manager.engine, tables=target_tables)
+    
+    Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
 
 
 def run_bias_analysis(db: Session) -> Dict[str, object]:
@@ -171,6 +197,11 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
             group_mean = float(np.mean(group_scores)) if group_scores else 0.0
             coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
             coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
+            
+            # Generate human-readable label
+            topic_titles = [unscored_articles[idx].title for idx in indices]
+            topic_label = model_manager.generate_topic_label(topic_titles)
+            
             topic_key = f"{run_key}-{label}"
 
             for idx in indices:
@@ -182,6 +213,7 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
                         article_id=article.id,
                         outlet=article.outlet,
                         topic_key=topic_key,
+                        topic_label=topic_label,
                         sentiment_label=sentiment.label,
                         sentiment_score=float(sentiment.score),
                         sentiment_confidence=float(sentiment.confidence),
