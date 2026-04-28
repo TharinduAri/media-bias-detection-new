@@ -6,6 +6,7 @@ class OutletResponse(BaseModel):
     id: int
     name: str
     url: str
+    rss_feeds: Optional[List[str]] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -13,6 +14,7 @@ class OutletResponse(BaseModel):
 class OutletCreateRequest(BaseModel):
     name: str
     url: str
+    rss_feeds: Optional[List[str]] = None
 
 class ArticleResponse(BaseModel):
     id: int

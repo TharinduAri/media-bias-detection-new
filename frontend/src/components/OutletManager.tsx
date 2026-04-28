@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  createOutlet,
   deleteOutlet,
   fetchOutlets,
   fetchOutletRegistry,
@@ -137,6 +138,10 @@ export default function OutletManager() {
   const [registry, setRegistry] = useState<OutletRegistryEntry[]>([]);
   const [isFetching, setIsFetching] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newUrl, setNewUrl] = useState("");
+  const [newRssFeeds, setNewRssFeeds] = useState("");
+  const [isAdding, setIsAdding] = useState(false);
 
   const activeDomains = new Set(
     outlets.map((o) => {
@@ -182,6 +187,36 @@ export default function OutletManager() {
         text: error instanceof Error ? error.message : "Failed to delete outlet.",
         type: "error",
       });
+    }
+  };
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newName.trim() || !newUrl.trim()) return;
+
+    setIsAdding(true);
+    setMessage(null);
+
+    try {
+      await createOutlet({
+        name: newName.trim(),
+        url: newUrl.trim(),
+        rss_feeds: newRssFeeds
+          ? newRssFeeds.split(",").map((s) => s.trim()).filter(Boolean)
+          : [],
+      });
+      setMessage({ text: `Outlet "${newName}" added successfully.`, type: "success" });
+      setNewName("");
+      setNewUrl("");
+      setNewRssFeeds("");
+      await load();
+    } catch (error) {
+      setMessage({
+        text: error instanceof Error ? error.message : "Failed to add outlet.",
+        type: "error",
+      });
+    } finally {
+      setIsAdding(false);
     }
   };
 
@@ -244,6 +279,47 @@ export default function OutletManager() {
           >
             {isFetching ? "Refreshing…" : "↻ Refresh"}
           </button>
+        </div>
+
+        <div className="p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30">
+          <form onSubmit={handleAdd} className="flex flex-col md:flex-row gap-3">
+            <div className="flex-1">
+              <input
+                type="text"
+                placeholder="Outlet Name (e.g. Daily Mirror)"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-600 transition-all"
+                required
+              />
+            </div>
+            <div className="flex-[2]">
+              <input
+                type="url"
+                placeholder="Base URL (e.g. https://www.dailymirror.lk)"
+                value={newUrl}
+                onChange={(e) => setNewUrl(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-600 transition-all"
+                required
+              />
+            </div>
+            <div className="flex-[2]">
+              <input
+                type="text"
+                placeholder="RSS Feeds (Optional, comma-separated)"
+                value={newRssFeeds}
+                onChange={(e) => setNewRssFeeds(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-600 transition-all"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isAdding || !newName || !newUrl}
+              className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            >
+              {isAdding ? "Adding..." : "Add Outlet"}
+            </button>
+          </form>
         </div>
 
         <div className="p-5">

@@ -4,12 +4,14 @@ export interface OutletData {
   id: number;
   name: string;
   url: string;
+  rss_feeds?: string[];
   created_at: string;
 }
 
 export interface CreateOutletPayload {
   name: string;
   url: string;
+  rss_feeds?: string[];
 }
 
 export interface OutletRegistryEntry {

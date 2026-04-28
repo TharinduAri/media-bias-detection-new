@@ -82,7 +82,7 @@ def create_outlet(payload: schemas.OutletCreateRequest, db: Session = Depends(ge
     outlet = models.Outlet(
         name=payload.name.strip(),
         url=payload.url.strip(),
-        rss_feeds=[],
+        rss_feeds=payload.rss_feeds or [],
         created_at=datetime.utcnow(),
     )
 
