@@ -64,6 +64,16 @@ export interface ScrapeRunLogData {
   created_at: string | null;
 }
 
+export interface BiasRunLogData {
+  id: number;
+  started_at: string;
+  finished_at: string;
+  status: "done" | "error" | string;
+  error: string | null;
+  log_lines: string[];
+  created_at: string | null;
+}
+
 export interface ArticleBiasScoreData {
   id: number;
   article_id: number;
@@ -152,6 +162,13 @@ export async function fetchScrapeLogs(limit = 10): Promise<ScrapeRunLogData[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   const res = await fetch(`${API_BASE_URL}/system/scrape-logs?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch scrape logs");
+  return res.json();
+}
+
+export async function fetchBiasLogs(limit = 10): Promise<BiasRunLogData[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await fetch(`${API_BASE_URL}/bias/logs?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch bias logs");
   return res.json();
 }
 
@@ -294,6 +311,18 @@ export async function fetchBiasArticles(
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to fetch bias articles");
+  }
+  return res.json();
+}
+
+export async function triggerBiasCleanup(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/bias/cleanup`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to clear bias analysis data");
   }
   return res.json();
 }

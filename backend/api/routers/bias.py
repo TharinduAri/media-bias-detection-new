@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from src.bias.service import get_models, run_bias_analysis
+from src.bias.service import ensure_bias_tables, get_models, run_bias_analysis
 
 router = APIRouter(
     prefix="/api/v1/bias",
@@ -105,3 +105,34 @@ def list_article_bias_scores(
             )
         )
     return results
+
+
+@router.get("/logs", response_model=list[schemas.BiasRunLogResponse])
+def list_bias_logs(
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    ensure_bias_tables()
+    rows = (
+        db.query(models.BiasRunLog)
+        .order_by(models.BiasRunLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return rows
+
+
+@router.delete("/cleanup")
+def cleanup_bias_results(db: Session = Depends(get_db)):
+    ensure_bias_tables()
+    deleted_articles = db.query(models.ArticleBiasScore).delete(synchronize_session=False)
+    deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
+    deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
+    db.commit()
+    return {
+        "status": "ok",
+        "message": "Bias analysis data cleared.",
+        "deleted_article_scores": deleted_articles,
+        "deleted_outlet_profiles": deleted_profiles,
+        "deleted_run_logs": deleted_logs,
+    }

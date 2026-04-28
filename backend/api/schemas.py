@@ -108,3 +108,15 @@ class OutletBiasProfileResponse(BaseModel):
 
 class OutletCompareRequest(BaseModel):
     outlets: List[str]
+
+
+class BiasRunLogResponse(BaseModel):
+    id: int
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    error: Optional[str] = None
+    log_lines: List[str]
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)

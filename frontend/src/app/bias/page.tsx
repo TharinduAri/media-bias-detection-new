@@ -1,4 +1,5 @@
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
+import BiasCleanupButton from "@/components/BiasCleanupButton";
 import BiasResultsPanel from "@/components/BiasResultsPanel";
 import { fetchArticleOutlets } from "@/lib/api";
 
@@ -21,7 +22,10 @@ export default async function BiasPage() {
               Inspect outlet profiles, compare coverage, and review article-level bias scores.
             </p>
           </div>
-          <BiasAnalysisButton />
+          <div className="flex flex-col items-end gap-3">
+            <BiasAnalysisButton />
+            <BiasCleanupButton />
+          </div>
         </div>
       </div>
 

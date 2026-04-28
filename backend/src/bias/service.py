@@ -13,7 +13,7 @@ from sqlalchemy import distinct, exists
 from sqlalchemy.orm import Session
 
 from api import models
-from api.database import Base, db_manager
+from api.database import Base, SessionLocal, db_manager
 
 DAYS_LOOKBACK = 28
 CLUSTER_DISTANCE_THRESHOLD = 0.35
@@ -70,122 +70,157 @@ def get_models() -> BiasModelManager:
 def ensure_bias_tables() -> None:
     Base.metadata.create_all(
         bind=db_manager.engine,
-        tables=[models.ArticleBiasScore.__table__, models.OutletBiasProfile.__table__],
+        tables=[
+            models.ArticleBiasScore.__table__,
+            models.OutletBiasProfile.__table__,
+            models.BiasRunLog.__table__,
+        ],
     )
 
 
 def run_bias_analysis(db: Session) -> Dict[str, object]:
-    ensure_bias_tables()
+    started_at = datetime.utcnow()
+    run_logs: List[str] = ["Bias analysis started..."]
+    run_status = "done"
+    run_error: str | None = None
 
-    since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
-    unscored_articles = (
-        db.query(models.Article)
-        .filter(models.Article.date >= since)
-        .filter(~exists().where(models.ArticleBiasScore.article_id == models.Article.id))
-        .order_by(models.Article.date.desc())
-        .all()
-    )
+    try:
+        ensure_bias_tables()
 
-    if not unscored_articles:
-        return {
-            "status": "ok",
-            "message": "No unscored articles found in the last 28 days.",
-            "processed_articles": 0,
-            "topics_processed": 0,
-            "profiles_updated": 0,
-        }
+        since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
+        unscored_articles = (
+            db.query(models.Article)
+            .filter(models.Article.date >= since)
+            .filter(~exists().where(models.ArticleBiasScore.article_id == models.Article.id))
+            .order_by(models.Article.date.desc())
+            .all()
+        )
 
-    outlets = [row[0] for row in db.query(distinct(models.Article.outlet)).filter(models.Article.date >= since).all()]
+        run_logs.append(f"Unscored articles found: {len(unscored_articles)}")
 
-    texts = [_build_article_text(article) for article in unscored_articles]
-    model_manager = get_models()
-    embeddings = model_manager.embed(texts)
+        if not unscored_articles:
+            run_logs.append("No unscored articles in the last 28 days.")
+            _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+            return {
+                "status": "ok",
+                "message": "No unscored articles found in the last 28 days.",
+                "processed_articles": 0,
+                "topics_processed": 0,
+                "profiles_updated": 0,
+            }
 
-    if len(unscored_articles) < 2:
-        return {
-            "status": "ok",
-            "message": "Not enough articles to form topic groups.",
-            "processed_articles": 0,
-            "topics_processed": 0,
-            "profiles_updated": 0,
-        }
+        outlets = [
+            row[0]
+            for row in db.query(distinct(models.Article.outlet)).filter(models.Article.date >= since).all()
+        ]
+        run_logs.append(f"Outlets in window: {len(outlets)}")
 
-    clustering = AgglomerativeClustering(
-        n_clusters=None,
-        distance_threshold=CLUSTER_DISTANCE_THRESHOLD,
-        metric="cosine",
-        linkage="average",
-    )
-    labels = clustering.fit_predict(embeddings)
-    clusters = _group_by_label(labels)
+        texts = [_build_article_text(article) for article in unscored_articles]
+        model_manager = get_models()
+        embeddings = model_manager.embed(texts)
+        run_logs.append("Computed sentence embeddings.")
 
-    sentiment_results = model_manager.analyze_sentiment(texts)
+        if len(unscored_articles) < 2:
+            run_logs.append("Not enough articles to form topic groups.")
+            _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+            return {
+                "status": "ok",
+                "message": "Not enough articles to form topic groups.",
+                "processed_articles": 0,
+                "topics_processed": 0,
+                "profiles_updated": 0,
+            }
 
-    now = datetime.utcnow()
-    run_key = now.strftime("%Y%m%d%H%M%S")
+        clustering = AgglomerativeClustering(
+            n_clusters=None,
+            distance_threshold=CLUSTER_DISTANCE_THRESHOLD,
+            metric="cosine",
+            linkage="average",
+        )
+        labels = clustering.fit_predict(embeddings)
+        clusters = _group_by_label(labels)
+        run_logs.append(f"Topic groups formed: {len(clusters)}")
 
-    article_scores: List[models.ArticleBiasScore] = []
-    outlet_stats = _init_outlet_stats(outlets)
-    topics_processed = 0
+        sentiment_results = model_manager.analyze_sentiment(texts)
+        run_logs.append("Computed sentiment scores.")
 
-    for label, indices in clusters.items():
-        cluster_outlets = {unscored_articles[idx].outlet for idx in indices}
-        if len(cluster_outlets) < 2:
-            continue
+        now = datetime.utcnow()
+        run_key = now.strftime("%Y%m%d%H%M%S")
 
-        topics_processed += 1
-        group_scores = [sentiment_results[idx].score for idx in indices]
-        group_mean = float(np.mean(group_scores)) if group_scores else 0.0
-        coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
-        coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
-        topic_key = f"{run_key}-{label}"
+        article_scores: List[models.ArticleBiasScore] = []
+        outlet_stats = _init_outlet_stats(outlets)
+        topics_processed = 0
 
-        for idx in indices:
-            article = unscored_articles[idx]
-            sentiment = sentiment_results[idx]
-            bias_score = sentiment.score - group_mean
-            article_scores.append(
-                models.ArticleBiasScore(
-                    article_id=article.id,
-                    outlet=article.outlet,
-                    topic_key=topic_key,
-                    sentiment_label=sentiment.label,
-                    sentiment_score=float(sentiment.score),
-                    sentiment_confidence=float(sentiment.confidence),
-                    sentiment_bias=float(bias_score),
-                    group_sentiment_mean=float(group_mean),
-                    coverage_majority=coverage_majority,
-                    coverage_present=True,
-                    created_at=now,
+        for label, indices in clusters.items():
+            cluster_outlets = {unscored_articles[idx].outlet for idx in indices}
+            if len(cluster_outlets) < 2:
+                continue
+
+            topics_processed += 1
+            group_scores = [sentiment_results[idx].score for idx in indices]
+            group_mean = float(np.mean(group_scores)) if group_scores else 0.0
+            coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
+            coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
+            topic_key = f"{run_key}-{label}"
+
+            for idx in indices:
+                article = unscored_articles[idx]
+                sentiment = sentiment_results[idx]
+                bias_score = sentiment.score - group_mean
+                article_scores.append(
+                    models.ArticleBiasScore(
+                        article_id=article.id,
+                        outlet=article.outlet,
+                        topic_key=topic_key,
+                        sentiment_label=sentiment.label,
+                        sentiment_score=float(sentiment.score),
+                        sentiment_confidence=float(sentiment.confidence),
+                        sentiment_bias=float(bias_score),
+                        group_sentiment_mean=float(group_mean),
+                        coverage_majority=coverage_majority,
+                        coverage_present=True,
+                        created_at=now,
+                    )
                 )
-            )
-            stats = outlet_stats[article.outlet]
-            stats["sentiment_bias_sum"] += bias_score
-            stats["sentiment_score_sum"] += sentiment.score
-            stats["articles_scored"] += 1
-            stats["topics_covered"] += 1
+                stats = outlet_stats[article.outlet]
+                stats["sentiment_bias_sum"] += bias_score
+                stats["sentiment_score_sum"] += sentiment.score
+                stats["articles_scored"] += 1
+                stats["topics_covered"] += 1
 
-        if coverage_majority:
-            for outlet in outlets:
-                stats = outlet_stats[outlet]
-                stats["topics_considered"] += 1
-                if outlet not in cluster_outlets:
-                    stats["coverage_missing_majority"] += 1
+            if coverage_majority:
+                for outlet in outlets:
+                    stats = outlet_stats[outlet]
+                    stats["topics_considered"] += 1
+                    if outlet not in cluster_outlets:
+                        stats["coverage_missing_majority"] += 1
 
-    if article_scores:
-        db.add_all(article_scores)
-        db.commit()
+        if article_scores:
+            db.add_all(article_scores)
+            db.commit()
+            run_logs.append(f"Article bias scores saved: {len(article_scores)}")
+        else:
+            run_logs.append("No qualifying topic groups produced bias scores.")
 
-    profiles = _build_profiles(outlet_stats, now)
-    profiles_updated = _upsert_profiles(db, profiles)
+        profiles = _build_profiles(outlet_stats, now)
+        profiles_updated = _upsert_profiles(db, profiles)
+        run_logs.append(f"Outlet profiles updated: {profiles_updated}")
 
-    return {
-        "status": "ok",
-        "message": "Bias analysis completed.",
-        "processed_articles": len(article_scores),
-        "topics_processed": topics_processed,
-        "profiles_updated": profiles_updated,
-    }
+        _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+
+        return {
+            "status": "ok",
+            "message": "Bias analysis completed.",
+            "processed_articles": len(article_scores),
+            "topics_processed": topics_processed,
+            "profiles_updated": profiles_updated,
+        }
+    except Exception as exc:
+        run_status = "error"
+        run_error = str(exc)
+        run_logs.append(f"Error: {run_error}")
+        _persist_bias_run_log(started_at, datetime.utcnow(), run_status, run_error, run_logs)
+        raise
 
 
 def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) -> List[models.OutletBiasProfile]:
@@ -283,3 +318,27 @@ def _init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, float]]:
         }
         for outlet in outlets
     }
+
+
+def _persist_bias_run_log(
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    error: str | None,
+    log_lines: List[str],
+) -> None:
+    ensure_bias_tables()
+    session = SessionLocal()
+    try:
+        log_row = models.BiasRunLog(
+            started_at=started_at,
+            finished_at=finished_at,
+            status=status,
+            error=error,
+            log_lines=log_lines,
+            created_at=datetime.utcnow(),
+        )
+        session.add(log_row)
+        session.commit()
+    finally:
+        session.close()

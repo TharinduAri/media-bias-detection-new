@@ -71,3 +71,15 @@ class OutletBiasProfile(Base):
     coverage_missing_majority = Column(Integer, nullable=False)
     coverage_bias_rate = Column(Float, nullable=False)
     updated_at = Column(DateTime, nullable=False)
+
+
+class BiasRunLog(Base):
+    __tablename__ = "BiasRunLog"
+
+    id = Column(Integer, primary_key=True, index=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    log_lines = Column(JSON, nullable=False)
+    created_at = Column(DateTime)
