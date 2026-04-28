@@ -120,6 +120,11 @@ export interface OutletBiasProfileData {
   updated_at: string;
 }
 
+export interface TopicSummaryData {
+  topic_key: string;
+  article_count: number;
+}
+
 export interface BiasRunResponse {
   status: string;
   message: string;
@@ -303,15 +308,23 @@ export async function fetchArticleBiasScore(articleId: number): Promise<ArticleB
 export async function fetchBiasArticles(
   limit = 50,
   offset = 0,
-  outlet?: string
+  outlet?: string,
+  topic_key?: string
 ): Promise<ArticleBiasWithArticleData[]> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (outlet) params.set("outlet", outlet);
+  if (topic_key) params.set("topic_key", topic_key);
   const res = await fetch(`${API_BASE_URL}/bias/articles?${params.toString()}`, { cache: "no-store" });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to fetch bias articles");
   }
+  return res.json();
+}
+
+export async function fetchBiasTopics(): Promise<TopicSummaryData[]> {
+  const res = await fetch(`${API_BASE_URL}/bias/topics`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch bias topics");
   return res.json();
 }
 
