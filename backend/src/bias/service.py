@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import os
 import re
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Set, Tuple
 
+import httpx
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import AgglomerativeClustering
@@ -21,6 +23,14 @@ CLUSTER_DISTANCE_THRESHOLD = 0.6
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 SENTIMENT_MAX_LENGTH = 256
 MERGE_SIMILARITY_THRESHOLD = 0.5
+GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
+GEMINI_BATCH_SIZE = 32
+LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
+    "minilm_l6": "all-MiniLM-L6-v2",
+    "minilm_l12": "all-MiniLM-L12-v2",
+    "mpnet_v2": "all-mpnet-base-v2",
+    "multilingual_minilm": "paraphrase-multilingual-MiniLM-L12-v2",
+}
 
 
 @dataclass(frozen=True)
@@ -31,8 +41,8 @@ class SentimentResult:
 
 
 class BiasModelManager:
-    def __init__(self) -> None:
-        self.embedding_model_name = "all-MiniLM-L6-v2"
+    def __init__(self, embedding_model_name: str) -> None:
+        self.embedding_model_name = embedding_model_name
         self.sentiment_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
         self.embedding_model = SentenceTransformer(self.embedding_model_name)
         tokenizer = AutoTokenizer.from_pretrained(self.sentiment_model_name)
@@ -83,14 +93,16 @@ class BiasModelManager:
             return titles[0][:50].strip().title()
 
 
-_MODEL_MANAGER: BiasModelManager | None = None
+_MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
 
 
-def get_models() -> BiasModelManager:
-    global _MODEL_MANAGER
-    if _MODEL_MANAGER is None:
-        _MODEL_MANAGER = BiasModelManager()
-    return _MODEL_MANAGER
+def get_models(local_embedding_key: str = "minilm_l6") -> BiasModelManager:
+    model_name = _resolve_local_embedding_model(local_embedding_key)
+    manager = _MODEL_MANAGERS.get(model_name)
+    if manager is None:
+        manager = BiasModelManager(model_name)
+        _MODEL_MANAGERS[model_name] = manager
+    return manager
 
 
 def ensure_bias_tables(drop_first: bool = False) -> None:
@@ -105,7 +117,11 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
     Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
 
 
-def run_bias_analysis(db: Session) -> Dict[str, object]:
+def run_bias_analysis(
+    db: Session,
+    embedding_provider: str = "local",
+    local_embedding_key: str = "minilm_l6",
+) -> Dict[str, object]:
     started_at = datetime.utcnow()
     run_logs: List[str] = ["Bias analysis started..."]
     run_status = "done"
@@ -125,6 +141,9 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
             .all()
         )
 
+        embedding_model = _resolve_embedding_model_name(embedding_provider, local_embedding_key)
+        run_logs.append(f"Embedding provider: {embedding_provider}")
+        run_logs.append(f"Embedding model: {embedding_model}")
         run_logs.append(f"Unscored articles found: {len(unscored_articles)}")
 
         if not unscored_articles:
@@ -136,6 +155,8 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
                 "processed_articles": 0,
                 "topics_processed": 0,
                 "profiles_updated": 0,
+                "embedding_provider": embedding_provider,
+                "embedding_model": embedding_model,
             }
 
         outlets = [
@@ -144,9 +165,15 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
         ]
         run_logs.append(f"Outlets in window: {len(outlets)}")
 
-        texts = [_build_article_text(article) for article in unscored_articles]
-        model_manager = get_models()
-        embeddings = model_manager.embed(texts)
+        outlet_blocklist = _build_outlet_blocklist(outlets)
+        texts = [_build_article_text(article, outlet_blocklist) for article in unscored_articles]
+        model_manager = get_models(local_embedding_key)
+        embeddings = _embed_texts(
+            texts=texts,
+            embedding_provider=embedding_provider,
+            local_embedding_key=local_embedding_key,
+            model_manager=model_manager,
+        )
         run_logs.append("Computed sentence embeddings.")
 
         if len(unscored_articles) < 2:
@@ -158,6 +185,8 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
                 "processed_articles": 0,
                 "topics_processed": 0,
                 "profiles_updated": 0,
+                "embedding_provider": embedding_provider,
+                "embedding_model": embedding_model,
             }
 
         clustering = AgglomerativeClustering(
@@ -263,6 +292,8 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
             "processed_articles": len(article_scores),
             "topics_processed": topics_processed,
             "profiles_updated": profiles_updated,
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
         }
     except Exception as exc:
         run_status = "error"
@@ -298,6 +329,144 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
     return profiles
 
 
+def _resolve_local_embedding_model(local_embedding_key: str) -> str:
+    key = (local_embedding_key or "minilm_l6").strip().lower()
+    if key not in LOCAL_EMBEDDING_MODELS:
+        supported = ", ".join(sorted(LOCAL_EMBEDDING_MODELS.keys()))
+        raise ValueError(f"Unsupported local embedding key '{local_embedding_key}'. Supported: {supported}")
+    return LOCAL_EMBEDDING_MODELS[key]
+
+
+def _resolve_embedding_model_name(embedding_provider: str, local_embedding_key: str) -> str:
+    provider = (embedding_provider or "local").strip().lower()
+    if provider == "local":
+        return _resolve_local_embedding_model(local_embedding_key)
+    if provider == "gemini":
+        return GEMINI_EMBED_MODEL
+    raise ValueError(f"Unsupported embedding provider: {embedding_provider}")
+
+
+def _embed_texts(
+    texts: List[str],
+    embedding_provider: str,
+    local_embedding_key: str,
+    model_manager: BiasModelManager,
+) -> np.ndarray:
+    provider = (embedding_provider or "local").strip().lower()
+    if provider == "local":
+        # Ensure requested local model key is valid even if manager was pre-initialized.
+        _resolve_local_embedding_model(local_embedding_key)
+        return model_manager.embed(texts)
+    if provider == "gemini":
+        return _embed_with_gemini(texts)
+    raise ValueError(f"Unsupported embedding provider: {embedding_provider}")
+
+
+def _embed_with_gemini(texts: List[str]) -> np.ndarray:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
+
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    candidate_models = _gemini_candidate_models(client_headers=headers)
+    errors: List[str] = []
+
+    with httpx.Client(timeout=60.0) as client:
+        for model_name in candidate_models:
+            try:
+                embeddings = _embed_with_gemini_model(client, headers, texts, model_name)
+                return np.asarray(embeddings, dtype=np.float32)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                continue
+
+    tried = ", ".join(candidate_models)
+    failure_details = " | ".join(errors) if errors else "unknown error"
+    raise RuntimeError(
+        f"Gemini embedding failed for models [{tried}]. Errors: {failure_details}"
+    )
+
+
+def _embed_with_gemini_model(
+    client: httpx.Client,
+    headers: Dict[str, str],
+    texts: List[str],
+    model_name: str,
+) -> List[List[float]]:
+    model_embeddings: List[List[float]] = []
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:batchEmbedContents"
+    for start in range(0, len(texts), GEMINI_BATCH_SIZE):
+        chunk = texts[start : start + GEMINI_BATCH_SIZE]
+        payload = {
+            "requests": [
+                {
+                    "model": model_name,
+                    "content": {"parts": [{"text": text}]},
+                    "taskType": "SEMANTIC_SIMILARITY",
+                }
+                for text in chunk
+            ]
+        }
+        response = client.post(url, headers=headers, json=payload)
+        if response.status_code >= 400:
+            raise RuntimeError(f"{model_name} failed ({response.status_code}): {response.text[:400]}")
+        data = response.json()
+        chunk_embeddings = data.get("embeddings", [])
+        if len(chunk_embeddings) != len(chunk):
+            raise RuntimeError(f"{model_name} response size mismatch.")
+        for item in chunk_embeddings:
+            vector = item.get("values")
+            if not vector:
+                raise RuntimeError(f"{model_name} response missing vector values.")
+            model_embeddings.append(vector)
+    return model_embeddings
+
+
+def _gemini_candidate_models(client_headers: Dict[str, str]) -> List[str]:
+    configured = GEMINI_EMBED_MODEL.strip()
+    defaults = [
+        "models/gemini-embedding-001",
+        "models/gemini-embedding-2-preview",
+        "models/gemini-embedding-2",
+        "models/text-embedding-004",
+    ]
+    discovered = _discover_gemini_embed_models(client_headers)
+    models = [configured] + discovered + defaults
+    deduped: List[str] = []
+    for model in models:
+        if model and model not in deduped:
+            deduped.append(model)
+    return deduped
+
+
+def _discover_gemini_embed_models(headers: Dict[str, str]) -> List[str]:
+    api_key = headers.get("x-goog-api-key", "").strip()
+    if not api_key:
+        return []
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    params = {"key": api_key}
+    methods_needed = {"embedContent", "batchEmbedContents"}
+    discovered: List[str] = []
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(url, headers={"Content-Type": "application/json"}, params=params)
+            if response.status_code >= 400:
+                return []
+            data = response.json()
+            models = data.get("models", [])
+            for model in models:
+                name = str(model.get("name", "")).strip()
+                methods = set(model.get("supportedGenerationMethods", []) or [])
+                if name and methods.intersection(methods_needed):
+                    discovered.append(name)
+    except Exception:
+        return []
+    return discovered
+
+
 def _upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -> int:
     updated = 0
     for profile in profiles:
@@ -326,7 +495,7 @@ def _group_by_label(labels: np.ndarray) -> Dict[int, List[int]]:
     return grouped
 
 
-def _build_article_text(article: models.Article) -> str:
+def _build_article_text(article: models.Article, outlet_blocklist: Set[str]) -> str:
     title = (article.title or "").strip()
     sentences = article.sentences if isinstance(article.sentences, list) else []
     snippet = ""
@@ -336,9 +505,49 @@ def _build_article_text(article: models.Article) -> str:
         source_text = (article.clean_text or article.text or "").strip()
         snippet = _first_sentences_from_text(source_text, 3)
 
-    if snippet:
-        return f"{title}. {snippet}" if title else snippet
-    return title
+    combined = f"{title}. {snippet}" if snippet and title else (snippet or title)
+    return _strip_outlet_markers(combined, outlet_blocklist)
+
+
+def _build_outlet_blocklist(outlets: List[str]) -> Set[str]:
+    blocklist: Set[str] = set()
+    for outlet in outlets:
+        cleaned = (outlet or "").strip()
+        if cleaned:
+            blocklist.add(cleaned)
+            blocklist.add(cleaned.replace(" ", ""))
+            blocklist.add(cleaned.replace(" ", "-"))
+            blocklist.add(cleaned.replace(" ", "_"))
+    # Common domain-specific aliases/short forms.
+    blocklist.update(
+        {
+            "daily ft",
+            "dailyft",
+            "ft",
+            "economy next",
+            "economynext",
+            "lanka business online",
+            "lbo",
+            "ada derana",
+            "adaderana",
+            "ceylon today",
+            "ceylontoday",
+            "newsfirst",
+        }
+    )
+    return {item for item in blocklist if item}
+
+
+def _strip_outlet_markers(text: str, outlet_blocklist: Set[str]) -> str:
+    if not text:
+        return ""
+    cleaned = text
+    # Remove full outlet names/aliases so clustering focuses on event content.
+    for token in sorted(outlet_blocklist, key=len, reverse=True):
+        pattern = re.compile(rf"\b{re.escape(token)}\b", flags=re.IGNORECASE)
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 
 def _first_sentences_from_text(text: str, limit: int) -> str:

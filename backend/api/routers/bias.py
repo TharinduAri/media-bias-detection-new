@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -10,22 +12,33 @@ router = APIRouter(
     tags=["bias"],
 )
 
-_MODEL_MANAGER = get_models()
+_DEFAULT_MODEL_MANAGER = get_models("minilm_l6")
 
 
 @router.get("/health")
 def bias_health():
     return {
         "status": "ok",
-        "embedding_model": _MODEL_MANAGER.embedding_model_name,
-        "sentiment_model": _MODEL_MANAGER.sentiment_model_name,
+        "default_local_embedding_model": _DEFAULT_MODEL_MANAGER.embedding_model_name,
+        "sentiment_model": _DEFAULT_MODEL_MANAGER.sentiment_model_name,
     }
 
 
 @router.post("/run", response_model=schemas.BiasRunResponse)
-def run_bias(db: Session = Depends(get_db)):
+def run_bias(
+    embedding_provider: Literal["local", "gemini"] = Query("local"),
+    local_embedding_key: str = Query(
+        "minilm_l6",
+        description="Local model key when embedding_provider=local",
+    ),
+    db: Session = Depends(get_db),
+):
     try:
-        return run_bias_analysis(db)
+        return run_bias_analysis(
+            db,
+            embedding_provider=embedding_provider,
+            local_embedding_key=local_embedding_key,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

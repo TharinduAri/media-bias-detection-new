@@ -52,6 +52,8 @@ class BiasRunResponse(BaseModel):
     processed_articles: int
     topics_processed: int
     profiles_updated: int
+    embedding_provider: str
+    embedding_model: str
 
 
 class ArticleBiasScoreResponse(BaseModel):
