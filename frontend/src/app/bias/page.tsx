@@ -2,7 +2,7 @@ import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import BiasCleanupButton from "@/components/BiasCleanupButton";
 import BiasResultsPanel from "@/components/BiasResultsPanel";
 import TopicValidationPanel from "@/components/TopicValidationPanel";
-import { fetchArticleOutlets } from "@/lib/api";
+import { fetchArticleOutlets, fetchBiasTopics } from "@/lib/api";
 
 export const metadata = {
   title: "Bias Results | Media Bias Control Center",
@@ -10,6 +10,8 @@ export const metadata = {
 
 export default async function BiasPage() {
   const outlets = await fetchArticleOutlets().catch(() => [] as string[]);
+  const topics = await fetchBiasTopics().catch(() => []);
+  const topicCount = topics.length;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 pb-20 transition-colors duration-200">
@@ -22,6 +24,13 @@ export default async function BiasPage() {
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               Inspect outlet profiles, compare coverage, and review article-level bias scores.
             </p>
+            <div className="mt-4 flex items-center gap-2">
+              <div className="px-3 py-1 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 rounded-full">
+                <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-400">
+                  {topicCount} Total Topic Groups
+                </span>
+              </div>
+            </div>
           </div>
           <div className="flex flex-col items-end gap-3">
             <BiasAnalysisButton />

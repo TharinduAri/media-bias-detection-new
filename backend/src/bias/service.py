@@ -228,7 +228,10 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
                 stats["sentiment_bias_sum"] += bias_score
                 stats["sentiment_score_sum"] += sentiment.score
                 stats["articles_scored"] += 1
-                stats["topics_covered"] += 1
+
+            # Count unique topics covered by each outlet
+            for outlet in cluster_outlets:
+                outlet_stats[outlet]["topics_covered"] += 1
 
             if coverage_majority:
                 for outlet in outlets:
@@ -236,6 +239,7 @@ def run_bias_analysis(db: Session) -> Dict[str, object]:
                     stats["topics_considered"] += 1
                     if outlet not in cluster_outlets:
                         stats["coverage_missing_majority"] += 1
+                        stats["missed_topics"].append(topic_label)
 
         if article_scores:
             db.add_all(article_scores)
@@ -287,6 +291,7 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
                 topics_considered=topics_considered,
                 coverage_missing_majority=coverage_missing,
                 coverage_bias_rate=float(coverage_bias_rate),
+                missed_topics=stats["missed_topics"],
                 updated_at=now,
             )
         )
@@ -305,6 +310,7 @@ def _upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) 
             existing.topics_considered = profile.topics_considered
             existing.coverage_missing_majority = profile.coverage_missing_majority
             existing.coverage_bias_rate = profile.coverage_bias_rate
+            existing.missed_topics = profile.missed_topics
             existing.updated_at = profile.updated_at
         else:
             db.add(profile)
@@ -360,6 +366,7 @@ def _init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, float]]:
             "topics_covered": 0.0,
             "topics_considered": 0.0,
             "coverage_missing_majority": 0.0,
+            "missed_topics": [],
         }
         for outlet in outlets
     }

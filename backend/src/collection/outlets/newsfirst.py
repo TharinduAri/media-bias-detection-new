@@ -44,8 +44,8 @@ _ARTICLE_URL_RE = re.compile(
     r"(?:\d{4}/\d{2}/\d{2}/[a-z0-9\-]+/?|(?:\?p=\d+))"
 )
 
-_RSS_CANDIDATES = ["/feed", "/rss", "/feed/rss2", "/?feed=rss2"]
-_CATEGORY_PATHS = ["/", "/news/local/", "/news/world/", "/news/business/"]
+_RSS_CANDIDATES = ["/feed/rss2", "/feed", "/rss", "/?feed=rss2"]
+_CATEGORY_PATHS = ["/latest", "/news/local/", "/news/world/", "/news/business/"]
 
 
 class NewsfirstOutlet(BaseOutletScraper):
@@ -66,46 +66,55 @@ class NewsfirstOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
 
-        # 1. RSS Feed First (Most Reliable)
-        try:
-            resp = await fetch(client, f"{self.url}/feed")
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(resp.text)
-            from datetime import timezone as _tz
-            _cutoff = datetime.now(_tz.utc) - timedelta(days=days_back)
-            for item in root.findall(".//item"):
-                link = item.findtext("link")
-                if not link or self.should_skip_url(link):
-                    continue
-                pub_raw = item.findtext("pubDate")
-                pub = self._parse_dt(pub_raw)
-                if pub:
-                    if pub.tzinfo is None:
-                        pub = pub.replace(tzinfo=_tz.utc)
-                    if pub < _cutoff:
+        # 1. RSS Feed Discovery
+        for candidate in _RSS_CANDIDATES:
+            if len(articles) >= max_articles: break
+            try:
+                rss_url = f"{self.url.rstrip('/')}{candidate}"
+                resp = await fetch(client, rss_url)
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(resp.text)
+                from datetime import timezone as _tz
+                _cutoff = datetime.now(_tz.utc) - timedelta(days=days_back)
+                
+                count_before = len(articles)
+                for item in root.findall(".//item"):
+                    link = item.findtext("link")
+                    if not link or self.should_skip_url(link):
                         continue
-                if link not in articles:
-                    articles[link] = self._article_stub(link, pub)
-                if len(articles) >= max_articles:
-                    break
-            logger.info("[Newsfirst] Discovered %d URLs via RSS feed", len(articles))
-        except Exception as exc:
-            logger.debug("[Newsfirst] RSS feed fetch failed: %s", exc)
+                    pub_raw = item.findtext("pubDate")
+                    pub = self._parse_dt(pub_raw)
+                    if pub:
+                        if pub.tzinfo is None:
+                            pub = pub.replace(tzinfo=_tz.utc)
+                        if pub < _cutoff:
+                            continue
+                    if link not in articles:
+                        articles[link] = self._article_stub(link, pub)
+                    if len(articles) >= max_articles:
+                        break
+                
+                if len(articles) > count_before:
+                    logger.info("[Newsfirst] Discovered %d URLs via RSS feed: %s", len(articles) - count_before, rss_url)
+                    # Don't break, try to get more if needed, but RSS is usually limited
+            except Exception as exc:
+                logger.debug("[Newsfirst] RSS candidate %s failed: %s", candidate, exc)
 
-        # 2. Category listing pages with specific CSS selectors (Fallback)
+        # 2. Latest Page & Category listing pages (Fallback)
         if len(articles) < max_articles:
-            category_paths = ["/local", "/world", "/business", "/sports", "/latest", "/featured"]
-            for path in category_paths:
+            for path in _CATEGORY_PATHS:
                 if len(articles) >= max_articles:
                     break
                 try:
-                    resp = await fetch(client, f"{self.url}{path}")
+                    target_url = f"{self.url.rstrip('/')}{path}"
+                    resp = await fetch(client, target_url)
                     html = resp.text
                     import bs4
                     soup = bs4.BeautifulSoup(html, "html.parser")
                     
-                    # Target specific headline containers as per instructions
-                    links = soup.select(".news-block-one a[href], .news-block-two a[href], div.news-block-one > div.inner-box > div.lower-content > h3 > a")
+                    # New Angular-based structure: a[href^="/20"]
+                    # Legacy structure: .news-block-one etc.
+                    links = soup.select('a[href^="/20"], .news-block-one a[href], .news-block-two a[href]')
                     
                     for a_tag in links:
                         href = a_tag.get("href")
@@ -113,11 +122,17 @@ class NewsfirstOutlet(BaseOutletScraper):
                             continue
                             
                         from urllib.parse import urljoin
-                        candidate = urljoin(f"{self.url}{path}", href)
+                        candidate = urljoin(target_url, href)
                         
                         if _ARTICLE_URL_RE.match(candidate):
                             if candidate not in articles and not self.should_skip_url(candidate):
-                                articles[candidate] = self._article_stub(candidate)
+                                # Try to find date in inner div (DD-MM-YYYY)
+                                pub_date = None
+                                date_div = a_tag.find("div", string=re.compile(r'\d{2}-\d{2}-\d{4}'))
+                                if date_div:
+                                    pub_date = self._parse_dt(date_div.text.strip())
+                                
+                                articles[candidate] = self._article_stub(candidate, pub_date)
                                 
                     # Also try the regex as an ultimate fallback on the page HTML
                     for match in _ARTICLE_URL_RE.finditer(html):
@@ -126,7 +141,7 @@ class NewsfirstOutlet(BaseOutletScraper):
                             articles[candidate] = self._article_stub(candidate)
                             
                 except Exception as exc:
-                    logger.debug("[Newsfirst] Category scrape %s failed: %s", path, exc)
+                    logger.debug("[Newsfirst] Page scrape %s failed: %s", path, exc)
 
             logger.info("[Newsfirst] Discovered %d URLs total after category scrape", len(articles))
 

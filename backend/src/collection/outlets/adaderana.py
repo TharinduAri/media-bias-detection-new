@@ -44,14 +44,30 @@ class AdaDeranaOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
 
-        # --- Primary: sitemap ---
-        sitemap_urls = await self._sitemap_discover(client, days_back, max_articles)
-        for art in sitemap_urls:
+        # --- 1. Primary: RSS Feed (Most recent) ---
+        rss_urls = await self._rss_discover(client, days_back, max_articles)
+        for art in rss_urls:
             articles[art["url"]] = art
-        logger.info("[AdaDerana] Sitemap: %d URLs", len(articles))
+        logger.info("[AdaDerana] RSS: %d URLs", len(rss_urls))
 
-        # --- Fallback: Wayback CDX ---
-        if len(articles) < max(30, max_articles // 4):
+        # --- 2. Secondary: Home Page / Hot News (Immediate) ---
+        if len(articles) < max_articles:
+            home_urls = await self._home_page_discover(client, max_articles - len(articles))
+            for art in home_urls:
+                if art["url"] not in articles:
+                    articles[art["url"]] = art
+            logger.info("[AdaDerana] Home Page added %d URLs", len(home_urls))
+
+        # --- 3. Fallback: Sitemap ---
+        if len(articles) < max_articles:
+            sitemap_urls = await self._sitemap_discover(client, days_back, max_articles - len(articles))
+            for art in sitemap_urls:
+                if art["url"] not in articles:
+                    articles[art["url"]] = art
+            logger.info("[AdaDerana] Sitemap added URLs (total: %d)", len(articles))
+
+        # --- 4. Fallback: Wayback CDX ---
+        if len(articles) < max(20, max_articles // 4):
             wayback_urls = await self._wayback_discover(client, days_back, max_articles)
             for art in wayback_urls:
                 if art["url"] not in articles:
@@ -60,6 +76,82 @@ class AdaDeranaOutlet(BaseOutletScraper):
                         len(wayback_urls), len(articles))
 
         return list(articles.values())[:max_articles]
+
+    # -- RSS Discovery ------------------------------------------------------ #
+
+    async def _rss_discover(
+        self, client: httpx.AsyncClient, days_back: int, max_articles: int
+    ) -> list[dict[str, str]]:
+        cutoff = datetime.now() - timedelta(days=days_back)
+        rss_url = f"{self.url}/rss.php"
+        root = await self._fetch_xml(client, rss_url)
+        if root is None:
+            return []
+
+        # RSS structure is usually channel -> item
+        items: list[dict[str, str]] = []
+        channel = root.find("channel")
+        if channel is None:
+            return []
+
+        for item in channel.findall("item"):
+            loc = lastmod = title = None
+            for node in item:
+                t = node.tag
+                if t == "link":
+                    loc = node.text.strip() if node.text else None
+                elif t == "pubDate":
+                    lastmod = node.text.strip() if node.text else None
+                elif t == "title":
+                    title = node.text.strip() if node.text else ""
+            
+            if not loc or self.should_skip_url(loc):
+                continue
+            
+            pub = self._parse_dt(lastmod)
+            if pub and pub < cutoff:
+                continue
+                
+            items.append(self._article_stub(loc, pub, title or ""))
+            if len(items) >= max_articles:
+                break
+        
+        return items
+
+    # -- Home Page / Hot News ----------------------------------------------- #
+
+    async def _home_page_discover(
+        self, client: httpx.AsyncClient, max_articles: int
+    ) -> list[dict[str, str]]:
+        """Quickly scrape the hot-news page for the latest URLs."""
+        try:
+            # We check both home and hot-news
+            targets = [f"{self.url}/", f"{self.url}/hot-news"]
+            found: dict[str, dict[str, str]] = {}
+            
+            import re
+            for target in targets:
+                resp = await fetch(client, target)
+                # Look for news.php?nid=XXXXX or slugged URLs
+                # Example: <a href="news.php?nid=121826">...</a>
+                # Example: <a href="https://www.adaderana.lk/news/100000/slug">...</a>
+                pattern = r'href="(https?://(?:www\.)?adaderana\.lk/)?(news\.php\?nid=\d+|news/\d+/[^"]+)"'
+                matches = re.findall(pattern, resp.text)
+                
+                for prefix, path in matches:
+                    url = path if path.startswith("http") else f"{self.url}/{path}"
+                    if self.should_skip_url(url):
+                        continue
+                    if url not in found:
+                        found[url] = self._article_stub(url)
+                    if len(found) >= max_articles:
+                        break
+                if len(found) >= max_articles:
+                    break
+            return list(found.values())
+        except Exception as e:
+            logger.warning("[AdaDerana] Home page discovery failed: %s", e)
+            return []
 
     # -- Sitemap ------------------------------------------------------------ #
 
