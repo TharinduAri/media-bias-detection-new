@@ -19,10 +19,13 @@ from api import models
 from api.database import Base, db_manager
 
 DAYS_LOOKBACK = 28
-CLUSTER_DISTANCE_THRESHOLD = 0.6
+CLUSTER_DISTANCE_THRESHOLD = float(os.getenv("BIAS_CLUSTER_DISTANCE_THRESHOLD", "0.52"))
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 SENTIMENT_MAX_LENGTH = 256
 MERGE_SIMILARITY_THRESHOLD = 0.5
+MAX_CLUSTER_SIZE = int(os.getenv("BIAS_MAX_CLUSTER_SIZE", "18"))
+MIN_CLUSTER_CENTROID_SIMILARITY = float(os.getenv("BIAS_MIN_CLUSTER_CENTROID_SIMILARITY", "0.42"))
+MAX_SPLIT_DEPTH = int(os.getenv("BIAS_MAX_SPLIT_DEPTH", "3"))
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 32
 LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
@@ -197,6 +200,7 @@ def run_bias_analysis(
         )
         labels = clustering.fit_predict(embeddings)
         clusters = _group_by_label(labels)
+        clusters = _refine_clusters_for_coherence(clusters, embeddings)
         run_logs.append(f"Topic groups formed: {len(clusters)}")
 
         clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, unscored_articles)
@@ -628,6 +632,56 @@ def _merge_single_outlet_clusters(
         label: item["indices"] for label, item in cluster_items.items()
     }
     return merged, {"merged_clusters": merged_clusters, "merged_articles": merged_articles}
+
+
+def _refine_clusters_for_coherence(
+    clusters: Dict[int, List[int]],
+    embeddings: np.ndarray,
+) -> Dict[int, List[int]]:
+    next_label = max(clusters.keys(), default=-1) + 1
+    refined: Dict[int, List[int]] = {}
+    for label, indices in clusters.items():
+        split_groups = _split_cluster_if_needed(indices, embeddings, depth=0)
+        for group in split_groups:
+            refined[next_label] = group
+            next_label += 1
+    return refined
+
+
+def _split_cluster_if_needed(
+    indices: List[int],
+    embeddings: np.ndarray,
+    depth: int,
+) -> List[List[int]]:
+    if len(indices) <= 2:
+        return [indices]
+    if depth >= MAX_SPLIT_DEPTH:
+        return [indices]
+
+    cluster_vectors = embeddings[indices]
+    centroid = np.mean(cluster_vectors, axis=0)
+    centroid = centroid / (np.linalg.norm(centroid) + 1e-8)
+    sims = np.dot(cluster_vectors, centroid)
+    mean_sim = float(np.mean(sims))
+    too_large = len(indices) > MAX_CLUSTER_SIZE
+    low_coherence = mean_sim < MIN_CLUSTER_CENTROID_SIMILARITY
+    if not too_large and not low_coherence:
+        return [indices]
+
+    splitter = AgglomerativeClustering(
+        n_clusters=2,
+        metric="cosine",
+        linkage="average",
+    )
+    local_labels = splitter.fit_predict(cluster_vectors)
+    left = [indices[i] for i, lab in enumerate(local_labels) if int(lab) == 0]
+    right = [indices[i] for i, lab in enumerate(local_labels) if int(lab) == 1]
+    if not left or not right:
+        return [indices]
+
+    return _split_cluster_if_needed(left, embeddings, depth + 1) + _split_cluster_if_needed(
+        right, embeddings, depth + 1
+    )
 
 
 def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
