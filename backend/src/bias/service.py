@@ -26,6 +26,8 @@ MERGE_SIMILARITY_THRESHOLD = 0.5
 MAX_CLUSTER_SIZE = int(os.getenv("BIAS_MAX_CLUSTER_SIZE", "18"))
 MIN_CLUSTER_CENTROID_SIMILARITY = float(os.getenv("BIAS_MIN_CLUSTER_CENTROID_SIMILARITY", "0.42"))
 MAX_SPLIT_DEPTH = int(os.getenv("BIAS_MAX_SPLIT_DEPTH", "3"))
+MIN_TOPIC_OUTLETS = int(os.getenv("BIAS_MIN_TOPIC_OUTLETS", "3"))
+MAX_DOMINANT_OUTLET_SHARE = float(os.getenv("BIAS_MAX_DOMINANT_OUTLET_SHARE", "0.6"))
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 32
 LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
@@ -72,28 +74,38 @@ class BiasModelManager:
             )
         return mapped
 
-    def generate_topic_label(self, titles: List[str]) -> str:
+    def generate_topic_label(self, titles: List[str], outlet_blocklist: Set[str]) -> str:
         if not titles:
             return "Unknown Topic"
         
         try:
-            combined_text = " ".join(titles)
+            cleaned_titles = [_strip_outlet_markers(t or "", outlet_blocklist) for t in titles]
+            cleaned_titles = [t for t in cleaned_titles if t]
+            if not cleaned_titles:
+                return "General News"
+
+            combined_text = " ".join(cleaned_titles)
             # Extract single most representative 2-4 word keyphrase
             keywords = self.kw_model.extract_keywords(
                 combined_text, 
                 keyphrase_ngram_range=(2, 4), 
                 stop_words='english', 
-                top_n=1
+                top_n=6
             )
             
             if keywords:
-                label = keywords[0][0]
-                return label.title()
+                for keyphrase, _ in keywords:
+                    label = _sanitize_topic_label(str(keyphrase), outlet_blocklist)
+                    if label:
+                        return label.title()
             
             # Fallback: first title truncated
-            return titles[0][:50].strip().title()
+            fallback = _sanitize_topic_label(cleaned_titles[0][:60].strip(), outlet_blocklist)
+            return (fallback or "General News").title()
         except Exception:
-            return titles[0][:50].strip().title()
+            fallback_src = titles[0] if titles else ""
+            fallback = _sanitize_topic_label(fallback_src[:60].strip(), outlet_blocklist)
+            return (fallback or "General News").title()
 
 
 _MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
@@ -201,6 +213,7 @@ def run_bias_analysis(
         labels = clustering.fit_predict(embeddings)
         clusters = _group_by_label(labels)
         clusters = _refine_clusters_for_coherence(clusters, embeddings)
+        clusters = _split_outlet_dominated_clusters(clusters, unscored_articles)
         run_logs.append(f"Topic groups formed: {len(clusters)}")
 
         clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, unscored_articles)
@@ -219,10 +232,22 @@ def run_bias_analysis(
         article_scores: List[models.ArticleBiasScore] = []
         outlet_stats = _init_outlet_stats(outlets)
         topics_processed = 0
+        skipped_single_outlet = 0
+        skipped_low_diversity = 0
+        skipped_outlet_dominance = 0
 
         for label, indices in clusters.items():
             cluster_outlets = {unscored_articles[idx].outlet for idx in indices}
             if len(cluster_outlets) < 2:
+                skipped_single_outlet += len(indices)
+                continue
+            if len(cluster_outlets) < MIN_TOPIC_OUTLETS:
+                skipped_low_diversity += len(indices)
+                continue
+
+            dominant_share = _dominant_outlet_share(indices, unscored_articles)
+            if dominant_share > MAX_DOMINANT_OUTLET_SHARE:
+                skipped_outlet_dominance += len(indices)
                 continue
 
             topics_processed += 1
@@ -233,7 +258,7 @@ def run_bias_analysis(
             
             # Generate human-readable label
             topic_titles = [unscored_articles[idx].title for idx in indices]
-            topic_label = model_manager.generate_topic_label(topic_titles)
+            topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist)
             
             topic_key = f"{run_key}-{label}"
 
@@ -282,7 +307,13 @@ def run_bias_analysis(
             run_logs.append("No qualifying topic groups produced bias scores.")
 
         skipped_articles = len(unscored_articles) - len(article_scores)
-        run_logs.append(f"Articles skipped due to single-outlet topics: {skipped_articles}")
+        run_logs.append(f"Articles skipped total: {skipped_articles}")
+        run_logs.append(
+            "Skipped by reason: "
+            f"single-outlet={skipped_single_outlet}, "
+            f"low-diversity={skipped_low_diversity}, "
+            f"outlet-dominance={skipped_outlet_dominance}"
+        )
 
         profiles = _build_profiles(outlet_stats, now)
         profiles_updated = _upsert_profiles(db, profiles)
@@ -554,6 +585,17 @@ def _strip_outlet_markers(text: str, outlet_blocklist: Set[str]) -> str:
     return cleaned
 
 
+def _sanitize_topic_label(label: str, outlet_blocklist: Set[str]) -> str:
+    cleaned = _strip_outlet_markers(label or "", outlet_blocklist)
+    cleaned = re.sub(r"\b(202\d|19\d\d)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(news|headline|update|report)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -_,.;:")
+    words = [w for w in cleaned.split() if len(w) > 2]
+    if len(words) < 2:
+        return ""
+    return " ".join(words[:6])
+
+
 def _first_sentences_from_text(text: str, limit: int) -> str:
     if not text:
         return ""
@@ -682,6 +724,52 @@ def _split_cluster_if_needed(
     return _split_cluster_if_needed(left, embeddings, depth + 1) + _split_cluster_if_needed(
         right, embeddings, depth + 1
     )
+
+
+def _split_outlet_dominated_clusters(
+    clusters: Dict[int, List[int]],
+    articles: List[models.Article],
+) -> Dict[int, List[int]]:
+    next_label = max(clusters.keys(), default=-1) + 1
+    refined: Dict[int, List[int]] = {}
+    for _, indices in clusters.items():
+        if not indices:
+            continue
+        counts: Dict[str, int] = {}
+        for idx in indices:
+            outlet = articles[idx].outlet or ""
+            counts[outlet] = counts.get(outlet, 0) + 1
+        dominant_outlet, dominant_count = max(counts.items(), key=lambda item: item[1])
+        share = dominant_count / len(indices)
+
+        if share <= MAX_DOMINANT_OUTLET_SHARE or len(indices) < 4:
+            refined[next_label] = indices
+            next_label += 1
+            continue
+
+        dominant_idxs = [idx for idx in indices if (articles[idx].outlet or "") == dominant_outlet]
+        other_idxs = [idx for idx in indices if (articles[idx].outlet or "") != dominant_outlet]
+
+        # Keep split deterministic and avoid empty groups.
+        if dominant_idxs and other_idxs:
+            refined[next_label] = dominant_idxs
+            next_label += 1
+            refined[next_label] = other_idxs
+            next_label += 1
+        else:
+            refined[next_label] = indices
+            next_label += 1
+    return refined
+
+
+def _dominant_outlet_share(indices: List[int], articles: List[models.Article]) -> float:
+    if not indices:
+        return 0.0
+    counts: Dict[str, int] = {}
+    for idx in indices:
+        outlet = articles[idx].outlet or ""
+        counts[outlet] = counts.get(outlet, 0) + 1
+    return max(counts.values()) / len(indices)
 
 
 def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
