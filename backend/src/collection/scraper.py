@@ -37,6 +37,7 @@ MAX_ARTICLES_PER_OUTLET = int(os.getenv("MAX_ARTICLES_PER_OUTLET", "300"))
 DAYS_BACK = int(os.getenv("DAYS_BACK", "28"))
 SAVE_CHUNK_SIZE = int(os.getenv("SAVE_CHUNK_SIZE", "100"))
 OUTLET_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv("OUTLET_DISCOVERY_TIMEOUT_SECONDS", "300"))
+ARTICLE_SCRAPE_TIMEOUT_SECONDS = int(os.getenv("ARTICLE_SCRAPE_TIMEOUT_SECONDS", "25"))
 
 
 @dataclass
@@ -295,11 +296,29 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
                 outlet_name = article.get("outlet", "")
                 site_url = article.get("_site_url", "")
 
+                payload: dict[str, str] | None = None
+                scraper_error: Exception | None = None
+
                 if site_url:
-                    scraper = _build_outlet_scraper(outlet_name, site_url)
-                    payload = await scraper.extract_content(url, client)
-                else:
-                    payload = await scrape_article_payload(url, client)
+                    try:
+                        scraper = _build_outlet_scraper(outlet_name, site_url)
+                        payload = await asyncio.wait_for(
+                            scraper.extract_content(url, client),
+                            timeout=float(ARTICLE_SCRAPE_TIMEOUT_SECONDS),
+                        )
+                    except Exception as exc:
+                        scraper_error = exc
+
+                if payload is None:
+                    try:
+                        payload = await asyncio.wait_for(
+                            scrape_article_payload(url, client),
+                            timeout=float(ARTICLE_SCRAPE_TIMEOUT_SECONDS),
+                        )
+                    except Exception:
+                        if scraper_error is not None:
+                            raise scraper_error
+                        raise
 
                 processed = dict(article)
                 processed.pop("_site_url", None)

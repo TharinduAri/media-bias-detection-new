@@ -13,6 +13,8 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+_FETCH_RETRYABLE_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+_FETCH_MAX_ATTEMPTS = 3
 
 class GhostResponseError(Exception):
     """Server returned HTTP 200 with a near-empty body — anti-scraping ghosting."""
@@ -112,14 +114,35 @@ async def fetch(client: httpx.AsyncClient, url: str, *,
         headers.update(extra_headers)
 
     sem = _REQUEST_SEMAPHORE
-    if sem:
-        async with sem:
-            response = await client.get(url, follow_redirects=follow_redirects, headers=headers)
-    else:
-        response = await client.get(url, follow_redirects=follow_redirects, headers=headers)
+    last_exc: Exception | None = None
 
-    response.raise_for_status()
-    return response
+    for attempt in range(1, _FETCH_MAX_ATTEMPTS + 1):
+        try:
+            if sem:
+                async with sem:
+                    response = await client.get(url, follow_redirects=follow_redirects, headers=headers)
+            else:
+                response = await client.get(url, follow_redirects=follow_redirects, headers=headers)
+
+            if response.status_code in _FETCH_RETRYABLE_STATUSES and attempt < _FETCH_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * attempt)
+                continue
+
+            response.raise_for_status()
+            return response
+        except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
+            last_exc = exc
+            if isinstance(exc, httpx.HTTPStatusError):
+                status = exc.response.status_code
+                if status not in _FETCH_RETRYABLE_STATUSES:
+                    raise
+            if attempt >= _FETCH_MAX_ATTEMPTS:
+                raise
+            await asyncio.sleep(0.5 * attempt)
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Failed to fetch URL: {url}")
 
 
 async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element | None:

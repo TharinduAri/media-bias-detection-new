@@ -2,9 +2,10 @@ import html
 import random
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 REQUEST_TIMEOUT_SECONDS = 12
 MIN_DELAY_SECONDS = 0.5
@@ -26,7 +27,7 @@ SKIP_PATTERNS = [
     '/sports-news/', '/technology-news/', '/entertainment-news/',
     '/hot-news/', '/author-biography/', '/more', 'news_archive',
     '/index.php', '/rss', '/mobi/', 'disqus', 'exchange-rates',
-    'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab', '?p=',
+    'indicative-rates', 'news-bulletin', 'story-tab', 'viewed-tab',
     '/home', '/latest', '/category/', '/tag/', '/page/',
     '/feed', '/amp/', '/print/', '/gallery/', '/video/',
 ]
@@ -47,8 +48,32 @@ class _HTMLStripper(HTMLParser):
 
 
 def is_article_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
     url_lower = url.lower()
-    return not any(pattern in url_lower for pattern in SKIP_PATTERNS)
+    if any(pattern in url_lower for pattern in SKIP_PATTERNS):
+        return False
+
+    path = (parsed.path or "").lower()
+    if path in {"", "/"}:
+        return False
+
+    # Canonical WordPress form `?p=<id>` is a valid article URL.
+    qs = parse_qs(parsed.query or "")
+    if "p" in qs:
+        vals = qs.get("p") or []
+        if vals and vals[0].isdigit():
+            return True
+
+    # Generic positive signal for slug-like paths.
+    segments = [seg for seg in path.split("/") if seg]
+    if len(segments) >= 2:
+        return True
+
+    return False
 
 
 def choose_user_agent() -> str:
@@ -100,6 +125,12 @@ def parse_metadata_datetime(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
         return normalize_datetime(parsed)
     except ValueError:
+        pass
+
+    try:
+        parsed = parsedate_to_datetime(candidate)
+        return normalize_datetime(parsed)
+    except Exception:
         pass
 
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
