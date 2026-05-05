@@ -162,6 +162,7 @@ def list_bias_logs(
 def cleanup_bias_results(db: Session = Depends(get_db)):
     ensure_bias_tables()
     deleted_articles = db.query(models.ArticleBiasScore).delete(synchronize_session=False)
+    deleted_embeddings = db.query(models.ArticleEmbedding).delete(synchronize_session=False)
     deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
     deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
     db.commit()
@@ -169,6 +170,7 @@ def cleanup_bias_results(db: Session = Depends(get_db)):
         "status": "ok",
         "message": "Bias analysis data cleared.",
         "deleted_article_scores": deleted_articles,
+        "deleted_article_embeddings": deleted_embeddings,
         "deleted_outlet_profiles": deleted_profiles,
         "deleted_run_logs": deleted_logs,
     }

@@ -59,6 +59,30 @@ class ArticleBiasScore(Base):
     __table_args__ = (UniqueConstraint("article_id", name="uq_article_bias_article_id"),)
 
 
+class ArticleEmbedding(Base):
+    __tablename__ = "ArticleEmbedding"
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, nullable=False, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    embedding_provider = Column(String, nullable=False, index=True)
+    embedding_model = Column(String, nullable=False, index=True)
+    embedding_dimensions = Column(Integer, nullable=False)
+    embedding = Column(JSON, nullable=False)
+    source_text_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "embedding_provider",
+            "embedding_model",
+            name="uq_article_embedding_article_provider_model",
+        ),
+    )
+
+
 class OutletBiasProfile(Base):
     __tablename__ = "OutletBiasProfile"
 

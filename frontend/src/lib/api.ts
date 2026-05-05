@@ -135,6 +135,7 @@ export interface BiasRunResponse {
   processed_articles: number;
   topics_processed: number;
   profiles_updated: number;
+  embeddings_saved: number;
   embedding_provider: "local" | "gemini" | string;
   embedding_model: string;
 }

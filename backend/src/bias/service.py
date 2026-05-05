@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import hashlib
 import os
 import re
 from typing import Dict, Iterable, List, Set, Tuple
@@ -12,7 +13,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import AgglomerativeClustering
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
 from keybert import KeyBERT
-from sqlalchemy import distinct, exists, func
+from sqlalchemy import distinct, func
 from sqlalchemy.orm import Session
 
 from api import models
@@ -123,6 +124,7 @@ def get_models(local_embedding_key: str = "minilm_l6") -> BiasModelManager:
 def ensure_bias_tables(drop_first: bool = False) -> None:
     target_tables = [
         models.ArticleBiasScore.__table__,
+        models.ArticleEmbedding.__table__,
         models.OutletBiasProfile.__table__,
         models.BiasRunLog.__table__,
     ]
@@ -146,12 +148,11 @@ def run_bias_analysis(
         ensure_bias_tables()
 
         since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
-        unscored_articles = (
+        recent_articles = (
             db.query(models.Article)
             .filter(models.Article.date >= since)
             .filter(models.Article.text.isnot(None))
             .filter(func.length(models.Article.text) > 100)
-            .filter(~exists().where(models.ArticleBiasScore.article_id == models.Article.id))
             .order_by(models.Article.date.desc())
             .all()
         )
@@ -159,17 +160,18 @@ def run_bias_analysis(
         embedding_model = _resolve_embedding_model_name(embedding_provider, local_embedding_key)
         run_logs.append(f"Embedding provider: {embedding_provider}")
         run_logs.append(f"Embedding model: {embedding_model}")
-        run_logs.append(f"Unscored articles found: {len(unscored_articles)}")
+        run_logs.append(f"Recent articles found: {len(recent_articles)}")
 
-        if not unscored_articles:
-            run_logs.append("No unscored articles in the last 28 days.")
+        if not recent_articles:
+            run_logs.append("No recent articles with enough text in the last 28 days.")
             _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
             return {
                 "status": "ok",
-                "message": "No unscored articles found in the last 28 days.",
+                "message": "No recent articles found in the last 28 days.",
                 "processed_articles": 0,
                 "topics_processed": 0,
                 "profiles_updated": 0,
+                "embeddings_saved": 0,
                 "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
             }
@@ -181,17 +183,27 @@ def run_bias_analysis(
         run_logs.append(f"Outlets in window: {len(outlets)}")
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
-        texts = [_build_article_text(article, outlet_blocklist) for article in unscored_articles]
         model_manager = get_models(local_embedding_key)
-        embeddings = _embed_texts(
-            texts=texts,
+        embeddings_saved = _prepare_embeddings_for_recent_articles(
+            db=db,
+            recent_articles=recent_articles,
+            outlet_blocklist=outlet_blocklist,
             embedding_provider=embedding_provider,
             local_embedding_key=local_embedding_key,
+            embedding_model=embedding_model,
             model_manager=model_manager,
+            run_logs=run_logs,
         )
-        run_logs.append("Computed sentence embeddings.")
+        analysis_rows, embeddings = _load_analysis_rows_from_embeddings(
+            db=db,
+            recent_articles=recent_articles,
+            outlet_blocklist=outlet_blocklist,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+        )
+        run_logs.append(f"Embeddings available for analysis: {len(analysis_rows)}")
 
-        if len(unscored_articles) < 2:
+        if len(analysis_rows) < 2:
             run_logs.append("Not enough articles to form topic groups.")
             _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
             return {
@@ -200,6 +212,7 @@ def run_bias_analysis(
                 "processed_articles": 0,
                 "topics_processed": 0,
                 "profiles_updated": 0,
+                "embeddings_saved": embeddings_saved,
                 "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
             }
@@ -213,16 +226,18 @@ def run_bias_analysis(
         labels = clustering.fit_predict(embeddings)
         clusters = _group_by_label(labels)
         clusters = _refine_clusters_for_coherence(clusters, embeddings)
-        clusters = _split_outlet_dominated_clusters(clusters, unscored_articles)
+        analysis_articles = [row["article"] for row in analysis_rows]
+        clusters = _split_outlet_dominated_clusters(clusters, analysis_articles)
         run_logs.append(f"Topic groups formed: {len(clusters)}")
 
-        clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, unscored_articles)
+        clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, analysis_articles)
         if merge_stats["merged_clusters"]:
             run_logs.append(
                 "Merged single-outlet clusters: "
                 f"{merge_stats['merged_clusters']} (articles merged: {merge_stats['merged_articles']})"
             )
 
+        texts = [row["text"] for row in analysis_rows]
         sentiment_results = model_manager.analyze_sentiment(texts)
         run_logs.append("Computed sentiment scores.")
 
@@ -237,7 +252,7 @@ def run_bias_analysis(
         skipped_outlet_dominance = 0
 
         for label, indices in clusters.items():
-            cluster_outlets = {unscored_articles[idx].outlet for idx in indices}
+            cluster_outlets = {analysis_articles[idx].outlet for idx in indices}
             if len(cluster_outlets) < 2:
                 skipped_single_outlet += len(indices)
                 continue
@@ -245,7 +260,7 @@ def run_bias_analysis(
                 skipped_low_diversity += len(indices)
                 continue
 
-            dominant_share = _dominant_outlet_share(indices, unscored_articles)
+            dominant_share = _dominant_outlet_share(indices, analysis_articles)
             if dominant_share > MAX_DOMINANT_OUTLET_SHARE:
                 skipped_outlet_dominance += len(indices)
                 continue
@@ -257,13 +272,13 @@ def run_bias_analysis(
             coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
             
             # Generate human-readable label
-            topic_titles = [unscored_articles[idx].title for idx in indices]
+            topic_titles = [analysis_articles[idx].title for idx in indices]
             topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist)
             
             topic_key = f"{run_key}-{label}"
 
             for idx in indices:
-                article = unscored_articles[idx]
+                article = analysis_articles[idx]
                 sentiment = sentiment_results[idx]
                 bias_score = sentiment.score - group_mean
                 article_scores.append(
@@ -300,13 +315,13 @@ def run_bias_analysis(
                         stats["missed_topics"].append(topic_label)
 
         if article_scores:
-            db.add_all(article_scores)
-            db.commit()
-            run_logs.append(f"Article bias scores saved: {len(article_scores)}")
+            article_scores_saved = _upsert_article_bias_scores(db, article_scores)
+            run_logs.append(f"Article bias scores saved: {article_scores_saved}")
         else:
+            article_scores_saved = 0
             run_logs.append("No qualifying topic groups produced bias scores.")
 
-        skipped_articles = len(unscored_articles) - len(article_scores)
+        skipped_articles = len(analysis_rows) - article_scores_saved
         run_logs.append(f"Articles skipped total: {skipped_articles}")
         run_logs.append(
             "Skipped by reason: "
@@ -324,9 +339,10 @@ def run_bias_analysis(
         return {
             "status": "ok",
             "message": "Bias analysis completed.",
-            "processed_articles": len(article_scores),
+            "processed_articles": article_scores_saved,
             "topics_processed": topics_processed,
             "profiles_updated": profiles_updated,
+            "embeddings_saved": embeddings_saved,
             "embedding_provider": embedding_provider,
             "embedding_model": embedding_model,
         }
@@ -334,6 +350,7 @@ def run_bias_analysis(
         run_status = "error"
         run_error = str(exc)
         run_logs.append(f"Error: {run_error}")
+        db.rollback()
         _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
         raise
 
@@ -521,6 +538,159 @@ def _upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) 
         updated += 1
     db.commit()
     return updated
+
+
+def _upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore]) -> int:
+    deduped_scores: Dict[int, models.ArticleBiasScore] = {}
+    for score in scores:
+        if score.article_id not in deduped_scores:
+            deduped_scores[score.article_id] = score
+
+    if not deduped_scores:
+        return 0
+
+    existing_scores = (
+        db.query(models.ArticleBiasScore)
+        .filter(models.ArticleBiasScore.article_id.in_(deduped_scores.keys()))
+        .all()
+    )
+    existing_by_article_id = {score.article_id: score for score in existing_scores}
+
+    for article_id, score in deduped_scores.items():
+        existing = existing_by_article_id.get(article_id)
+        if existing:
+            existing.outlet = score.outlet
+            existing.topic_key = score.topic_key
+            existing.topic_label = score.topic_label
+            existing.sentiment_label = score.sentiment_label
+            existing.sentiment_score = score.sentiment_score
+            existing.sentiment_confidence = score.sentiment_confidence
+            existing.sentiment_bias = score.sentiment_bias
+            existing.group_sentiment_mean = score.group_sentiment_mean
+            existing.coverage_majority = score.coverage_majority
+            existing.coverage_present = score.coverage_present
+            existing.created_at = score.created_at
+        else:
+            db.add(score)
+
+    db.commit()
+    return len(deduped_scores)
+
+
+def _prepare_embeddings_for_recent_articles(
+    db: Session,
+    recent_articles: List[models.Article],
+    outlet_blocklist: Set[str],
+    embedding_provider: str,
+    local_embedding_key: str,
+    embedding_model: str,
+    model_manager: BiasModelManager,
+    run_logs: List[str],
+) -> int:
+    texts = [_build_article_text(article, outlet_blocklist) for article in recent_articles]
+    embeddings = _embed_texts(
+        texts=texts,
+        embedding_provider=embedding_provider,
+        local_embedding_key=local_embedding_key,
+        model_manager=model_manager,
+    )
+    run_logs.append("Computed sentence embeddings.")
+    saved = _upsert_article_embeddings(
+        db=db,
+        articles=recent_articles,
+        texts=texts,
+        embeddings=embeddings,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        now=datetime.utcnow(),
+    )
+    run_logs.append(f"Article embeddings upserted: {saved}")
+    return saved
+
+
+def _load_analysis_rows_from_embeddings(
+    db: Session,
+    recent_articles: List[models.Article],
+    outlet_blocklist: Set[str],
+    embedding_provider: str,
+    embedding_model: str,
+) -> Tuple[List[Dict[str, object]], np.ndarray]:
+    provider = (embedding_provider or "local").strip().lower()
+    article_by_id: Dict[int, models.Article] = {article.id: article for article in recent_articles}
+    if not article_by_id:
+        return [], np.asarray([])
+
+    embedding_rows = (
+        db.query(models.ArticleEmbedding)
+        .filter(models.ArticleEmbedding.article_id.in_(article_by_id.keys()))
+        .filter(models.ArticleEmbedding.embedding_provider == provider)
+        .filter(models.ArticleEmbedding.embedding_model == embedding_model)
+        .all()
+    )
+
+    analysis_rows: List[Dict[str, object]] = []
+    vectors: List[List[float]] = []
+    for row in embedding_rows:
+        article = article_by_id.get(row.article_id)
+        vector_raw = row.embedding if isinstance(row.embedding, list) else []
+        if article is None or not vector_raw:
+            continue
+        text = _build_article_text(article, outlet_blocklist)
+        analysis_rows.append({"article": article, "text": text})
+        vectors.append([float(v) for v in vector_raw])
+
+    embeddings = np.asarray(vectors, dtype=np.float32)
+    return analysis_rows, embeddings
+
+
+def _upsert_article_embeddings(
+    db: Session,
+    articles: List[models.Article],
+    texts: List[str],
+    embeddings: np.ndarray,
+    embedding_provider: str,
+    embedding_model: str,
+    now: datetime,
+) -> int:
+    if len(articles) != len(texts) or len(articles) != len(embeddings):
+        raise RuntimeError("Article embedding inputs are misaligned.")
+
+    saved = 0
+    provider = (embedding_provider or "local").strip().lower()
+    for article, text, vector in zip(articles, texts, embeddings):
+        vector_list = [float(value) for value in np.asarray(vector, dtype=np.float32).tolist()]
+        source_text_hash = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+        existing = (
+            db.query(models.ArticleEmbedding)
+            .filter(models.ArticleEmbedding.article_id == article.id)
+            .filter(models.ArticleEmbedding.embedding_provider == provider)
+            .filter(models.ArticleEmbedding.embedding_model == embedding_model)
+            .first()
+        )
+        if existing:
+            existing.outlet = article.outlet or ""
+            existing.embedding_dimensions = len(vector_list)
+            existing.embedding = vector_list
+            existing.source_text_hash = source_text_hash
+            existing.updated_at = now
+        else:
+            db.add(
+                models.ArticleEmbedding(
+                    article_id=article.id,
+                    outlet=article.outlet or "",
+                    embedding_provider=provider,
+                    embedding_model=embedding_model,
+                    embedding_dimensions=len(vector_list),
+                    embedding=vector_list,
+                    source_text_hash=source_text_hash,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        saved += 1
+
+    db.commit()
+    return saved
 
 
 def _group_by_label(labels: np.ndarray) -> Dict[int, List[int]]:

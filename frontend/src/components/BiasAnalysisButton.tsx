@@ -34,7 +34,7 @@ export default function BiasAnalysisButton() {
     try {
       const result = await triggerBiasAnalysis(provider, localModel);
       setMessage({
-        text: `${result.message} Provider: ${result.embedding_provider}. Model: ${result.embedding_model}. Topics: ${result.topics_processed}. Articles scored: ${result.processed_articles}.`,
+        text: `${result.message} Provider: ${result.embedding_provider}. Model: ${result.embedding_model}. Embeddings saved: ${result.embeddings_saved}. Topics: ${result.topics_processed}. Articles scored: ${result.processed_articles}.`,
         type: "success",
       });
     } catch (error) {
