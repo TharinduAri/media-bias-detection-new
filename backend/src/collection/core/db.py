@@ -2,13 +2,15 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 DB_CONNECT_MAX_RETRIES = int(os.getenv("DB_CONNECT_MAX_RETRIES", "5"))
 DB_CONNECT_BACKOFF_BASE_SECONDS = float(os.getenv("DB_CONNECT_BACKOFF_BASE_SECONDS", "1.5"))
+STRICT_RECENT_ONLY = os.getenv("STRICT_RECENT_ONLY", "true").strip().lower() == "true"
+DAYS_BACK = int(os.getenv("DAYS_BACK", "28"))
 
 _SCHEMA_HAS_RAW_HTML: bool | None = None
 FALLBACK_JSONL_PATH = Path(__file__).resolve().parents[3] / "data" / "db_fallback_articles.jsonl"
@@ -91,9 +93,86 @@ def _clear_fallback_articles() -> None:
         FALLBACK_JSONL_PATH.unlink()
 
 
+def _write_fallback_articles(records: list[dict[str, str]]) -> None:
+    if not records:
+        _clear_fallback_articles()
+        return
+    FALLBACK_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with FALLBACK_JSONL_PATH.open("w", encoding="utf-8") as handle:
+        for article in records:
+            handle.write(json.dumps(article, ensure_ascii=True) + "\n")
+
+
+def _parse_article_datetime(raw_date: object) -> datetime | None:
+    if raw_date is None:
+        return None
+    text = str(raw_date).strip()
+    if not text:
+        return None
+
+    iso_candidates = [text]
+    if text.endswith("Z"):
+        iso_candidates.append(text[:-1] + "+00:00")
+    for candidate in iso_candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+
+    known_formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%B %d, %Y %I:%M %p",
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S GMT",
+    ]
+    for fmt in known_formats:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _filter_recent_articles(records: list[dict[str, str]], days_back: int) -> tuple[list[dict[str, str]], int, int]:
+    if not records:
+        return [], 0, 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    kept: list[dict[str, str]] = []
+    dropped_old = 0
+    dropped_unknown = 0
+    for article in records:
+        parsed = _parse_article_datetime(article.get("date"))
+        if parsed is None:
+            if STRICT_RECENT_ONLY:
+                dropped_unknown += 1
+                continue
+        elif parsed < cutoff:
+            dropped_old += 1
+            continue
+        kept.append(article)
+    return kept, dropped_old, dropped_unknown
+
+
 def replay_fallback_articles() -> None:
     pending = _load_fallback_articles()
     if not pending:
+        return
+    pending, dropped_old, dropped_unknown = _filter_recent_articles(pending, DAYS_BACK)
+    if dropped_old:
+        logging.info("Fallback replay dropped %d stale records older than %d days", dropped_old, DAYS_BACK)
+    if dropped_unknown:
+        logging.info("Fallback replay dropped %d records with unknown/unparseable date", dropped_unknown)
+    _write_fallback_articles(pending)
+    if not pending:
+        logging.info("Fallback queue contains no recent articles after strict filtering")
         return
 
     logging.info("Replaying %s fallback articles from %s", len(pending), str(FALLBACK_JSONL_PATH))
@@ -133,6 +212,15 @@ def save_to_db(valid_articles: list[dict[str, str]], allow_fallback: bool = True
 
     if not valid_articles:
         logging.warning("No valid articles collected.")
+        return True
+
+    valid_articles, dropped_old, dropped_unknown = _filter_recent_articles(valid_articles, DAYS_BACK)
+    if dropped_old:
+        logging.info("Persistence gate dropped %d stale records older than %d days", dropped_old, DAYS_BACK)
+    if dropped_unknown:
+        logging.info("Persistence gate dropped %d records with unknown/unparseable date", dropped_unknown)
+    if not valid_articles:
+        logging.warning("No recent records left after persistence date filter.")
         return True
 
     for attempt in range(1, DB_CONNECT_MAX_RETRIES + 1):

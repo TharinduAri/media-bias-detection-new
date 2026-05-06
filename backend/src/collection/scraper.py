@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from .outlets import (
     AdaDeranaOutlet,
     CeylonTodayOutlet,
     DailyFTOutlet,
-    # EconomyNextOutlet,
+    EconomyNextOutlet,
     LBOOutlet,
     NewsfirstOutlet,
     BaseOutletScraper,
@@ -31,12 +32,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 sentry_sdk.init(dsn=os.getenv("SENTRY_DSN"), traces_sample_rate=0.2)
 
 SCRAPE_MAX_RETRIES = 3
-REQUEST_TIMEOUT_SECONDS = 12
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 MAX_CONCURRENT_REQUESTS = 10
 MAX_ARTICLES_PER_OUTLET = int(os.getenv("MAX_ARTICLES_PER_OUTLET", "300"))
 DAYS_BACK = int(os.getenv("DAYS_BACK", "28"))
 SAVE_CHUNK_SIZE = int(os.getenv("SAVE_CHUNK_SIZE", "100"))
 OUTLET_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv("OUTLET_DISCOVERY_TIMEOUT_SECONDS", "300"))
+ARTICLE_SCRAPE_TIMEOUT_SECONDS = int(os.getenv("ARTICLE_SCRAPE_TIMEOUT_SECONDS", "25"))
+STRICT_RECENT_ONLY = os.getenv("STRICT_RECENT_ONLY", "true").strip().lower() == "true"
 
 
 @dataclass
@@ -114,11 +117,96 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     return True
 
 
+def _parse_article_datetime(raw_date: object) -> datetime | None:
+    if raw_date is None:
+        return None
+    text = str(raw_date).strip()
+    if not text:
+        return None
+
+    iso_candidates = [text]
+    if text.endswith("Z"):
+        iso_candidates.append(text[:-1] + "+00:00")
+
+    for candidate in iso_candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+
+    known_formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S GMT",
+    ]
+    for fmt in known_formats:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _extract_adaderana_nid(url: str) -> int | None:
+    if not url:
+        return None
+    patterns = [
+        r"[?&]nid=(\d+)",
+        r"/news/(\d+)/",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def _filter_adaderana_legacy_urls(outlet_name: str, articles: list[dict[str, str]]) -> list[dict[str, str]]:
+    if outlet_name.strip().lower() not in {"ada derana", "adaderana"}:
+        return articles
+
+    nids = [
+        nid for nid in (_extract_adaderana_nid(str(article.get("url", ""))) for article in articles)
+        if nid is not None
+    ]
+    if not nids:
+        return articles
+
+    max_nid = max(nids)
+    min_allowed = max_nid - 3000
+    filtered: list[dict[str, str]] = []
+    dropped = 0
+    for article in articles:
+        nid = _extract_adaderana_nid(str(article.get("url", "")))
+        if nid is None or nid >= min_allowed:
+            filtered.append(article)
+        else:
+            dropped += 1
+
+    if dropped:
+        logging.info(
+            "[%s] URL-range filter dropped %d legacy URLs (nid < %d, latest nid=%d)",
+            outlet_name, dropped, min_allowed, max_nid,
+        )
+    return filtered
+
+
 _OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
     (("adaderana.lk",),                          AdaDeranaOutlet),
     (("ceylontoday.lk",),                         CeylonTodayOutlet),
     (("ft.lk", "dailyft.lk"),                     DailyFTOutlet),
-    # (("economynext.com",),                         EconomyNextOutlet),
+    (("economynext.com",),                         EconomyNextOutlet),
     (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
     (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
 ]
@@ -163,32 +251,35 @@ async def process_outlet(outlet: dict[str, str], client: httpx.AsyncClient, days
     except Exception as exc:
         logging.warning("[%s] Discovery failed: %s", outlet_name, exc)
         outlet_articles = []
+    outlet_articles = _filter_adaderana_legacy_urls(outlet_name, outlet_articles)
 
-    # Date filter safety net — catches any articles that outlet-level scrapers
-    # failed to filter by date themselves
-    from datetime import timezone as _tz
-    _cutoff = datetime.now(_tz.utc) - timedelta(days=days_back)
-    _filtered = []
-    _skipped = 0
-    for _art in outlet_articles:
-        _raw_date = _art.get("date")
-        if _raw_date:
-            try:
-                _parsed = datetime.fromisoformat(str(_raw_date))
-                if _parsed.tzinfo is None:
-                    _parsed = _parsed.replace(tzinfo=_tz.utc)
-                if _parsed < _cutoff:
-                    _skipped += 1
-                    continue
-            except (ValueError, TypeError):
-                pass  # Unparseable date — keep article, do not silently drop
-        _filtered.append(_art)
-    if _skipped:
+    # Date filter safety net catches any articles that outlet-level scrapers
+    # failed to filter by date themselves.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+    filtered: list[dict[str, str]] = []
+    skipped_old = 0
+    skipped_unknown = 0
+    for article in outlet_articles:
+        parsed_date = _parse_article_datetime(article.get("date"))
+        if parsed_date is None:
+            if STRICT_RECENT_ONLY:
+                skipped_unknown += 1
+                continue
+        elif parsed_date < cutoff:
+            skipped_old += 1
+            continue
+        filtered.append(article)
+    if skipped_old:
         logging.info(
             "[%s] Date filter dropped %d articles older than %d days",
-            outlet_name, _skipped, days_back,
+            outlet_name, skipped_old, days_back,
         )
-    outlet_articles = _filtered
+    if skipped_unknown:
+        logging.info(
+            "[%s] Date filter dropped %d articles with unknown/unparseable date (strict mode)",
+            outlet_name, skipped_unknown,
+        )
+    outlet_articles = filtered
 
     for art in outlet_articles:
         art.setdefault("_site_url", site_url)
@@ -295,11 +386,29 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
                 outlet_name = article.get("outlet", "")
                 site_url = article.get("_site_url", "")
 
+                payload: dict[str, str] | None = None
+                scraper_error: Exception | None = None
+
                 if site_url:
-                    scraper = _build_outlet_scraper(outlet_name, site_url)
-                    payload = await scraper.extract_content(url, client)
-                else:
-                    payload = await scrape_article_payload(url, client)
+                    try:
+                        scraper = _build_outlet_scraper(outlet_name, site_url)
+                        payload = await asyncio.wait_for(
+                            scraper.extract_content(url, client),
+                            timeout=float(ARTICLE_SCRAPE_TIMEOUT_SECONDS),
+                        )
+                    except Exception as exc:
+                        scraper_error = exc
+
+                if payload is None:
+                    try:
+                        payload = await asyncio.wait_for(
+                            scrape_article_payload(url, client),
+                            timeout=float(ARTICLE_SCRAPE_TIMEOUT_SECONDS),
+                        )
+                    except Exception:
+                        if scraper_error is not None:
+                            raise scraper_error
+                        raise
 
                 processed = dict(article)
                 processed.pop("_site_url", None)
@@ -316,7 +425,10 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
             ghost_count = 0
             completed_count = 0
             valid_count = 0
+            stale_count = 0
+            unknown_date_count = 0
             chunk_buffer: list[dict[str, str]] = []
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
 
             for task in asyncio.as_completed(tasks):
                 completed_count += 1
@@ -339,6 +451,14 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
                 text = result.get("text") if isinstance(result, dict) else None
                 if not isinstance(text, str) or len(text.strip()) <= 50:
                     continue
+                parsed_date = _parse_article_datetime(result.get("date"))
+                if parsed_date is None:
+                    if STRICT_RECENT_ONLY:
+                        unknown_date_count += 1
+                        continue
+                elif parsed_date < cutoff:
+                    stale_count += 1
+                    continue
 
                 chunk_buffer.append(result)
                 valid_count += 1
@@ -359,6 +479,13 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
             if failed_count:
                 logging.warning(
                     "%d articles failed during content scraping and were skipped", failed_count
+                )
+            if stale_count:
+                logging.info("Dropped %d scraped articles older than %d days", stale_count, days_back)
+            if unknown_date_count:
+                logging.info(
+                    "Dropped %d scraped articles with unknown/unparseable date (strict mode)",
+                    unknown_date_count,
                 )
 
             if chunk_buffer:
@@ -389,3 +516,4 @@ if __name__ == "__main__":
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise
+

@@ -9,6 +9,7 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 lxml_html_clean
+beautifulsoup4
 sentence-transformers
 transformers
 scikit-learn

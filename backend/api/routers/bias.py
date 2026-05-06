@@ -1,31 +1,76 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from src.bias.service import ensure_bias_tables, get_models, run_bias_analysis
+from src.bias.service import (
+    ensure_bias_tables,
+    get_models,
+    run_bias_analysis,
+    run_bias_analysis_with_clusters,
+)
 
 router = APIRouter(
     prefix="/api/v1/bias",
     tags=["bias"],
 )
 
-_MODEL_MANAGER = get_models()
-
-
 @router.get("/health")
 def bias_health():
-    return {
-        "status": "ok",
-        "embedding_model": _MODEL_MANAGER.embedding_model_name,
-        "sentiment_model": _MODEL_MANAGER.sentiment_model_name,
-    }
+    try:
+        manager = get_models("minilm_l6")
+        return {
+            "status": "ok",
+            "default_local_embedding_model": manager.embedding_model_name,
+            "sentiment_model": manager.sentiment_model_name,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "default_local_embedding_model": None,
+            "sentiment_model": None,
+            "error": str(exc),
+        }
 
 
 @router.post("/run", response_model=schemas.BiasRunResponse)
-def run_bias(db: Session = Depends(get_db)):
+def run_bias(
+    embedding_provider: Literal["local", "gemini"] = Query("local"),
+    local_embedding_key: str = Query(
+        "minilm_l6",
+        description="Local model key when embedding_provider=local",
+    ),
+    db: Session = Depends(get_db),
+):
     try:
-        return run_bias_analysis(db)
+        return run_bias_analysis(
+            db,
+            embedding_provider=embedding_provider,
+            local_embedding_key=local_embedding_key,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/run-with-clusters", response_model=schemas.BiasRunResponse)
+def run_bias_with_clusters(
+    payload: schemas.BiasRunWithClustersRequest,
+    embedding_provider: Literal["local", "gemini"] = Query("local"),
+    local_embedding_key: str = Query(
+        "minilm_l6",
+        description="Local model key when embedding_provider=local",
+    ),
+    db: Session = Depends(get_db),
+):
+    try:
+        return run_bias_analysis_with_clusters(
+            db=db,
+            clusters=payload.clusters,
+            embedding_provider=embedding_provider,
+            local_embedding_key=local_embedding_key,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -149,6 +194,7 @@ def list_bias_logs(
 def cleanup_bias_results(db: Session = Depends(get_db)):
     ensure_bias_tables()
     deleted_articles = db.query(models.ArticleBiasScore).delete(synchronize_session=False)
+    deleted_embeddings = db.query(models.ArticleEmbedding).delete(synchronize_session=False)
     deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
     deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
     db.commit()
@@ -156,6 +202,7 @@ def cleanup_bias_results(db: Session = Depends(get_db)):
         "status": "ok",
         "message": "Bias analysis data cleared.",
         "deleted_article_scores": deleted_articles,
+        "deleted_article_embeddings": deleted_embeddings,
         "deleted_outlet_profiles": deleted_profiles,
         "deleted_run_logs": deleted_logs,
     }

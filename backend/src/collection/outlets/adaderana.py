@@ -67,8 +67,13 @@ class AdaDeranaOutlet(BaseOutletScraper):
             logger.info("[AdaDerana] Sitemap added URLs (total: %d)", len(articles))
 
         # --- 4. Fallback: Wayback CDX ---
-        if len(articles) < max(20, max_articles // 4):
-            wayback_urls = await self._wayback_discover(client, days_back, max_articles)
+        # Top-up whenever we are below target, not only when very low.
+        if len(articles) < max_articles:
+            wayback_urls = await self._wayback_discover(
+                client,
+                days_back,
+                max_articles - len(articles),
+            )
             for art in wayback_urls:
                 if art["url"] not in articles:
                     articles[art["url"]] = art

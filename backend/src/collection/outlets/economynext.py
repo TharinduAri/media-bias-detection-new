@@ -31,6 +31,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 import httpx
 
@@ -47,6 +48,7 @@ _BLOCKED_SECTION_PATTERNS = ["/culture", "/sports", "/life-and-style", "/enterta
 # Ghost/500 threshold: if this fraction of requests fail, warn and cap articles
 _CIRCUIT_BREAKER_RATIO = 0.50
 _EN_GHOST_THRESHOLD = 500   # Economy Next ghosted pages tend to be < 500 bytes
+_ARTICLE_HINT_RE = re.compile(r"/20\d{2}/\d{2}/\d{2}/|/[a-z0-9][a-z0-9\-]{10,}")
 
 _BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -66,7 +68,19 @@ class EconomyNextOutlet(BaseOutletScraper):
         self._cdx_cache: dict[str, str] = {}
 
     def should_skip_url(self, url: str) -> bool:
-        if not super().should_skip_url(url) is False:
+        base_skip = super().should_skip_url(url)
+        if base_skip:
+            # EconomyNext frequently uses single-segment slug URLs
+            # (e.g., /some-long-article-slug) which the generic filter rejects.
+            parsed = urlparse(url)
+            path = (parsed.path or "").strip("/")
+            if (
+                path
+                and "/" not in path
+                and re.fullmatch(r"[a-z0-9][a-z0-9\-]{8,}", path) is not None
+            ):
+                base_skip = False
+        if base_skip:
             return True
         lower = url.lower()
         return any(pat in lower for pat in _BLOCKED_SECTION_PATTERNS)
@@ -78,8 +92,31 @@ class EconomyNextOutlet(BaseOutletScraper):
         max_articles: int,
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
-        
-        # 1. Wayback CDX API (Live site returns 403 Forbidden for discovery)
+
+        # 1. Live WordPress sitemap discovery (primary)
+        live_sitemap_items = await self._live_sitemap_discover(client, days_back, max_articles)
+        for item in live_sitemap_items:
+            url = item.get("url")
+            if url and url not in articles:
+                articles[url] = item
+        if live_sitemap_items:
+            logger.info("[EconomyNext] Live sitemap added %d URLs", len(live_sitemap_items))
+
+        # 2. RSS fallback
+        if len(articles) < max_articles:
+            rss_items = await self._rss_discover(client, days_back, max_articles - len(articles))
+            for item in rss_items:
+                url = item.get("url")
+                if url and url not in articles:
+                    articles[url] = item
+            if rss_items:
+                logger.info("[EconomyNext] RSS added %d URLs", len(rss_items))
+
+        # 3. Wayback CDX top-up fallback
+        if len(articles) >= max_articles:
+            logger.info("[EconomyNext] Total discovered: %d URLs", len(articles))
+            return list(articles.values())[:max_articles]
+
         from datetime import timezone as _tz
         _now = datetime.now(_tz.utc)
         _since = (_now - timedelta(days=days_back)).strftime("%Y%m%d")
@@ -90,7 +127,7 @@ class EconomyNextOutlet(BaseOutletScraper):
             "&output=json&fl=timestamp,original"
             "&filter=statuscode:200&filter=mimetype:text/html"
             f"&collapse=urlkey&from={_since}&to={_until}"
-            f"&limit={max_articles}&offset=0"
+            f"&limit={max_articles * 25}&offset=0"
         )
         try:
             resp = await client.get(cdx_url, timeout=20.0)
@@ -100,7 +137,11 @@ class EconomyNextOutlet(BaseOutletScraper):
                 for row in data[1:]:
                     if len(row) >= 2:
                         ts, orig_url = row[0], row[1]
-                        if not self.should_skip_url(orig_url) and orig_url not in articles:
+                        if self.should_skip_url(orig_url):
+                            continue
+                        if not _ARTICLE_HINT_RE.search(orig_url):
+                            continue
+                        if orig_url not in articles:
                             self._cdx_cache[orig_url] = ts
                             articles[orig_url] = self._article_stub(orig_url)
                             if len(articles) >= max_articles:
@@ -110,6 +151,105 @@ class EconomyNextOutlet(BaseOutletScraper):
 
         logger.info("[EconomyNext] Total discovered: %d URLs via Wayback Machine", len(articles))
         return list(articles.values())[:max_articles]
+
+    async def _live_sitemap_discover(
+        self,
+        client: httpx.AsyncClient,
+        days_back: int,
+        max_articles: int,
+    ) -> list[dict[str, str]]:
+        if max_articles <= 0:
+            return []
+        cutoff = datetime.now() - timedelta(days=days_back)
+        index_root = await self._fetch_xml(client, f"{self.url}/wp-sitemap.xml")
+        if index_root is None:
+            return []
+
+        shard_urls: list[str] = []
+        if self._tag(index_root.tag) == "sitemapindex":
+            for child in index_root:
+                if self._tag(child.tag) != "sitemap":
+                    continue
+                loc = None
+                for node in child:
+                    if self._tag(node.tag) == "loc" and node.text:
+                        loc = node.text.strip()
+                        break
+                if loc and "posts-post" in loc:
+                    shard_urls.append(loc)
+        elif self._tag(index_root.tag) == "urlset":
+            shard_urls = [f"{self.url}/wp-sitemap.xml"]
+
+        items: dict[str, dict[str, str]] = {}
+        batch_size = 12
+        for start in range(0, len(shard_urls), batch_size):
+            if len(items) >= max_articles:
+                break
+            batch = shard_urls[start : start + batch_size]
+            roots = await asyncio.gather(*[self._fetch_xml(client, url) for url in batch])
+            for root in roots:
+                if root is None or self._tag(root.tag) != "urlset":
+                    continue
+                for child in root:
+                    if self._tag(child.tag) != "url":
+                        continue
+                    loc = lastmod = None
+                    for node in child:
+                        tag = self._tag(node.tag)
+                        if tag == "loc" and node.text:
+                            loc = node.text.strip()
+                        elif tag == "lastmod" and node.text:
+                            lastmod = node.text.strip()
+                    if not loc or self.should_skip_url(loc):
+                        continue
+                    if not _ARTICLE_HINT_RE.search(loc):
+                        continue
+                    pub = self._parse_dt(lastmod)
+                    if pub and pub < cutoff:
+                        continue
+                    if loc not in items:
+                        items[loc] = self._article_stub(loc, pub)
+                    if len(items) >= max_articles:
+                        break
+
+        return list(items.values())
+
+    async def _rss_discover(
+        self,
+        client: httpx.AsyncClient,
+        days_back: int,
+        max_articles: int,
+    ) -> list[dict[str, str]]:
+        if max_articles <= 0:
+            return []
+        import xml.etree.ElementTree as ET
+
+        cutoff = datetime.now() - timedelta(days=days_back)
+        for path in ("/feed", "/rss", "/feed/rss2"):
+            try:
+                resp = await fetch(client, f"{self.url}{path}", extra_headers=_BROWSER_HEADERS)
+                root = ET.fromstring(resp.text)
+            except Exception:
+                continue
+
+            entries = root.findall(".//item")
+            rows: list[dict[str, str]] = []
+            for item in entries:
+                link = item.findtext("link")
+                if not link or self.should_skip_url(link):
+                    continue
+                if not _ARTICLE_HINT_RE.search(link):
+                    continue
+                pub = self._parse_dt(item.findtext("pubDate"))
+                if pub and pub < cutoff:
+                    continue
+                rows.append(self._article_stub(link, pub, item.findtext("title") or ""))
+                if len(rows) >= max_articles:
+                    break
+            if rows:
+                return rows
+
+        return []
 
     # -- Content extraction ------------------------------------------------- #
 

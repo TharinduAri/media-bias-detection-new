@@ -52,6 +52,21 @@ class BiasRunResponse(BaseModel):
     processed_articles: int
     topics_processed: int
     profiles_updated: int
+    embeddings_saved: int
+    embedding_provider: str
+    embedding_model: str
+    cluster_source: str
+    clusters_received: Optional[int] = None
+
+
+class BiasTopicClusterRequest(BaseModel):
+    topic_key: str
+    topic_label: Optional[str] = None
+    article_ids: List[int]
+
+
+class BiasRunWithClustersRequest(BaseModel):
+    clusters: List[BiasTopicClusterRequest]
 
 
 class ArticleBiasScoreResponse(BaseModel):

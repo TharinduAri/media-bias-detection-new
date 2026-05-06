@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 _WP_API_PATH = "/wp-json/wp/v2/posts"
 _WP_API_FIELDS = "id,date,title,link,content"
 _WP_API_PER_PAGE = 100   # Max allowed by WP REST API
-_WP_API_MAX_PAGES = 5    # 5 × 100 = 500 posts max from API
+_WP_API_MAX_PAGES = 12
 
 _TRUNCATION_MARKERS = (
     "[…]", "[...]", "[&hellip;]", "…", "...", "continue reading", "read more",
@@ -60,7 +60,7 @@ class LBOOutlet(BaseOutletScraper):
         logger.info("[LBO] WP API: %d articles", len(articles))
 
         # Fallback: sitemap shards if API yield is low
-        if len(articles) < max(30, max_articles // 4):
+        if len(articles) < max_articles:
             sitemap_articles = await self._wp_sitemap_discover(
                 client, days_back, max_articles - len(articles)
             )
@@ -80,8 +80,9 @@ class LBOOutlet(BaseOutletScraper):
         cutoff = datetime.now() - timedelta(days=days_back)
         endpoint = f"{self.url}{_WP_API_PATH}"
         articles: list[dict[str, str]] = []
+        max_pages = _WP_API_MAX_PAGES
 
-        for page in range(1, _WP_API_MAX_PAGES + 1):
+        for page in range(1, max_pages + 1):
             if len(articles) >= max_articles:
                 break
             params = {
@@ -94,6 +95,10 @@ class LBOOutlet(BaseOutletScraper):
             try:
                 resp = await fetch(client, f"{endpoint}?{urlencode(params)}")
                 posts = resp.json()
+                if page == 1:
+                    header_pages = resp.headers.get("X-WP-TotalPages")
+                    if header_pages and header_pages.isdigit():
+                        max_pages = min(max_pages, max(1, int(header_pages)))
             except Exception as exc:
                 logger.debug("[LBO] WP API page %d failed: %s", page, exc)
                 break
@@ -246,3 +251,4 @@ class LBOOutlet(BaseOutletScraper):
             "title": title,
             "date": (pub or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"),
         }
+
