@@ -64,6 +64,14 @@ class BiasModelManager:
         self.embedding_model = SentenceTransformer(self.embedding_model_name)
         tokenizer = AutoTokenizer.from_pretrained(self.sentiment_model_name)
         model = AutoModelForSequenceClassification.from_pretrained(self.sentiment_model_name)
+        raw_id2label = getattr(model.config, "id2label", {}) or {}
+        self.id2label: Dict[int, str] = {}
+        for key, value in raw_id2label.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            self.id2label[idx] = str(value).strip().lower()
         self.sentiment_pipeline = pipeline(
             "sentiment-analysis",
             model=model,
@@ -76,13 +84,43 @@ class BiasModelManager:
         return np.asarray(self.embedding_model.encode(texts, normalize_embeddings=True))
 
     def analyze_sentiment(self, texts: List[str]) -> List[SentimentResult]:
-        results = self.sentiment_pipeline(texts, truncation=True, max_length=SENTIMENT_MAX_LENGTH)
+        # Use full score distribution and derive a continuous signal so "neutral" outputs
+        # do not collapse to an exact zero bias for entire topic groups.
+        try:
+            results = self.sentiment_pipeline(
+                texts,
+                truncation=True,
+                max_length=SENTIMENT_MAX_LENGTH,
+                top_k=None,
+            )
+        except TypeError:
+            results = self.sentiment_pipeline(
+                texts,
+                truncation=True,
+                max_length=SENTIMENT_MAX_LENGTH,
+                return_all_scores=True,
+            )
+
         mapped: List[SentimentResult] = []
         for item in results:
-            label = str(item.get("label", "neutral")).lower()
-            confidence = float(item.get("score", 0.0))
+            predictions: List[Dict[str, Any]]
+            if isinstance(item, list):
+                predictions = [row for row in item if isinstance(row, dict)]
+            elif isinstance(item, dict):
+                predictions = [item]
+            else:
+                predictions = []
+
+            if not predictions:
+                mapped.append(SentimentResult(label="neutral", confidence=0.0, score=0.0))
+                continue
+
+            best = max(predictions, key=lambda row: float(row.get("score", 0.0)))
+            label = self._canonical_sentiment_label(str(best.get("label", "neutral")))
+            confidence = float(best.get("score", 0.0))
+            score = self._distribution_to_score(predictions)
             mapped.append(
-                SentimentResult(label=label, confidence=confidence, score=_label_to_score(label, confidence))
+                SentimentResult(label=label, confidence=confidence, score=score)
             )
         return mapped
 
@@ -118,6 +156,35 @@ class BiasModelManager:
             fallback_src = titles[0] if titles else ""
             fallback = _sanitize_topic_label(fallback_src[:60].strip(), outlet_blocklist)
             return (fallback or "General News").title()
+
+    def _canonical_sentiment_label(self, raw_label: str) -> str:
+        normalized = (raw_label or "").strip().lower()
+        match = re.fullmatch(r"label[_\-\s]?(\d+)", normalized)
+        if match:
+            mapped = self.id2label.get(int(match.group(1)))
+            if mapped:
+                normalized = mapped
+        if "pos" in normalized:
+            return "positive"
+        if "neg" in normalized:
+            return "negative"
+        if "neu" in normalized:
+            return "neutral"
+        return normalized or "neutral"
+
+    def _distribution_to_score(self, predictions: List[Dict[str, Any]]) -> float:
+        positive = 0.0
+        negative = 0.0
+        for row in predictions:
+            label = self._canonical_sentiment_label(str(row.get("label", "")))
+            value = float(row.get("score", 0.0))
+            if label == "positive":
+                positive += value
+            elif label == "negative":
+                negative += value
+        score = positive - negative
+        # Keep sentiment scores bounded for stable comparisons.
+        return float(max(-1.0, min(1.0, score)))
 
 
 _MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
@@ -290,6 +357,15 @@ def _run_bias_analysis_impl(
         texts = [row["text"] for row in analysis_rows]
         sentiment_results = model_manager.analyze_sentiment(texts)
         run_logs.append("Computed sentiment scores.")
+        neutral_count = sum(1 for row in sentiment_results if row.label == "neutral")
+        positive_count = sum(1 for row in sentiment_results if row.label == "positive")
+        negative_count = sum(1 for row in sentiment_results if row.label == "negative")
+        near_zero_count = sum(1 for row in sentiment_results if abs(row.score) < 1e-6)
+        run_logs.append(
+            "Sentiment mix: "
+            f"positive={positive_count}, neutral={neutral_count}, negative={negative_count}, "
+            f"near_zero_score={near_zero_count}"
+        )
 
         now = datetime.utcnow()
         run_key = now.strftime("%Y%m%d%H%M%S")
