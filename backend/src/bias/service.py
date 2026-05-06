@@ -29,6 +29,10 @@ MIN_CLUSTER_CENTROID_SIMILARITY = float(os.getenv("BIAS_MIN_CLUSTER_CENTROID_SIM
 MAX_SPLIT_DEPTH = int(os.getenv("BIAS_MAX_SPLIT_DEPTH", "3"))
 MIN_TOPIC_OUTLETS = int(os.getenv("BIAS_MIN_TOPIC_OUTLETS", "3"))
 MAX_DOMINANT_OUTLET_SHARE = float(os.getenv("BIAS_MAX_DOMINANT_OUTLET_SHARE", "0.6"))
+CLUSTER_TEXT_SENTENCE_LIMIT = int(os.getenv("BIAS_CLUSTER_TEXT_SENTENCE_LIMIT", "8"))
+CLUSTER_TEXT_CHAR_LIMIT = int(os.getenv("BIAS_CLUSTER_TEXT_CHAR_LIMIT", "3600"))
+CLUSTER_TITLE_REPEAT = max(1, int(os.getenv("BIAS_CLUSTER_TITLE_REPEAT", "2")))
+CLUSTER_ENTITY_LIMIT = int(os.getenv("BIAS_CLUSTER_ENTITY_LIMIT", "12"))
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 32
 LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
@@ -773,6 +777,10 @@ def _prepare_embeddings_for_recent_articles(
     run_logs: List[str],
 ) -> int:
     texts = [_build_article_text(article, outlet_blocklist) for article in recent_articles]
+    if texts:
+        avg_chars = int(sum(len(text) for text in texts) / len(texts))
+        max_chars = max(len(text) for text in texts)
+        run_logs.append(f"Embedding input size (chars): avg={avg_chars}, max={max_chars}")
     embeddings = _embed_texts(
         texts=texts,
         embedding_provider=embedding_provider,
@@ -888,15 +896,61 @@ def _group_by_label(labels: np.ndarray) -> Dict[int, List[int]]:
 def _build_article_text(article: models.Article, outlet_blocklist: Set[str]) -> str:
     title = (article.title or "").strip()
     sentences = article.sentences if isinstance(article.sentences, list) else []
+    source_text = (article.clean_text or article.text or "").strip()
+
     snippet = ""
     if sentences:
-        snippet = " ".join([s.strip() for s in sentences[:3] if s])
+        snippet = " ".join(
+            [s.strip() for s in sentences[:CLUSTER_TEXT_SENTENCE_LIMIT] if isinstance(s, str) and s.strip()]
+        )
     else:
-        source_text = (article.clean_text or article.text or "").strip()
-        snippet = _first_sentences_from_text(source_text, 3)
+        snippet = _first_sentences_from_text(source_text, CLUSTER_TEXT_SENTENCE_LIMIT)
 
-    combined = f"{title}. {snippet}" if snippet and title else (snippet or title)
-    return _strip_outlet_markers(combined, outlet_blocklist)
+    # Add lightweight entity hints to improve topic separation for semantically similar headlines.
+    entities_hint = _entity_hint_text(article.entities)
+
+    segments: List[str] = []
+    if title:
+        weighted_title = ". ".join([title] * CLUSTER_TITLE_REPEAT)
+        segments.append(weighted_title)
+    if entities_hint:
+        segments.append(f"Entities: {entities_hint}")
+    if snippet:
+        segments.append(snippet)
+    if source_text and len(snippet) < min(400, CLUSTER_TEXT_CHAR_LIMIT // 4):
+        segments.append(source_text[:CLUSTER_TEXT_CHAR_LIMIT])
+
+    combined = " ".join(segment for segment in segments if segment).strip()
+    cleaned = _strip_outlet_markers(combined, outlet_blocklist)
+    return cleaned[:CLUSTER_TEXT_CHAR_LIMIT].strip()
+
+
+def _entity_hint_text(entities_raw: object) -> str:
+    if not isinstance(entities_raw, list):
+        return ""
+    terms: List[str] = []
+    seen: Set[str] = set()
+    for item in entities_raw:
+        value = ""
+        if isinstance(item, str):
+            value = item.strip()
+        elif isinstance(item, dict):
+            for key in ("text", "entity", "name", "value"):
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    value = candidate.strip()
+                    break
+        if not value:
+            continue
+        normalized = re.sub(r"\s+", " ", value).strip()
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        terms.append(normalized)
+        if len(terms) >= CLUSTER_ENTITY_LIMIT:
+            break
+    return ", ".join(terms)
 
 
 def _build_outlet_blocklist(outlets: List[str]) -> Set[str]:
