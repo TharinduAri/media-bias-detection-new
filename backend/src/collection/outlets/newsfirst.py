@@ -45,7 +45,15 @@ _ARTICLE_URL_RE = re.compile(
 )
 
 _RSS_CANDIDATES = ["/feed/rss2", "/feed", "/rss", "/?feed=rss2"]
-_CATEGORY_PATHS = ["/latest", "/news/local/", "/news/world/", "/news/business/"]
+_CATEGORY_PATHS = [
+    "/latest",
+    "/news/local/",
+    "/news/world/",
+    "/news/business/",
+    "/news/politics/",
+    "/news/sports/",
+]
+_SITEMAP_CANDIDATES = ["/wp-sitemap.xml", "/sitemap.xml"]
 
 
 class NewsfirstOutlet(BaseOutletScraper):
@@ -100,7 +108,17 @@ class NewsfirstOutlet(BaseOutletScraper):
             except Exception as exc:
                 logger.debug("[Newsfirst] RSS candidate %s failed: %s", candidate, exc)
 
-        # 2. Latest Page & Category listing pages (Fallback)
+        # 2. Sitemap traversal (best coverage when RSS is sparse/blocked)
+        if len(articles) < max_articles:
+            sitemap_items = await self._sitemap_discover(client, days_back, max_articles - len(articles))
+            for item in sitemap_items:
+                url = item.get("url")
+                if url and url not in articles:
+                    articles[url] = item
+            if sitemap_items:
+                logger.info("[Newsfirst] Sitemap added %d URLs", len(sitemap_items))
+
+        # 3. Latest Page & Category listing pages (Fallback)
         if len(articles) < max_articles:
             for path in _CATEGORY_PATHS:
                 if len(articles) >= max_articles:
@@ -145,7 +163,7 @@ class NewsfirstOutlet(BaseOutletScraper):
 
             logger.info("[Newsfirst] Discovered %d URLs total after category scrape", len(articles))
 
-        # 3. Wayback CDX API
+        # 4. Wayback CDX API
         if len(articles) < max_articles:
             from datetime import timezone as _tz
             _now = datetime.now(_tz.utc)
@@ -157,7 +175,7 @@ class NewsfirstOutlet(BaseOutletScraper):
                 "&output=json&fl=timestamp,original"
                 "&filter=statuscode:200&filter=mimetype:text/html"
                 f"&collapse=urlkey&from={_since}&to={_until}"
-                f"&limit={max_articles}&offset=0"
+                f"&limit={max_articles * 20}&offset=0"
             )
             try:
                 resp = await client.get(cdx_url, timeout=20.0)
@@ -178,6 +196,90 @@ class NewsfirstOutlet(BaseOutletScraper):
 
         logger.info("[Newsfirst] Total discovered: %d URLs", len(articles))
         return list(articles.values())[:max_articles]
+
+    async def _sitemap_discover(
+        self,
+        client: httpx.AsyncClient,
+        days_back: int,
+        max_articles: int,
+    ) -> list[dict[str, str]]:
+        if max_articles <= 0:
+            return []
+
+        from datetime import timezone as _tz
+        cutoff = datetime.now(_tz.utc) - timedelta(days=days_back)
+        article_map: dict[str, dict[str, str]] = {}
+
+        index_urls: list[str] = [f"{self.url.rstrip('/')}{path}" for path in _SITEMAP_CANDIDATES]
+        shard_urls: list[str] = []
+
+        for index_url in index_urls:
+            root = await self._fetch_xml(client, index_url)
+            if root is None:
+                continue
+            tag = self._tag(root.tag)
+            if tag == "sitemapindex":
+                for child in root:
+                    if self._tag(child.tag) != "sitemap":
+                        continue
+                    loc = lastmod = None
+                    for node in child:
+                        node_tag = self._tag(node.tag)
+                        if node_tag == "loc" and node.text:
+                            loc = node.text.strip()
+                        elif node_tag == "lastmod" and node.text:
+                            lastmod = node.text.strip()
+                    pub = self._parse_dt(lastmod)
+                    if pub is not None:
+                        if pub.tzinfo is None:
+                            pub = pub.replace(tzinfo=_tz.utc)
+                        if pub < cutoff:
+                            continue
+                    if loc and "newsfirst.lk" in loc:
+                        shard_urls.append(loc)
+            elif tag == "urlset":
+                shard_urls.append(index_url)
+
+        # De-duplicate while preserving order
+        deduped_shards: list[str] = []
+        seen_shards: set[str] = set()
+        for url in shard_urls:
+            if url not in seen_shards:
+                seen_shards.add(url)
+                deduped_shards.append(url)
+
+        for shard in deduped_shards:
+            if len(article_map) >= max_articles:
+                break
+            root = await self._fetch_xml(client, shard)
+            if root is None or self._tag(root.tag) != "urlset":
+                continue
+            for child in root:
+                if self._tag(child.tag) != "url":
+                    continue
+                loc = lastmod = None
+                for node in child:
+                    node_tag = self._tag(node.tag)
+                    if node_tag == "loc" and node.text:
+                        loc = node.text.strip()
+                    elif node_tag == "lastmod" and node.text:
+                        lastmod = node.text.strip()
+                if not loc or self.should_skip_url(loc):
+                    continue
+                if not _ARTICLE_URL_RE.match(loc):
+                    continue
+                pub = self._parse_dt(lastmod)
+                if pub is not None:
+                    if pub.tzinfo is None:
+                        pub = pub.replace(tzinfo=_tz.utc)
+                    if pub < cutoff:
+                        continue
+                if loc not in article_map:
+                    article_map[loc] = self._article_stub(loc, pub)
+                if len(article_map) >= max_articles:
+                    break
+
+        return list(article_map.values())
 
     # -- Content extraction ------------------------------------------------- #
 

@@ -149,7 +149,10 @@ async def fetch_xml(client: httpx.AsyncClient, url: str) -> ET.Element | None:
     """Fetch and parse an XML document; returns None on any failure."""
     try:
         resp = await fetch(client, url)
-        return ET.fromstring(resp.text)
+        # Some outlets return XML with a leading blank line before the declaration.
+        # xml.etree.ElementTree rejects that unless we trim left whitespace first.
+        xml_text = (resp.text or "").lstrip()
+        return ET.fromstring(xml_text)
     except Exception as exc:
         logger.debug("XML fetch failed for %s: %s", url, exc)
         return None

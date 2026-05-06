@@ -14,7 +14,7 @@ from .outlets import (
     AdaDeranaOutlet,
     CeylonTodayOutlet,
     DailyFTOutlet,
-    # EconomyNextOutlet,
+    EconomyNextOutlet,
     LBOOutlet,
     NewsfirstOutlet,
     BaseOutletScraper,
@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 sentry_sdk.init(dsn=os.getenv("SENTRY_DSN"), traces_sample_rate=0.2)
 
 SCRAPE_MAX_RETRIES = 3
-REQUEST_TIMEOUT_SECONDS = 12
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 MAX_CONCURRENT_REQUESTS = 10
 MAX_ARTICLES_PER_OUTLET = int(os.getenv("MAX_ARTICLES_PER_OUTLET", "300"))
 DAYS_BACK = int(os.getenv("DAYS_BACK", "28"))
@@ -206,7 +206,7 @@ _OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
     (("adaderana.lk",),                          AdaDeranaOutlet),
     (("ceylontoday.lk",),                         CeylonTodayOutlet),
     (("ft.lk", "dailyft.lk"),                     DailyFTOutlet),
-    # (("economynext.com",),                         EconomyNextOutlet),
+    (("economynext.com",),                         EconomyNextOutlet),
     (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
     (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
 ]
