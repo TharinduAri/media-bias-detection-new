@@ -29,6 +29,10 @@ MIN_CLUSTER_CENTROID_SIMILARITY = float(os.getenv("BIAS_MIN_CLUSTER_CENTROID_SIM
 MAX_SPLIT_DEPTH = int(os.getenv("BIAS_MAX_SPLIT_DEPTH", "3"))
 MIN_TOPIC_OUTLETS = int(os.getenv("BIAS_MIN_TOPIC_OUTLETS", "3"))
 MAX_DOMINANT_OUTLET_SHARE = float(os.getenv("BIAS_MAX_DOMINANT_OUTLET_SHARE", "0.6"))
+CLUSTER_TEXT_SENTENCE_LIMIT = int(os.getenv("BIAS_CLUSTER_TEXT_SENTENCE_LIMIT", "8"))
+CLUSTER_TEXT_CHAR_LIMIT = int(os.getenv("BIAS_CLUSTER_TEXT_CHAR_LIMIT", "3600"))
+CLUSTER_TITLE_REPEAT = max(1, int(os.getenv("BIAS_CLUSTER_TITLE_REPEAT", "2")))
+CLUSTER_ENTITY_LIMIT = int(os.getenv("BIAS_CLUSTER_ENTITY_LIMIT", "12"))
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 32
 LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
@@ -60,6 +64,14 @@ class BiasModelManager:
         self.embedding_model = SentenceTransformer(self.embedding_model_name)
         tokenizer = AutoTokenizer.from_pretrained(self.sentiment_model_name)
         model = AutoModelForSequenceClassification.from_pretrained(self.sentiment_model_name)
+        raw_id2label = getattr(model.config, "id2label", {}) or {}
+        self.id2label: Dict[int, str] = {}
+        for key, value in raw_id2label.items():
+            try:
+                idx = int(key)
+            except (TypeError, ValueError):
+                continue
+            self.id2label[idx] = str(value).strip().lower()
         self.sentiment_pipeline = pipeline(
             "sentiment-analysis",
             model=model,
@@ -72,13 +84,43 @@ class BiasModelManager:
         return np.asarray(self.embedding_model.encode(texts, normalize_embeddings=True))
 
     def analyze_sentiment(self, texts: List[str]) -> List[SentimentResult]:
-        results = self.sentiment_pipeline(texts, truncation=True, max_length=SENTIMENT_MAX_LENGTH)
+        # Use full score distribution and derive a continuous signal so "neutral" outputs
+        # do not collapse to an exact zero bias for entire topic groups.
+        try:
+            results = self.sentiment_pipeline(
+                texts,
+                truncation=True,
+                max_length=SENTIMENT_MAX_LENGTH,
+                top_k=None,
+            )
+        except TypeError:
+            results = self.sentiment_pipeline(
+                texts,
+                truncation=True,
+                max_length=SENTIMENT_MAX_LENGTH,
+                return_all_scores=True,
+            )
+
         mapped: List[SentimentResult] = []
         for item in results:
-            label = str(item.get("label", "neutral")).lower()
-            confidence = float(item.get("score", 0.0))
+            predictions: List[Dict[str, Any]]
+            if isinstance(item, list):
+                predictions = [row for row in item if isinstance(row, dict)]
+            elif isinstance(item, dict):
+                predictions = [item]
+            else:
+                predictions = []
+
+            if not predictions:
+                mapped.append(SentimentResult(label="neutral", confidence=0.0, score=0.0))
+                continue
+
+            best = max(predictions, key=lambda row: float(row.get("score", 0.0)))
+            label = self._canonical_sentiment_label(str(best.get("label", "neutral")))
+            confidence = float(best.get("score", 0.0))
+            score = self._distribution_to_score(predictions)
             mapped.append(
-                SentimentResult(label=label, confidence=confidence, score=_label_to_score(label, confidence))
+                SentimentResult(label=label, confidence=confidence, score=score)
             )
         return mapped
 
@@ -114,6 +156,35 @@ class BiasModelManager:
             fallback_src = titles[0] if titles else ""
             fallback = _sanitize_topic_label(fallback_src[:60].strip(), outlet_blocklist)
             return (fallback or "General News").title()
+
+    def _canonical_sentiment_label(self, raw_label: str) -> str:
+        normalized = (raw_label or "").strip().lower()
+        match = re.fullmatch(r"label[_\-\s]?(\d+)", normalized)
+        if match:
+            mapped = self.id2label.get(int(match.group(1)))
+            if mapped:
+                normalized = mapped
+        if "pos" in normalized:
+            return "positive"
+        if "neg" in normalized:
+            return "negative"
+        if "neu" in normalized:
+            return "neutral"
+        return normalized or "neutral"
+
+    def _distribution_to_score(self, predictions: List[Dict[str, Any]]) -> float:
+        positive = 0.0
+        negative = 0.0
+        for row in predictions:
+            label = self._canonical_sentiment_label(str(row.get("label", "")))
+            value = float(row.get("score", 0.0))
+            if label == "positive":
+                positive += value
+            elif label == "negative":
+                negative += value
+        score = positive - negative
+        # Keep sentiment scores bounded for stable comparisons.
+        return float(max(-1.0, min(1.0, score)))
 
 
 _MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
@@ -286,6 +357,15 @@ def _run_bias_analysis_impl(
         texts = [row["text"] for row in analysis_rows]
         sentiment_results = model_manager.analyze_sentiment(texts)
         run_logs.append("Computed sentiment scores.")
+        neutral_count = sum(1 for row in sentiment_results if row.label == "neutral")
+        positive_count = sum(1 for row in sentiment_results if row.label == "positive")
+        negative_count = sum(1 for row in sentiment_results if row.label == "negative")
+        near_zero_count = sum(1 for row in sentiment_results if abs(row.score) < 1e-6)
+        run_logs.append(
+            "Sentiment mix: "
+            f"positive={positive_count}, neutral={neutral_count}, negative={negative_count}, "
+            f"near_zero_score={near_zero_count}"
+        )
 
         now = datetime.utcnow()
         run_key = now.strftime("%Y%m%d%H%M%S")
@@ -773,6 +853,10 @@ def _prepare_embeddings_for_recent_articles(
     run_logs: List[str],
 ) -> int:
     texts = [_build_article_text(article, outlet_blocklist) for article in recent_articles]
+    if texts:
+        avg_chars = int(sum(len(text) for text in texts) / len(texts))
+        max_chars = max(len(text) for text in texts)
+        run_logs.append(f"Embedding input size (chars): avg={avg_chars}, max={max_chars}")
     embeddings = _embed_texts(
         texts=texts,
         embedding_provider=embedding_provider,
@@ -888,15 +972,61 @@ def _group_by_label(labels: np.ndarray) -> Dict[int, List[int]]:
 def _build_article_text(article: models.Article, outlet_blocklist: Set[str]) -> str:
     title = (article.title or "").strip()
     sentences = article.sentences if isinstance(article.sentences, list) else []
+    source_text = (article.clean_text or article.text or "").strip()
+
     snippet = ""
     if sentences:
-        snippet = " ".join([s.strip() for s in sentences[:3] if s])
+        snippet = " ".join(
+            [s.strip() for s in sentences[:CLUSTER_TEXT_SENTENCE_LIMIT] if isinstance(s, str) and s.strip()]
+        )
     else:
-        source_text = (article.clean_text or article.text or "").strip()
-        snippet = _first_sentences_from_text(source_text, 3)
+        snippet = _first_sentences_from_text(source_text, CLUSTER_TEXT_SENTENCE_LIMIT)
 
-    combined = f"{title}. {snippet}" if snippet and title else (snippet or title)
-    return _strip_outlet_markers(combined, outlet_blocklist)
+    # Add lightweight entity hints to improve topic separation for semantically similar headlines.
+    entities_hint = _entity_hint_text(article.entities)
+
+    segments: List[str] = []
+    if title:
+        weighted_title = ". ".join([title] * CLUSTER_TITLE_REPEAT)
+        segments.append(weighted_title)
+    if entities_hint:
+        segments.append(f"Entities: {entities_hint}")
+    if snippet:
+        segments.append(snippet)
+    if source_text and len(snippet) < min(400, CLUSTER_TEXT_CHAR_LIMIT // 4):
+        segments.append(source_text[:CLUSTER_TEXT_CHAR_LIMIT])
+
+    combined = " ".join(segment for segment in segments if segment).strip()
+    cleaned = _strip_outlet_markers(combined, outlet_blocklist)
+    return cleaned[:CLUSTER_TEXT_CHAR_LIMIT].strip()
+
+
+def _entity_hint_text(entities_raw: object) -> str:
+    if not isinstance(entities_raw, list):
+        return ""
+    terms: List[str] = []
+    seen: Set[str] = set()
+    for item in entities_raw:
+        value = ""
+        if isinstance(item, str):
+            value = item.strip()
+        elif isinstance(item, dict):
+            for key in ("text", "entity", "name", "value"):
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    value = candidate.strip()
+                    break
+        if not value:
+            continue
+        normalized = re.sub(r"\s+", " ", value).strip()
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        terms.append(normalized)
+        if len(terms) >= CLUSTER_ENTITY_LIMIT:
+            break
+    return ", ".join(terms)
 
 
 def _build_outlet_blocklist(outlets: List[str]) -> Set[str]:

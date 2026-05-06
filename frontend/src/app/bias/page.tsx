@@ -22,7 +22,7 @@ export default async function BiasPage() {
               Bias Results
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Inspect outlet profiles, compare coverage, and review article-level bias scores.
+              Start with topic-group bias calculation, then inspect outlet profiles and article-level scores.
             </p>
             <div className="mt-4 flex items-center gap-2">
               <div className="px-3 py-1 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 rounded-full">
