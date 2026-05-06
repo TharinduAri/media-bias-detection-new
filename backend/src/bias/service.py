@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import hashlib
 import os
 import re
-from typing import Dict, Iterable, List, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Set, Tuple
 
 import httpx
 import numpy as np
@@ -44,6 +44,13 @@ class SentimentResult:
     label: str
     confidence: float
     score: float
+
+
+@dataclass(frozen=True)
+class TopicClusterSpec:
+    topic_key: str
+    topic_label: str | None
+    article_ids: List[int]
 
 
 class BiasModelManager:
@@ -139,25 +146,49 @@ def run_bias_analysis(
     embedding_provider: str = "local",
     local_embedding_key: str = "minilm_l6",
 ) -> Dict[str, object]:
+    return _run_bias_analysis_impl(
+        db=db,
+        embedding_provider=embedding_provider,
+        local_embedding_key=local_embedding_key,
+        external_clusters=None,
+    )
+
+
+def run_bias_analysis_with_clusters(
+    db: Session,
+    clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
+    embedding_provider: str = "local",
+    local_embedding_key: str = "minilm_l6",
+) -> Dict[str, object]:
+    normalized_clusters = _normalize_external_clusters(clusters)
+    return _run_bias_analysis_impl(
+        db=db,
+        embedding_provider=embedding_provider,
+        local_embedding_key=local_embedding_key,
+        external_clusters=normalized_clusters,
+    )
+
+
+def _run_bias_analysis_impl(
+    db: Session,
+    embedding_provider: str,
+    local_embedding_key: str,
+    external_clusters: List[TopicClusterSpec] | None,
+) -> Dict[str, object]:
     started_at = datetime.utcnow()
     run_logs: List[str] = ["Bias analysis started..."]
     run_status = "done"
     run_error: str | None = None
+    cluster_source = "external" if external_clusters is not None else "internal"
 
     try:
         ensure_bias_tables()
 
         since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
-        recent_articles = (
-            db.query(models.Article)
-            .filter(models.Article.date >= since)
-            .filter(models.Article.text.isnot(None))
-            .filter(func.length(models.Article.text) > 100)
-            .order_by(models.Article.date.desc())
-            .all()
-        )
+        recent_articles = _load_recent_articles(db, since)
 
         embedding_model = _resolve_embedding_model_name(embedding_provider, local_embedding_key)
+        run_logs.append(f"Cluster source: {cluster_source}")
         run_logs.append(f"Embedding provider: {embedding_provider}")
         run_logs.append(f"Embedding model: {embedding_model}")
         run_logs.append(f"Recent articles found: {len(recent_articles)}")
@@ -174,6 +205,8 @@ def run_bias_analysis(
                 "embeddings_saved": 0,
                 "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
+                "cluster_source": cluster_source,
+                "clusters_received": len(external_clusters) if external_clusters is not None else None,
             }
 
         outlets = [
@@ -215,27 +248,40 @@ def run_bias_analysis(
                 "embeddings_saved": embeddings_saved,
                 "embedding_provider": embedding_provider,
                 "embedding_model": embedding_model,
+                "cluster_source": cluster_source,
+                "clusters_received": len(external_clusters) if external_clusters is not None else None,
             }
 
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=CLUSTER_DISTANCE_THRESHOLD,
-            metric="cosine",
-            linkage="average",
-        )
-        labels = clustering.fit_predict(embeddings)
-        clusters = _group_by_label(labels)
-        clusters = _refine_clusters_for_coherence(clusters, embeddings)
         analysis_articles = [row["article"] for row in analysis_rows]
-        clusters = _split_outlet_dominated_clusters(clusters, analysis_articles)
-        run_logs.append(f"Topic groups formed: {len(clusters)}")
-
-        clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, analysis_articles)
-        if merge_stats["merged_clusters"]:
-            run_logs.append(
-                "Merged single-outlet clusters: "
-                f"{merge_stats['merged_clusters']} (articles merged: {merge_stats['merged_articles']})"
+        if external_clusters is None:
+            clusters = _build_internal_clusters(embeddings, analysis_articles, run_logs)
+            topic_overrides: Dict[int, Dict[str, str | None]] = {}
+            run_logs.append(f"Topic groups formed: {len(clusters)}")
+        else:
+            clusters, topic_overrides, ignored_clusters = _build_external_clusters(
+                external_clusters=external_clusters,
+                analysis_articles=analysis_articles,
             )
+            run_logs.append(f"External topic groups received: {len(external_clusters)}")
+            run_logs.append(f"External topic groups accepted: {len(clusters)}")
+            if ignored_clusters:
+                run_logs.append(f"External topic groups ignored: {ignored_clusters}")
+
+        if not clusters:
+            run_logs.append("No valid topic groups available for scoring.")
+            _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
+            return {
+                "status": "ok",
+                "message": "No valid topic groups available for scoring.",
+                "processed_articles": 0,
+                "topics_processed": 0,
+                "profiles_updated": 0,
+                "embeddings_saved": embeddings_saved,
+                "embedding_provider": embedding_provider,
+                "embedding_model": embedding_model,
+                "cluster_source": cluster_source,
+                "clusters_received": len(external_clusters) if external_clusters is not None else None,
+            }
 
         texts = [row["text"] for row in analysis_rows]
         sentiment_results = model_manager.analyze_sentiment(texts)
@@ -271,11 +317,16 @@ def run_bias_analysis(
             coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
             coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
             
-            # Generate human-readable label
+            topic_override = topic_overrides.get(label, {})
+            topic_label = topic_override.get("topic_label")
+            topic_key = topic_override.get("topic_key")
+
+            # Generate human-readable label only when not provided by the cluster source.
             topic_titles = [analysis_articles[idx].title for idx in indices]
-            topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist)
-            
-            topic_key = f"{run_key}-{label}"
+            if not topic_label:
+                topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist)
+            if not topic_key:
+                topic_key = f"{run_key}-{label}"
 
             for idx in indices:
                 article = analysis_articles[idx]
@@ -345,6 +396,8 @@ def run_bias_analysis(
             "embeddings_saved": embeddings_saved,
             "embedding_provider": embedding_provider,
             "embedding_model": embedding_model,
+            "cluster_source": cluster_source,
+            "clusters_received": len(external_clusters) if external_clusters is not None else None,
         }
     except Exception as exc:
         run_status = "error"
@@ -379,6 +432,138 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
             )
         )
     return profiles
+
+
+def _load_recent_articles(db: Session, since: datetime) -> List[models.Article]:
+    return (
+        db.query(models.Article)
+        .filter(models.Article.date >= since)
+        .filter(models.Article.text.isnot(None))
+        .filter(func.length(models.Article.text) > 100)
+        .order_by(models.Article.date.desc())
+        .all()
+    )
+
+
+def _build_internal_clusters(
+    embeddings: np.ndarray,
+    analysis_articles: List[models.Article],
+    run_logs: List[str],
+) -> Dict[int, List[int]]:
+    clustering = AgglomerativeClustering(
+        n_clusters=None,
+        distance_threshold=CLUSTER_DISTANCE_THRESHOLD,
+        metric="cosine",
+        linkage="average",
+    )
+    labels = clustering.fit_predict(embeddings)
+    clusters = _group_by_label(labels)
+    clusters = _refine_clusters_for_coherence(clusters, embeddings)
+    clusters = _split_outlet_dominated_clusters(clusters, analysis_articles)
+
+    clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, analysis_articles)
+    if merge_stats["merged_clusters"]:
+        run_logs.append(
+            "Merged single-outlet clusters: "
+            f"{merge_stats['merged_clusters']} (articles merged: {merge_stats['merged_articles']})"
+        )
+    return clusters
+
+
+def _normalize_external_clusters(
+    clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
+) -> List[TopicClusterSpec]:
+    normalized: List[TopicClusterSpec] = []
+
+    for item in clusters:
+        if isinstance(item, TopicClusterSpec):
+            normalized.append(item)
+            continue
+
+        payload: Mapping[str, Any]
+        if hasattr(item, "model_dump"):
+            payload = item.model_dump()  # type: ignore[assignment]
+        elif isinstance(item, Mapping):
+            payload = item
+        else:
+            raise ValueError("Invalid cluster item type.")
+
+        topic_key = str(payload.get("topic_key", "")).strip()
+        topic_label_raw = payload.get("topic_label")
+        topic_label = str(topic_label_raw).strip() if topic_label_raw else None
+        article_ids_raw = payload.get("article_ids", [])
+        if not isinstance(article_ids_raw, list):
+            raise ValueError("Each cluster must provide article_ids as a list of integers.")
+
+        article_ids: List[int] = []
+        seen_ids: Set[int] = set()
+        for raw_id in article_ids_raw:
+            try:
+                article_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if article_id <= 0 or article_id in seen_ids:
+                continue
+            seen_ids.add(article_id)
+            article_ids.append(article_id)
+
+        if not topic_key:
+            raise ValueError("Each cluster must provide a non-empty topic_key.")
+        if not article_ids:
+            raise ValueError(f"Cluster '{topic_key}' has no valid article IDs.")
+
+        normalized.append(
+            TopicClusterSpec(
+                topic_key=topic_key,
+                topic_label=topic_label,
+                article_ids=article_ids,
+            )
+        )
+
+    if not normalized:
+        raise ValueError("No clusters provided.")
+
+    return normalized
+
+
+def _build_external_clusters(
+    external_clusters: List[TopicClusterSpec],
+    analysis_articles: List[models.Article],
+) -> Tuple[Dict[int, List[int]], Dict[int, Dict[str, str | None]], int]:
+    index_by_article_id: Dict[int, int] = {}
+    for idx, article in enumerate(analysis_articles):
+        if article.id is not None:
+            index_by_article_id[int(article.id)] = idx
+
+    used_article_ids: Set[int] = set()
+    clusters: Dict[int, List[int]] = {}
+    topic_overrides: Dict[int, Dict[str, str | None]] = {}
+    ignored_clusters = 0
+    next_label = 0
+
+    for cluster in external_clusters:
+        indices: List[int] = []
+        for article_id in cluster.article_ids:
+            if article_id in used_article_ids:
+                continue
+            idx = index_by_article_id.get(article_id)
+            if idx is None:
+                continue
+            indices.append(idx)
+            used_article_ids.add(article_id)
+
+        if len(indices) < 2:
+            ignored_clusters += 1
+            continue
+
+        clusters[next_label] = indices
+        topic_overrides[next_label] = {
+            "topic_key": cluster.topic_key,
+            "topic_label": cluster.topic_label,
+        }
+        next_label += 1
+
+    return clusters, topic_overrides, ignored_clusters
 
 
 def _resolve_local_embedding_model(local_embedding_key: str) -> str:

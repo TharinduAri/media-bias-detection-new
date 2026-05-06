@@ -138,6 +138,14 @@ export interface BiasRunResponse {
   embeddings_saved: number;
   embedding_provider: "local" | "gemini" | string;
   embedding_model: string;
+  cluster_source: "internal" | "external" | string;
+  clusters_received?: number | null;
+}
+
+export interface BiasTopicClusterInput {
+  topic_key: string;
+  topic_label?: string;
+  article_ids: number[];
 }
 
 export async function triggerCleanScrape(): Promise<{ status: string; message: string }> {
@@ -278,6 +286,33 @@ export async function triggerBiasAnalysis(
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to run bias analysis");
+  }
+
+  return res.json();
+}
+
+export async function triggerBiasAnalysisWithClusters(
+  clusters: BiasTopicClusterInput[],
+  embeddingProvider: "local" | "gemini" = "local",
+  localEmbeddingKey: string = "minilm_l6"
+): Promise<BiasRunResponse> {
+  const params = new URLSearchParams({
+    embedding_provider: embeddingProvider,
+    local_embedding_key: localEmbeddingKey,
+  });
+
+  const res = await fetch(`${API_BASE_URL}/bias/run-with-clusters?${params.toString()}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ clusters }),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to run bias analysis with external clusters");
   }
 
   return res.json();
