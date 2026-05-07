@@ -20,7 +20,7 @@ router = APIRouter(
 @router.get("/health")
 def bias_health():
     try:
-        manager = get_models("minilm_l6")
+        manager = get_models("mpnet_v2")
         return {
             "status": "ok",
             "default_local_embedding_model": manager.embedding_model_name,
@@ -39,7 +39,7 @@ def bias_health():
 def run_bias(
     embedding_provider: Literal["local", "gemini"] = Query("local"),
     local_embedding_key: str = Query(
-        "minilm_l6",
+        "mpnet_v2",
         description="Local model key when embedding_provider=local",
     ),
     db: Session = Depends(get_db),
@@ -59,7 +59,7 @@ def run_bias_with_clusters(
     payload: schemas.BiasRunWithClustersRequest,
     embedding_provider: Literal["local", "gemini"] = Query("local"),
     local_embedding_key: str = Query(
-        "minilm_l6",
+        "mpnet_v2",
         description="Local model key when embedding_provider=local",
     ),
     db: Session = Depends(get_db),

@@ -253,6 +253,24 @@ class EconomyNextOutlet(BaseOutletScraper):
 
     # -- Content extraction ------------------------------------------------- #
 
+    async def _wayback_lookup(self, url: str, client: httpx.AsyncClient) -> str | None:
+        """Query Wayback CDX for the most recent archived timestamp of a URL."""
+        from urllib.parse import quote
+        cdx_url = (
+            "https://web.archive.org/cdx/search/cdx"
+            f"?url={quote(url, safe='')}"
+            "&output=json&fl=timestamp&filter=statuscode:200"
+            "&limit=1&sort=reverse"
+        )
+        try:
+            resp = await client.get(cdx_url, timeout=10.0)
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 1:
+                return str(data[1][0])
+        except Exception:
+            pass
+        return None
+
     async def extract_content(
         self, url: str, client: httpx.AsyncClient
     ) -> dict[str, str]:
@@ -264,6 +282,8 @@ class EconomyNextOutlet(BaseOutletScraper):
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (403, 404, 500, 503):
                 ts = self._cdx_cache.get(url)
+                if ts is None:
+                    ts = await self._wayback_lookup(url, client)
                 if ts:
                     archive_url = f"https://web.archive.org/web/{ts}/{url}"
                     logger.debug("[EconomyNext] %d on live URL, falling back to Wayback: %s", exc.response.status_code, archive_url)

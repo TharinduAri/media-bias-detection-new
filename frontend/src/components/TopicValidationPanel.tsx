@@ -200,12 +200,12 @@ export default function TopicValidationPanel() {
 
           <div className="relative">
             <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-              Filter Keys
+              Search Topics
             </label>
             <div className="relative">
               <input
                 type="text"
-                placeholder="Search topic key..."
+                placeholder="Filter by topic name…"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-10 pr-4 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm"
@@ -216,7 +216,7 @@ export default function TopicValidationPanel() {
         </div>
       </div>
 
-      <div className="min-h-[400px] relative">
+      <div className="min-h-100 relative">
         {loadingArticles ? (
           <div className="absolute inset-0 flex items-center justify-center bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm z-10">
             <div className="flex flex-col items-center gap-3">
@@ -256,7 +256,7 @@ export default function TopicValidationPanel() {
         ) : (
           <div className="space-y-5 p-4 md:p-6">
             {topicMetrics && (
-              <div className="rounded-2xl border border-indigo-100 dark:border-indigo-900 bg-gradient-to-br from-indigo-50 via-white to-blue-50 dark:from-indigo-950/40 dark:via-gray-900 dark:to-blue-950/30 p-4 md:p-5">
+              <div className="rounded-2xl border border-indigo-100 dark:border-indigo-900 bg-linear-to-br from-indigo-50 via-white to-blue-50 dark:from-indigo-950/40 dark:via-gray-900 dark:to-blue-950/30 p-4 md:p-5">
                 <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
                   <div>
                     <p className="text-[11px] font-bold tracking-[0.15em] uppercase text-indigo-600 dark:text-indigo-300">

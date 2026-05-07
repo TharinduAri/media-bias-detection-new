@@ -10,7 +10,7 @@ export default function BiasAnalysisButton() {
   const [isRunning, setIsRunning] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [provider, setProvider] = useState<EmbeddingProvider>("local");
-  const [localModel, setLocalModel] = useState<LocalEmbeddingKey>("minilm_l6");
+  const [localModel, setLocalModel] = useState<LocalEmbeddingKey>("mpnet_v2");
 
   useEffect(() => {
     const storedProvider = window.localStorage.getItem("bias_embedding_provider");
