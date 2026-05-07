@@ -39,6 +39,7 @@ CLUSTER_TITLE_REPEAT = max(1, int(os.getenv("BIAS_CLUSTER_TITLE_REPEAT", "2")))
 CLUSTER_ENTITY_LIMIT = int(os.getenv("BIAS_CLUSTER_ENTITY_LIMIT", "12"))
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 32
+SENTIMENT_MODEL = os.getenv("BIAS_SENTIMENT_MODEL", "ProsusAI/finbert")
 LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
     "minilm_l6": "all-MiniLM-L6-v2",
     "minilm_l12": "all-MiniLM-L12-v2",
@@ -64,7 +65,7 @@ class TopicClusterSpec:
 class BiasModelManager:
     def __init__(self, embedding_model_name: str) -> None:
         self.embedding_model_name = embedding_model_name
-        self.sentiment_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+        self.sentiment_model_name = SENTIMENT_MODEL
         self.embedding_model = SentenceTransformer(self.embedding_model_name)
         tokenizer = AutoTokenizer.from_pretrained(self.sentiment_model_name)
         model = AutoModelForSequenceClassification.from_pretrained(self.sentiment_model_name)

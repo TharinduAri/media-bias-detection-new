@@ -40,7 +40,20 @@ class DatabaseManager:
 
         database_url = _resolve_database_url()
         # Keep a single process-wide engine and session factory.
-        self._engine = create_engine(database_url, pool_pre_ping=True)
+        # pool_recycle: discard connections older than 5 min before Neon closes them.
+        # keepalives: OS-level TCP probes prevent Neon from killing idle SSL connections
+        # during long CPU-bound operations (e.g. embedding computation).
+        self._engine = create_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            connect_args={
+                "keepalives": 1,
+                "keepalives_idle": 60,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
+            },
+        )
         self._session_factory = sessionmaker(autocommit=False, autoflush=False, bind=self._engine)
         self._initialized = True
 
