@@ -293,7 +293,7 @@ export default function OutletManager() {
                 required
               />
             </div>
-            <div className="flex-[2]">
+            <div className="flex-2">
               <input
                 type="url"
                 placeholder="Base URL (e.g. https://www.dailymirror.lk)"
@@ -303,7 +303,7 @@ export default function OutletManager() {
                 required
               />
             </div>
-            <div className="flex-[2]">
+            <div className="flex-2">
               <input
                 type="text"
                 placeholder="RSS Feeds (Optional, comma-separated)"
