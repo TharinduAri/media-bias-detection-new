@@ -153,6 +153,37 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
+          {/* BSI Score */}
+          {profile.bsi_score != null && (
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Bias Signal Index</p>
+                <p className={`text-lg font-bold mt-0.5 ${
+                  profile.bsi_score >= 0.6
+                    ? "text-rose-600 dark:text-rose-400"
+                    : profile.bsi_score >= 0.3
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-emerald-600 dark:text-emerald-400"
+                }`}>
+                  {profile.bsi_score.toFixed(3)}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Composite bias score [0–1]</p>
+              </div>
+              <div className="w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${
+                    profile.bsi_score >= 0.6
+                      ? "bg-rose-400"
+                      : profile.bsi_score >= 0.3
+                      ? "bg-amber-400"
+                      : "bg-emerald-400"
+                  }`}
+                  style={{ width: `${Math.min(profile.bsi_score * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Counts */}
           <div className="grid grid-cols-2 gap-2 text-center text-xs">
             <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-2">

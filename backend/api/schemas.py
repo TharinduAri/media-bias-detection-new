@@ -122,6 +122,7 @@ class OutletBiasProfileResponse(BaseModel):
     coverage_bias_rate: float
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
+    bsi_score: Optional[float] = None
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -148,3 +149,78 @@ class BiasRunLogResponse(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class OutletBiasSnapshotResponse(BaseModel):
+    id: int
+    outlet: str
+    run_id: int
+    snapshot_date: datetime
+    sentiment_bias_avg: float
+    sentiment_score_avg: float
+    articles_scored: int
+    topics_covered: int
+    topics_considered: int
+    coverage_missing_majority: int
+    coverage_bias_rate: float
+    missed_topics: Optional[List[str]] = None
+    emphasis_bias_avg: Optional[float] = None
+    bsi_score: Optional[float] = None
+    omission_score: Optional[float] = None
+    systematic_omission: Optional[bool] = None
+    baseline_used_runs: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OutletTrendResponse(BaseModel):
+    outlet: str
+    snapshots: List[OutletBiasSnapshotResponse]
+
+
+class OutletTopicBSIResponse(BaseModel):
+    id: int
+    run_id: int
+    outlet: str
+    topic_key: str
+    topic_label: Optional[str] = None
+    sentiment_bias_avg: float
+    emphasis_bias_avg: Optional[float] = None
+    coverage_present: bool
+    article_count: int
+    bsi_score: float
+    snapshot_date: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OutletOmissionResponse(BaseModel):
+    outlet: str
+    current_coverage_bias_rate: float
+    current_bsi_score: Optional[float] = None
+    omission_score: Optional[float] = None
+    systematic_omission: Optional[bool] = None
+    baseline_used_runs: Optional[int] = None
+    last_run_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AllProfilesResponse(BaseModel):
+    last_run_at: Optional[datetime] = None
+    profiles: List[OutletBiasProfileResponse]
+
+
+class AllTrendsResponse(BaseModel):
+    last_run_at: Optional[datetime] = None
+    trends: List[OutletTrendResponse]
+
+
+class AllOmissionsResponse(BaseModel):
+    last_run_at: Optional[datetime] = None
+    omissions: List[OutletOmissionResponse]
+
+
+class BiasScoresResponse(BaseModel):
+    last_run_at: Optional[datetime] = None
+    scores: List[OutletTopicBSIResponse]

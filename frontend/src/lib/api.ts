@@ -123,7 +123,77 @@ export interface OutletBiasProfileData {
   coverage_bias_rate: number;
   missed_topics: string[] | null;
   emphasis_bias_avg?: number | null;
+  bsi_score?: number | null;
   updated_at: string;
+}
+
+export interface OutletBiasSnapshotData {
+  id: number;
+  outlet: string;
+  run_id: number;
+  snapshot_date: string;
+  sentiment_bias_avg: number;
+  sentiment_score_avg: number;
+  articles_scored: number;
+  topics_covered: number;
+  topics_considered: number;
+  coverage_missing_majority: number;
+  coverage_bias_rate: number;
+  missed_topics: string[] | null;
+  emphasis_bias_avg?: number | null;
+  bsi_score?: number | null;
+  omission_score?: number | null;
+  systematic_omission?: boolean | null;
+  baseline_used_runs?: number | null;
+}
+
+export interface OutletTrendData {
+  outlet: string;
+  snapshots: OutletBiasSnapshotData[];
+}
+
+export interface AllTrendsData {
+  last_run_at: string | null;
+  trends: OutletTrendData[];
+}
+
+export interface OutletTopicBSIData {
+  id: number;
+  run_id: number;
+  outlet: string;
+  topic_key: string;
+  topic_label?: string | null;
+  sentiment_bias_avg: number;
+  emphasis_bias_avg?: number | null;
+  coverage_present: boolean;
+  article_count: number;
+  bsi_score: number;
+  snapshot_date: string;
+}
+
+export interface BiasScoresData {
+  last_run_at: string | null;
+  scores: OutletTopicBSIData[];
+}
+
+export interface OutletOmissionData {
+  outlet: string;
+  current_coverage_bias_rate: number;
+  current_bsi_score?: number | null;
+  omission_score?: number | null;
+  systematic_omission?: boolean | null;
+  baseline_used_runs?: number | null;
+  last_run_at?: string | null;
+}
+
+export interface AllOmissionsData {
+  last_run_at: string | null;
+  omissions: OutletOmissionData[];
+}
+
+export interface AllProfilesData {
+  last_run_at: string | null;
+  profiles: OutletBiasProfileData[];
 }
 
 export interface TopicSummaryData {
@@ -389,5 +459,51 @@ export async function triggerBiasCleanup(): Promise<{ status: string; message: s
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to clear bias analysis data");
   }
+  return res.json();
+}
+
+export async function fetchOutletTrend(
+  outletName: string,
+  daysBack = 90
+): Promise<OutletBiasSnapshotData[]> {
+  const params = new URLSearchParams({ days_back: String(daysBack) });
+  const res = await fetch(
+    `${API_BASE_URL}/bias/outlets/${encodeURIComponent(outletName)}/trend?${params}`,
+    { cache: "no-store" }
+  );
+  if (!res.ok) throw new Error("Failed to fetch outlet trend");
+  return res.json();
+}
+
+export async function fetchAllTrends(daysBack = 90): Promise<AllTrendsData> {
+  const params = new URLSearchParams({ days_back: String(daysBack) });
+  const res = await fetch(`${API_BASE_URL}/bias/trends?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch all trends");
+  return res.json();
+}
+
+export async function fetchBiasScores(opts?: {
+  outlet?: string;
+  topic_key?: string;
+  run_id?: number;
+}): Promise<BiasScoresData> {
+  const params = new URLSearchParams();
+  if (opts?.outlet) params.set("outlet", opts.outlet);
+  if (opts?.topic_key) params.set("topic_key", opts.topic_key);
+  if (opts?.run_id != null) params.set("run_id", String(opts.run_id));
+  const res = await fetch(`${API_BASE_URL}/bias/scores?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch bias scores");
+  return res.json();
+}
+
+export async function fetchOmissions(): Promise<AllOmissionsData> {
+  const res = await fetch(`${API_BASE_URL}/bias/omissions`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch omissions");
+  return res.json();
+}
+
+export async function fetchAllProfiles(): Promise<AllProfilesData> {
+  const res = await fetch(`${API_BASE_URL}/bias/profiles`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch all profiles");
   return res.json();
 }
