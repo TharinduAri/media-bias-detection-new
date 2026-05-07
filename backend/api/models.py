@@ -54,6 +54,7 @@ class ArticleBiasScore(Base):
     group_sentiment_mean = Column(Float, nullable=False)
     coverage_majority = Column(Boolean, nullable=False, default=False)
     coverage_present = Column(Boolean, nullable=False, default=True)
+    emphasis_bias = Column(Float, nullable=True)
     created_at = Column(DateTime, nullable=False)
 
     __table_args__ = (UniqueConstraint("article_id", name="uq_article_bias_article_id"),)
@@ -96,6 +97,7 @@ class OutletBiasProfile(Base):
     coverage_missing_majority = Column(Integer, nullable=False)
     coverage_bias_rate = Column(Float, nullable=False)
     missed_topics = Column(JSON, nullable=True)
+    emphasis_bias_avg = Column(Float, nullable=True)
     updated_at = Column(DateTime, nullable=False)
 
 

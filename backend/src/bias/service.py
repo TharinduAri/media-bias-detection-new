@@ -21,8 +21,12 @@ from api.database import Base, db_manager
 
 DAYS_LOOKBACK = 28
 CLUSTER_DISTANCE_THRESHOLD = float(os.getenv("BIAS_CLUSTER_DISTANCE_THRESHOLD", "0.52"))
+_CLUSTER_THRESHOLD_EXPLICIT = os.getenv("BIAS_CLUSTER_DISTANCE_THRESHOLD") is not None
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 SENTIMENT_MAX_LENGTH = 256
+SENTIMENT_CHUNK_SIZE = 256       # tokens per chunk
+SENTIMENT_CHUNK_OVERLAP = 32     # overlap between consecutive chunks
+SENTIMENT_LEAD_WEIGHT = 2.0      # first chunk gets extra weight (news front-loads key info)
 MERGE_SIMILARITY_THRESHOLD = 0.5
 MAX_CLUSTER_SIZE = int(os.getenv("BIAS_MAX_CLUSTER_SIZE", "18"))
 MIN_CLUSTER_CENTROID_SIMILARITY = float(os.getenv("BIAS_MIN_CLUSTER_CENTROID_SIMILARITY", "0.42"))
@@ -83,73 +87,167 @@ class BiasModelManager:
     def embed(self, texts: List[str]) -> np.ndarray:
         return np.asarray(self.embedding_model.encode(texts, normalize_embeddings=True))
 
-    def analyze_sentiment(self, texts: List[str]) -> List[SentimentResult]:
-        # Use full score distribution and derive a continuous signal so "neutral" outputs
-        # do not collapse to an exact zero bias for entire topic groups.
+    def _tokenize_into_chunks(self, text: str) -> List[str]:
+        """Split text into overlapping token-window chunks for the sentiment model."""
         try:
-            results = self.sentiment_pipeline(
-                texts,
+            tokenizer = self.sentiment_pipeline.tokenizer
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
+            step = SENTIMENT_CHUNK_SIZE - SENTIMENT_CHUNK_OVERLAP
+            chunks: List[str] = []
+            for start in range(0, max(1, len(token_ids)), step):
+                chunk_ids = token_ids[start: start + SENTIMENT_CHUNK_SIZE]
+                if not chunk_ids:
+                    break
+                chunks.append(tokenizer.decode(chunk_ids, skip_special_tokens=True))
+                if start + SENTIMENT_CHUNK_SIZE >= len(token_ids):
+                    break
+            return chunks if chunks else [text[:1000]]
+        except Exception:
+            return [text[:1000]]
+
+    def analyze_sentiment(self, texts: List[str]) -> List[SentimentResult]:
+        """Multi-chunk sliding-window sentiment with position-weighted aggregation.
+
+        All chunks from all articles are batched into a single pipeline call.
+        Chunk i gets weight 1/sqrt(i+1); chunk 0 gets an additional SENTIMENT_LEAD_WEIGHT
+        multiplier because news articles front-load their key claims.
+        """
+        # Build flat chunk list, tracking which article each chunk belongs to
+        all_chunks: List[str] = []
+        article_chunk_spans: List[Tuple[int, int]] = []  # (start_idx, end_idx) into all_chunks
+        for text in texts:
+            chunks = self._tokenize_into_chunks(text)
+            start = len(all_chunks)
+            all_chunks.extend(chunks)
+            article_chunk_spans.append((start, len(all_chunks)))
+
+        if not all_chunks:
+            return [SentimentResult(label="neutral", confidence=0.0, score=0.0)] * len(texts)
+
+        # Single batched pipeline call for all chunks
+        try:
+            raw_results = self.sentiment_pipeline(
+                all_chunks,
                 truncation=True,
-                max_length=SENTIMENT_MAX_LENGTH,
+                max_length=SENTIMENT_CHUNK_SIZE,
                 top_k=None,
             )
         except TypeError:
-            results = self.sentiment_pipeline(
-                texts,
+            raw_results = self.sentiment_pipeline(
+                all_chunks,
                 truncation=True,
-                max_length=SENTIMENT_MAX_LENGTH,
+                max_length=SENTIMENT_CHUNK_SIZE,
                 return_all_scores=True,
             )
 
-        mapped: List[SentimentResult] = []
-        for item in results:
-            predictions: List[Dict[str, Any]]
+        def _parse_predictions(item: Any) -> List[Dict[str, Any]]:
             if isinstance(item, list):
-                predictions = [row for row in item if isinstance(row, dict)]
-            elif isinstance(item, dict):
-                predictions = [item]
-            else:
-                predictions = []
+                return [r for r in item if isinstance(r, dict)]
+            if isinstance(item, dict):
+                return [item]
+            return []
 
-            if not predictions:
+        # Re-group by article and aggregate with position-weighted averaging
+        mapped: List[SentimentResult] = []
+        for span_start, span_end in article_chunk_spans:
+            chunk_preds = [_parse_predictions(raw_results[i]) for i in range(span_start, span_end)]
+            n = len(chunk_preds)
+            if n == 0 or all(len(p) == 0 for p in chunk_preds):
                 mapped.append(SentimentResult(label="neutral", confidence=0.0, score=0.0))
                 continue
 
-            best = max(predictions, key=lambda row: float(row.get("score", 0.0)))
-            label = self._canonical_sentiment_label(str(best.get("label", "neutral")))
-            confidence = float(best.get("score", 0.0))
-            score = self._distribution_to_score(predictions)
-            mapped.append(
-                SentimentResult(label=label, confidence=confidence, score=score)
-            )
+            weights = [1.0 / ((i + 1) ** 0.5) for i in range(n)]
+            weights[0] *= SENTIMENT_LEAD_WEIGHT
+            total_weight = sum(weights)
+
+            agg_score = 0.0
+            best_label = "neutral"
+            best_conf = 0.0
+
+            for preds, w in zip(chunk_preds, weights):
+                if not preds:
+                    continue
+                best_chunk = max(preds, key=lambda r: float(r.get("score", 0.0)))
+                lbl = self._canonical_sentiment_label(str(best_chunk.get("label", "neutral")))
+                conf = float(best_chunk.get("score", 0.0))
+                if conf > best_conf:
+                    best_conf = conf
+                    best_label = lbl
+                agg_score += self._distribution_to_score(preds) * w
+
+            final_score = float(max(-1.0, min(1.0, agg_score / total_weight)))
+            mapped.append(SentimentResult(label=best_label, confidence=best_conf, score=final_score))
+
         return mapped
 
-    def generate_topic_label(self, titles: List[str], outlet_blocklist: Set[str]) -> str:
+    def _find_most_central_article_title(
+        self,
+        titles: List[str],
+        cluster_embeddings: np.ndarray,
+    ) -> str | None:
+        """Return the title of the most central (representative) article in the cluster.
+
+        "Most central" = highest mean cosine similarity to all other cluster members.
+        Returns None if titles are too homogeneous (likely identical reprints) or too short.
+        """
+        n = len(titles)
+        if n < 2 or len(cluster_embeddings) != n:
+            return titles[0] if titles and len(titles[0]) >= 10 else None
+
+        sim_matrix = np.dot(cluster_embeddings, cluster_embeddings.T)
+        mean_sims = (sim_matrix.sum(axis=1) - 1.0) / max(n - 1, 1)
+        best_title = titles[int(np.argmax(mean_sims))].strip()
+
+        if len(best_title) < 10:
+            return None
+
+        # Guard: if all titles share >70% token overlap they are identical reprints
+        title_tokens = [set(t.lower().split()) for t in titles]
+        common = title_tokens[0].intersection(*title_tokens[1:])
+        max_len = max((len(ts) for ts in title_tokens), default=1)
+        if max_len > 0 and len(common) / max_len > 0.70:
+            return None
+
+        return best_title
+
+    def generate_topic_label(
+        self,
+        titles: List[str],
+        outlet_blocklist: Set[str],
+        cluster_embeddings: np.ndarray | None = None,
+    ) -> str:
         if not titles:
             return "Unknown Topic"
-        
+
         try:
             cleaned_titles = [_strip_outlet_markers(t or "", outlet_blocklist) for t in titles]
             cleaned_titles = [t for t in cleaned_titles if t]
             if not cleaned_titles:
                 return "General News"
 
+            # Step 1: Most-central article title (faster than KeyBERT, usually more specific).
+            if cluster_embeddings is not None and len(cluster_embeddings) == len(titles):
+                central_title = self._find_most_central_article_title(cleaned_titles, cluster_embeddings)
+                if central_title:
+                    sanitized = _sanitize_topic_label(central_title, outlet_blocklist)
+                    if sanitized and len(sanitized.split()) >= 3:
+                        return sanitized.title()
+
+            # Step 2: KeyBERT keyphrase extraction.
             combined_text = " ".join(cleaned_titles)
-            # Extract single most representative 2-4 word keyphrase
             keywords = self.kw_model.extract_keywords(
-                combined_text, 
-                keyphrase_ngram_range=(2, 4), 
-                stop_words='english', 
-                top_n=6
+                combined_text,
+                keyphrase_ngram_range=(2, 4),
+                stop_words="english",
+                top_n=6,
             )
-            
             if keywords:
                 for keyphrase, _ in keywords:
                     label = _sanitize_topic_label(str(keyphrase), outlet_blocklist)
                     if label:
                         return label.title()
-            
-            # Fallback: first title truncated
+
+            # Step 3: First cleaned title truncated.
             fallback = _sanitize_topic_label(cleaned_titles[0][:60].strip(), outlet_blocklist)
             return (fallback or "General News").title()
         except Exception:
@@ -190,7 +288,7 @@ class BiasModelManager:
 _MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
 
 
-def get_models(local_embedding_key: str = "minilm_l6") -> BiasModelManager:
+def get_models(local_embedding_key: str = "mpnet_v2") -> BiasModelManager:
     model_name = _resolve_local_embedding_model(local_embedding_key)
     manager = _MODEL_MANAGERS.get(model_name)
     if manager is None:
@@ -215,7 +313,7 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
 def run_bias_analysis(
     db: Session,
     embedding_provider: str = "local",
-    local_embedding_key: str = "minilm_l6",
+    local_embedding_key: str = "mpnet_v2",
 ) -> Dict[str, object]:
     return _run_bias_analysis_impl(
         db=db,
@@ -229,7 +327,7 @@ def run_bias_analysis_with_clusters(
     db: Session,
     clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
     embedding_provider: str = "local",
-    local_embedding_key: str = "minilm_l6",
+    local_embedding_key: str = "mpnet_v2",
 ) -> Dict[str, object]:
     normalized_clusters = _normalize_external_clusters(clusters)
     return _run_bias_analysis_impl(
@@ -368,7 +466,6 @@ def _run_bias_analysis_impl(
         )
 
         now = datetime.utcnow()
-        run_key = now.strftime("%Y%m%d%H%M%S")
 
         article_scores: List[models.ArticleBiasScore] = []
         outlet_stats = _init_outlet_stats(outlets)
@@ -387,31 +484,28 @@ def _run_bias_analysis_impl(
                 continue
 
             dominant_share = _dominant_outlet_share(indices, analysis_articles)
-            if dominant_share > MAX_DOMINANT_OUTLET_SHARE:
-                skipped_outlet_dominance += len(indices)
-                continue
+            is_dominated = dominant_share > MAX_DOMINANT_OUTLET_SHARE
 
-            topics_processed += 1
-            group_scores = [sentiment_results[idx].score for idx in indices]
-            group_mean = float(np.mean(group_scores)) if group_scores else 0.0
-            coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
-            coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
-            
+            # Resolve topic label and key (shared for both dominated and normal paths).
+            # Improvement 4: use most-central article title; Improvement 7: stable hash key.
+            cluster_vecs = embeddings[np.array(indices)]
             topic_override = topic_overrides.get(label, {})
-            topic_label = topic_override.get("topic_label")
-            topic_key = topic_override.get("topic_key")
-
-            # Generate human-readable label only when not provided by the cluster source.
+            topic_label: str | None = topic_override.get("topic_label")
+            topic_key: str | None = topic_override.get("topic_key")
             topic_titles = [analysis_articles[idx].title for idx in indices]
             if not topic_label:
-                topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist)
+                topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist, cluster_vecs)
             if not topic_key:
-                topic_key = f"{run_key}-{label}"
+                topic_key = _stable_topic_key(cluster_vecs, analysis_articles, indices)
 
-            for idx in indices:
+            coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
+            coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
+            emphasis_biases = _compute_emphasis_bias(indices, analysis_articles)
+
+            def _record_article(idx: int, bias_score: float, ref_mean: float) -> None:
                 article = analysis_articles[idx]
                 sentiment = sentiment_results[idx]
-                bias_score = sentiment.score - group_mean
+                emph = emphasis_biases.get(idx, 0.0)
                 article_scores.append(
                     models.ArticleBiasScore(
                         article_id=article.id,
@@ -422,18 +516,48 @@ def _run_bias_analysis_impl(
                         sentiment_score=float(sentiment.score),
                         sentiment_confidence=float(sentiment.confidence),
                         sentiment_bias=float(bias_score),
-                        group_sentiment_mean=float(group_mean),
+                        group_sentiment_mean=float(ref_mean),
                         coverage_majority=coverage_majority,
                         coverage_present=True,
+                        emphasis_bias=float(emph),
                         created_at=now,
                     )
                 )
                 stats = outlet_stats[article.outlet]
                 stats["sentiment_bias_sum"] += bias_score
                 stats["sentiment_score_sum"] += sentiment.score
+                stats["emphasis_bias_sum"] += emph
                 stats["articles_scored"] += 1
 
-            # Count unique topics covered by each outlet
+            if is_dominated:
+                # Improvement 5: don't discard minority articles.
+                # Score minorities vs. dominant-outlet mean; score dominant vs. all-cluster mean.
+                dominant_outlet = _get_dominant_outlet(indices, analysis_articles)
+                dominant_idxs = [i for i in indices if analysis_articles[i].outlet == dominant_outlet]
+                minority_idxs = [i for i in indices if analysis_articles[i].outlet != dominant_outlet]
+
+                if not minority_idxs:
+                    skipped_outlet_dominance += len(indices)
+                    continue
+
+                dominant_scores = [sentiment_results[i].score for i in dominant_idxs]
+                dominant_mean = float(np.mean(dominant_scores))
+                all_scores = [sentiment_results[i].score for i in indices]
+                all_mean = float(np.mean(all_scores))
+
+                topics_processed += 1
+                for idx in minority_idxs:
+                    _record_article(idx, sentiment_results[idx].score - dominant_mean, dominant_mean)
+                for idx in dominant_idxs:
+                    _record_article(idx, sentiment_results[idx].score - all_mean, all_mean)
+            else:
+                # Normal cluster: all articles vs. all-cluster mean.
+                topics_processed += 1
+                group_scores = [sentiment_results[idx].score for idx in indices]
+                group_mean = float(np.mean(group_scores)) if group_scores else 0.0
+                for idx in indices:
+                    _record_article(idx, sentiment_results[idx].score - group_mean, group_mean)
+
             for outlet in cluster_outlets:
                 outlet_stats[outlet]["topics_covered"] += 1
 
@@ -495,6 +619,7 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
         topics_considered = int(stats["topics_considered"])
         sentiment_bias_avg = stats["sentiment_bias_sum"] / articles_scored if articles_scored else 0.0
         sentiment_score_avg = stats["sentiment_score_sum"] / articles_scored if articles_scored else 0.0
+        emphasis_bias_avg = stats["emphasis_bias_sum"] / articles_scored if articles_scored else 0.0
         coverage_missing = int(stats["coverage_missing_majority"])
         coverage_bias_rate = coverage_missing / topics_considered if topics_considered else 0.0
         profiles.append(
@@ -502,6 +627,7 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
                 outlet=outlet,
                 sentiment_bias_avg=float(sentiment_bias_avg),
                 sentiment_score_avg=float(sentiment_score_avg),
+                emphasis_bias_avg=float(emphasis_bias_avg),
                 articles_scored=articles_scored,
                 topics_covered=int(stats["topics_covered"]),
                 topics_considered=topics_considered,
@@ -525,14 +651,52 @@ def _load_recent_articles(db: Session, since: datetime) -> List[models.Article]:
     )
 
 
+def _adaptive_cluster_threshold(
+    embeddings: np.ndarray,
+    sample_size: int = 500,
+) -> float:
+    """Compute a clustering distance threshold from the pairwise distance distribution.
+
+    Samples up to `sample_size` articles, computes pairwise cosine distances
+    (1 - similarity for L2-normalized vectors), and returns the 40th percentile
+    clamped to [0.30, 0.70]. This adapts to corpus density: dense news cycles
+    get a tighter threshold; sparse weeks get a looser one.
+    """
+    n = len(embeddings)
+    if n < 4:
+        return CLUSTER_DISTANCE_THRESHOLD
+
+    if n > sample_size:
+        rng = np.random.default_rng(seed=42)
+        indices = rng.choice(n, size=sample_size, replace=False)
+        sample = embeddings[indices]
+    else:
+        sample = embeddings
+
+    # L2-normalized embeddings: pairwise cosine distance = 1 - dot product
+    sim_matrix = np.dot(sample, sample.T)
+    upper = np.triu_indices(len(sample), k=1)
+    pairwise_dists = 1.0 - sim_matrix[upper]
+
+    threshold = float(np.percentile(pairwise_dists, 40.0))
+    return float(np.clip(threshold, 0.30, 0.70))
+
+
 def _build_internal_clusters(
     embeddings: np.ndarray,
     analysis_articles: List[models.Article],
     run_logs: List[str],
 ) -> Dict[int, List[int]]:
+    if _CLUSTER_THRESHOLD_EXPLICIT:
+        threshold = CLUSTER_DISTANCE_THRESHOLD
+        run_logs.append(f"Clustering threshold: {threshold:.4f} (explicit env override)")
+    else:
+        threshold = _adaptive_cluster_threshold(embeddings)
+        run_logs.append(f"Adaptive clustering threshold: {threshold:.4f} (fixed default was {CLUSTER_DISTANCE_THRESHOLD})")
+
     clustering = AgglomerativeClustering(
         n_clusters=None,
-        distance_threshold=CLUSTER_DISTANCE_THRESHOLD,
+        distance_threshold=threshold,
         metric="cosine",
         linkage="average",
     )
@@ -797,6 +961,7 @@ def _upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) 
             existing.coverage_missing_majority = profile.coverage_missing_majority
             existing.coverage_bias_rate = profile.coverage_bias_rate
             existing.missed_topics = profile.missed_topics
+            existing.emphasis_bias_avg = profile.emphasis_bias_avg
             existing.updated_at = profile.updated_at
         else:
             db.add(profile)
@@ -834,6 +999,7 @@ def _upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScor
             existing.group_sentiment_mean = score.group_sentiment_mean
             existing.coverage_majority = score.coverage_majority
             existing.coverage_present = score.coverage_present
+            existing.emphasis_bias = score.emphasis_bias
             existing.created_at = score.created_at
         else:
             db.add(score)
@@ -1102,6 +1268,7 @@ def _init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, float]]:
         outlet: {
             "sentiment_bias_sum": 0.0,
             "sentiment_score_sum": 0.0,
+            "emphasis_bias_sum": 0.0,
             "articles_scored": 0.0,
             "topics_covered": 0.0,
             "topics_considered": 0.0,
@@ -1255,6 +1422,74 @@ def _dominant_outlet_share(indices: List[int], articles: List[models.Article]) -
         outlet = articles[idx].outlet or ""
         counts[outlet] = counts.get(outlet, 0) + 1
     return max(counts.values()) / len(indices)
+
+
+def _compute_emphasis_bias(
+    indices: List[int],
+    articles: List[models.Article],
+) -> Dict[int, float]:
+    """Compute emphasis bias as relative article length vs. cluster mean.
+
+    emphasis_bias = (article_len - cluster_mean_len) / cluster_mean_len, clamped to [-1, 1].
+    Positive = outlet wrote more about this story than peers; negative = shorter than peers.
+    """
+    lengths: Dict[int, int] = {}
+    for idx in indices:
+        article = articles[idx]
+        text = getattr(article, "clean_text", None) or getattr(article, "text", None) or ""
+        lengths[idx] = len(text)
+
+    if not lengths:
+        return {idx: 0.0 for idx in indices}
+
+    mean_len = float(np.mean(list(lengths.values())))
+    if mean_len < 1.0:
+        return {idx: 0.0 for idx in indices}
+
+    return {
+        idx: float(max(-1.0, min(1.0, (length - mean_len) / mean_len)))
+        for idx, length in lengths.items()
+    }
+
+
+def _get_dominant_outlet(indices: List[int], articles: List[models.Article]) -> str:
+    counts: Dict[str, int] = {}
+    for idx in indices:
+        outlet = articles[idx].outlet or ""
+        counts[outlet] = counts.get(outlet, 0) + 1
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def _stable_topic_key(
+    cluster_embeddings: np.ndarray,
+    articles: List[models.Article],
+    indices: List[int],
+    n_hash_dims: int = 16,
+) -> str:
+    """Produce a run-stable topic key by hashing the quantized cluster centroid.
+
+    The same topic (similar articles) produces the same key across runs because
+    the centroid is rounded to 2 decimal places, absorbing minor article turnover.
+    The most-central article's domain is included as a namespace to reduce collisions.
+    """
+    centroid = np.mean(cluster_embeddings, axis=0)
+    norm = np.linalg.norm(centroid)
+    if norm > 1e-8:
+        centroid = centroid / norm
+
+    quantized = np.round(centroid[:n_hash_dims], decimals=2)
+    vec_str = ",".join(f"{v:.2f}" for v in quantized)
+
+    # Domain of the most-central article as namespace
+    sim_matrix = np.dot(cluster_embeddings, cluster_embeddings.T)
+    mean_sims = sim_matrix.mean(axis=1)
+    central_idx = indices[int(np.argmax(mean_sims))]
+    url = getattr(articles[central_idx], "url", "") or ""
+    domain_match = re.search(r"https?://(?:www\.)?([^/]+)", url)
+    domain = domain_match.group(1).lower() if domain_match else "unknown"
+
+    hex_hash = hashlib.sha256(f"{vec_str}|{domain}".encode()).hexdigest()[:12]
+    return f"topic-{hex_hash}"
 
 
 def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:

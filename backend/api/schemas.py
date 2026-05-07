@@ -82,6 +82,7 @@ class ArticleBiasScoreResponse(BaseModel):
     group_sentiment_mean: float
     coverage_majority: bool
     coverage_present: bool
+    emphasis_bias: Optional[float] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -103,6 +104,7 @@ class ArticleBiasWithArticleResponse(BaseModel):
     group_sentiment_mean: float
     coverage_majority: bool
     coverage_present: bool
+    emphasis_bias: Optional[float] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -119,6 +121,7 @@ class OutletBiasProfileResponse(BaseModel):
     coverage_missing_majority: int
     coverage_bias_rate: float
     missed_topics: Optional[List[str]] = None
+    emphasis_bias_avg: Optional[float] = None
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
