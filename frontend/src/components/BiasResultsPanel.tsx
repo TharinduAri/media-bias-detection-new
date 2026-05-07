@@ -4,9 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   compareBiasProfiles,
   fetchBiasArticles,
-  fetchArticleBiasScore,
   fetchBiasProfile,
-  ArticleBiasScoreData,
   ArticleBiasWithArticleData,
   OutletBiasProfileData,
 } from "@/lib/api";
@@ -15,458 +13,486 @@ interface Props {
   outlets: string[];
 }
 
-function formatBias(score: number): string {
-  const magnitude = Math.abs(score);
-  if (magnitude >= 0.6) return score > 0 ? "Strongly positive" : "Strongly negative";
-  if (magnitude >= 0.35) return score > 0 ? "Moderately positive" : "Moderately negative";
-  if (magnitude >= 0.15) return score > 0 ? "Slightly positive" : "Slightly negative";
+// ─── Formatting helpers ───────────────────────────────────────────────────────
+
+function biasLabel(score: number): string {
+  const m = Math.abs(score);
+  if (m >= 0.6) return score > 0 ? "Strongly positive" : "Strongly negative";
+  if (m >= 0.35) return score > 0 ? "Moderately positive" : "Moderately negative";
+  if (m >= 0.15) return score > 0 ? "Slightly positive" : "Slightly negative";
   return "Neutral";
 }
 
-function formatSentiment(label: string, confidence: number): string {
-  const clean = label.replace(/_/g, " ");
-  const cap = clean.charAt(0).toUpperCase() + clean.slice(1);
-  if (confidence >= 0.75) return `${cap} (high confidence)`;
-  if (confidence >= 0.55) return `${cap} (medium confidence)`;
-  return `${cap} (low confidence)`;
+function biasColor(score: number): string {
+  const m = Math.abs(score);
+  if (m >= 0.35) return score > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400";
+  if (m >= 0.15) return score > 0 ? "text-emerald-500 dark:text-emerald-500" : "text-rose-500 dark:text-rose-500";
+  return "text-slate-500 dark:text-slate-400";
 }
 
-export default function BiasResultsPanel({ outlets }: Props) {
-  const [selectedOutlet, setSelectedOutlet] = useState(outlets[0] ?? "");
+function pct(rate: number): string {
+  return `${Math.round(rate * 100)}%`;
+}
+
+function emphasisLabel(v: number): string {
+  const p = Math.round(Math.abs(v) * 100);
+  if (p < 5) return "Average length";
+  return v > 0 ? `${p}% longer than peers` : `${p}% shorter than peers`;
+}
+
+function emphasisColor(v: number): string {
+  if (Math.abs(v) < 0.05) return "text-slate-500 dark:text-slate-400";
+  return v > 0 ? "text-blue-600 dark:text-blue-400" : "text-orange-500 dark:text-orange-400";
+}
+
+// Centered bar: left half = negative (rose), right half = positive (emerald)
+function BiasBar({ value, maxAbs = 1 }: { value: number; maxAbs?: number }) {
+  const half = 50;
+  const fill = Math.min((Math.abs(value) / maxAbs) * half, half);
+  return (
+    <div className="relative w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
+      {value >= 0 ? (
+        <div className="absolute top-0 h-full bg-emerald-400 rounded-r-full" style={{ left: "50%", width: `${fill}%` }} />
+      ) : (
+        <div className="absolute top-0 h-full bg-rose-400 rounded-l-full" style={{ right: "50%", width: `${fill}%` }} />
+      )}
+    </div>
+  );
+}
+
+// ─── Outlet Profile Card ──────────────────────────────────────────────────────
+
+function OutletProfileCard({ outlets }: { outlets: string[] }) {
+  const [selected, setSelected] = useState(outlets[0] ?? "");
   const [profile, setProfile] = useState<OutletBiasProfileData | null>(null);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [compareSelections, setCompareSelections] = useState<string[]>([]);
-  const [compareLoading, setCompareLoading] = useState(false);
-  const [compareResults, setCompareResults] = useState<OutletBiasProfileData[]>([]);
-  const [compareMessage, setCompareMessage] = useState<string | null>(null);
-
-  const [articleId, setArticleId] = useState("");
-  const [articleLoading, setArticleLoading] = useState(false);
-  const [articleResult, setArticleResult] = useState<ArticleBiasScoreData | null>(null);
-  const [articleMessage, setArticleMessage] = useState<string | null>(null);
-
-  const [biasArticles, setBiasArticles] = useState<ArticleBiasWithArticleData[]>([]);
-  const [biasLoading, setBiasLoading] = useState(false);
-  const [biasMessage, setBiasMessage] = useState<string | null>(null);
-  const [biasOffset, setBiasOffset] = useState(0);
-  const [biasHasMore, setBiasHasMore] = useState(true);
-  const [biasOutletFilter, setBiasOutletFilter] = useState("");
-  const [biasSort, setBiasSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
-
-  const compareEnabled = compareSelections.length >= 2;
-  const biasLimit = 50;
-
-  const profileStats = useMemo(() => {
-    if (!profile) return [] as Array<{ label: string; value: string }>;
-    return [
-      { label: "Sentiment bias avg", description: "Avg. difference from group mean", value: profile.sentiment_bias_avg.toFixed(3) },
-      { label: "Sentiment score avg", description: "Avg. raw sentiment score", value: profile.sentiment_score_avg.toFixed(3) },
-      { label: "Articles scored", description: "Total articles analyzed", value: String(profile.articles_scored) },
-      { label: "Topics covered", description: "Topics with at least one article", value: String(profile.topics_covered) },
-      { label: "Topics considered", description: "Major topics analyzed in window", value: String(profile.topics_considered) },
-      { label: "Coverage missing (majority)", description: "Major topics missed by this outlet", value: String(profile.coverage_missing_majority) },
-      { label: "Coverage bias rate", description: "Ratio of missed major topics", value: profile.coverage_bias_rate.toFixed(3) },
-    ];
-  }, [profile]);
-
-  const loadProfile = async () => {
-    if (!selectedOutlet) return;
-    setProfileLoading(true);
-    setProfileMessage(null);
+  const load = async (outlet: string) => {
+    if (!outlet) return;
+    setLoading(true);
+    setError(null);
     setProfile(null);
     try {
-      const data = await fetchBiasProfile(selectedOutlet);
-      setProfile(data);
-    } catch (error) {
-      setProfileMessage(error instanceof Error ? error.message : "Failed to load outlet profile.");
+      setProfile(await fetchBiasProfile(outlet));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load profile.");
     } finally {
-      setProfileLoading(false);
+      setLoading(false);
     }
   };
 
-  const loadCompare = async () => {
-    if (!compareEnabled) return;
-    setCompareLoading(true);
-    setCompareMessage(null);
-    setCompareResults([]);
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Outlet Profile</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Bias metrics for a single outlet.</p>
+      </div>
+
+      <div className="flex gap-2">
+        <select
+          value={selected}
+          onChange={(e) => setSelected(e.target.value)}
+          className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
+        >
+          {outlets.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <button
+          onClick={() => load(selected)}
+          disabled={loading || !selected}
+          className="rounded-lg bg-blue-600 text-white text-sm font-semibold px-4 py-2 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {loading ? "…" : "Load"}
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+
+      {profile && (
+        <div className="space-y-3">
+          {/* Sentiment bias — the headline metric */}
+          <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Sentiment Bias</p>
+              <p className={`text-lg font-bold mt-0.5 ${biasColor(profile.sentiment_bias_avg)}`}>
+                {profile.sentiment_bias_avg > 0 ? "+" : ""}{profile.sentiment_bias_avg.toFixed(3)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{biasLabel(profile.sentiment_bias_avg)} vs. topic peers</p>
+            </div>
+            <BiasBar value={profile.sentiment_bias_avg} />
+          </div>
+
+          {/* Coverage bias */}
+          <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Coverage Gaps</p>
+            <p className="text-lg font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+              {profile.coverage_missing_majority} of {profile.topics_considered}
+              <span className="text-sm font-normal text-slate-500 ml-2">major stories missed</span>
+            </p>
+            <div className="mt-2 w-full h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-amber-500 rounded-full"
+                style={{ width: pct(Math.min(profile.coverage_bias_rate, 1)) }}
+              />
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{pct(profile.coverage_bias_rate)} gap rate</p>
+          </div>
+
+          {/* Emphasis bias */}
+          {profile.emphasis_bias_avg != null && (
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Story Emphasis</p>
+                <p className={`text-sm font-semibold mt-0.5 ${emphasisColor(profile.emphasis_bias_avg)}`}>
+                  {emphasisLabel(profile.emphasis_bias_avg)}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Relative article length vs. topic peers</p>
+              </div>
+              <BiasBar value={profile.emphasis_bias_avg} maxAbs={0.5} />
+            </div>
+          )}
+
+          {/* Counts */}
+          <div className="grid grid-cols-2 gap-2 text-center text-xs">
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-2">
+              <p className="text-[10px] text-slate-400 uppercase">Articles scored</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100">{profile.articles_scored}</p>
+            </div>
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-2">
+              <p className="text-[10px] text-slate-400 uppercase">Topics covered</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100">{profile.topics_covered}</p>
+            </div>
+          </div>
+
+          {/* Missed topics */}
+          {profile.missed_topics && profile.missed_topics.length > 0 && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Missed Major Stories</p>
+              <div className="max-h-28 overflow-y-auto space-y-1 pr-1">
+                {profile.missed_topics.map((t, i) => (
+                  <div key={i} className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400">
+                    <span className="mt-1 w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                    {t}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Compare Card ─────────────────────────────────────────────────────────────
+
+function CompareCard({ outlets }: { outlets: string[] }) {
+  const [selections, setSelections] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<OutletBiasProfileData[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (o: string) =>
+    setSelections((prev) => prev.includes(o) ? prev.filter((x) => x !== o) : [...prev, o]);
+
+  const run = async () => {
+    if (selections.length < 2) return;
+    setLoading(true);
+    setError(null);
     try {
-      const data = await compareBiasProfiles(compareSelections);
-      setCompareResults(data);
-    } catch (error) {
-      setCompareMessage(error instanceof Error ? error.message : "Failed to compare outlets.");
+      setResults(await compareBiasProfiles(selections));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Compare failed.");
     } finally {
-      setCompareLoading(false);
+      setLoading(false);
     }
   };
 
-  const loadArticleBias = async () => {
-    const trimmed = articleId.trim();
-    if (!trimmed) return;
-    setArticleLoading(true);
-    setArticleMessage(null);
-    setArticleResult(null);
-    try {
-      const data = await fetchArticleBiasScore(Number(trimmed));
-      setArticleResult(data);
-    } catch (error) {
-      setArticleMessage(error instanceof Error ? error.message : "Failed to load article bias.");
-    } finally {
-      setArticleLoading(false);
-    }
-  };
+  const maxSentBias = results.length ? Math.max(...results.map((r) => Math.abs(r.sentiment_bias_avg)), 0.01) : 1;
+  const maxCovBias = results.length ? Math.max(...results.map((r) => r.coverage_bias_rate), 0.01) : 1;
+  const hasEmphasis = results.some((r) => r.emphasis_bias_avg != null);
+  const maxEmph = hasEmphasis ? Math.max(...results.map((r) => Math.abs(r.emphasis_bias_avg ?? 0)), 0.01) : 1;
 
-  const toggleCompareOutlet = (outlet: string) => {
-    setCompareSelections((prev) =>
-      prev.includes(outlet) ? prev.filter((item) => item !== outlet) : [...prev, outlet]
-    );
-  };
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Compare Outlets</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Side-by-side bias comparison.</p>
+      </div>
 
-  const loadBiasArticles = async (newOffset: number, replace: boolean) => {
-    setBiasLoading(true);
-    setBiasMessage(null);
+      <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
+        {outlets.map((o) => (
+          <label key={o} className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+            <input type="checkbox" checked={selections.includes(o)} onChange={() => toggle(o)} />
+            <span className="truncate">{o}</span>
+          </label>
+        ))}
+      </div>
+
+      <button
+        onClick={run}
+        disabled={loading || selections.length < 2}
+        className="w-full rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-semibold py-2 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {loading ? "Comparing…" : "Compare"}
+      </button>
+      {selections.length < 2 && <p className="text-[11px] text-slate-400">Select at least two outlets.</p>}
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+
+      {results.length > 0 && (
+        <div className="space-y-3">
+          {/* Sentiment bias */}
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Sentiment Bias (deviation from topic mean)</p>
+            {results.map((r) => (
+              <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
+                <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
+                <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden relative">
+                  <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
+                  {r.sentiment_bias_avg >= 0 ? (
+                    <div className="absolute top-0 h-full bg-emerald-400 rounded-r-full" style={{ left: "50%", width: `${(r.sentiment_bias_avg / maxSentBias) * 50}%` }} />
+                  ) : (
+                    <div className="absolute top-0 h-full bg-rose-400 rounded-l-full" style={{ right: "50%", width: `${(Math.abs(r.sentiment_bias_avg) / maxSentBias) * 50}%` }} />
+                  )}
+                </div>
+                <span className={`text-xs font-bold w-12 text-right ${biasColor(r.sentiment_bias_avg)}`}>
+                  {r.sentiment_bias_avg > 0 ? "+" : ""}{r.sentiment_bias_avg.toFixed(3)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Coverage bias */}
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Coverage Gap (% of major stories missed)</p>
+            {results.map((r) => (
+              <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
+                <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
+                <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-400 rounded-full" style={{ width: `${(r.coverage_bias_rate / maxCovBias) * 100}%` }} />
+                </div>
+                <span className="text-xs font-bold w-12 text-right text-amber-600 dark:text-amber-400">{pct(r.coverage_bias_rate)}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Emphasis bias */}
+          {hasEmphasis && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Story Emphasis (relative article length)</p>
+              {results.map((r) => {
+                const v = r.emphasis_bias_avg ?? 0;
+                return (
+                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
+                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
+                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden relative">
+                      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
+                      {v >= 0 ? (
+                        <div className="absolute top-0 h-full bg-blue-400 rounded-r-full" style={{ left: "50%", width: `${(v / maxEmph) * 50}%` }} />
+                      ) : (
+                        <div className="absolute top-0 h-full bg-orange-400 rounded-l-full" style={{ right: "50%", width: `${(Math.abs(v) / maxEmph) * 50}%` }} />
+                      )}
+                    </div>
+                    <span className={`text-xs font-bold w-12 text-right ${emphasisColor(v)}`}>
+                      {v > 0 ? "+" : ""}{Math.round(v * 100)}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Articles Table ───────────────────────────────────────────────────────────
+
+function ArticlesTable({ outlets }: { outlets: string[] }) {
+  const [articles, setArticles] = useState<ArticleBiasWithArticleData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [outletFilter, setOutletFilter] = useState("");
+  const [sort, setSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
+  const limit = 50;
+
+  const load = async (newOffset: number, replace: boolean) => {
+    setLoading(true);
+    setError(null);
     try {
-      const data = await fetchBiasArticles(
-        biasLimit,
-        newOffset,
-        biasOutletFilter ? biasOutletFilter : undefined
-      );
-      setBiasArticles((prev) => (replace ? data : [...prev, ...data]));
-      setBiasHasMore(data.length === biasLimit);
-      setBiasOffset(newOffset + data.length);
-    } catch (error) {
-      setBiasMessage(error instanceof Error ? error.message : "Failed to load bias articles.");
+      const data = await fetchBiasArticles(limit, newOffset, outletFilter || undefined);
+      setArticles((prev) => replace ? data : [...prev, ...data]);
+      setHasMore(data.length === limit);
+      setOffset(newOffset + data.length);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load articles.");
     } finally {
-      setBiasLoading(false);
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    setBiasOffset(0);
-    setBiasHasMore(true);
-    loadBiasArticles(0, true);
-  }, [biasOutletFilter]);
+    setOffset(0);
+    setHasMore(true);
+    load(0, true);
+  }, [outletFilter]);
 
-  const sortedBiasArticles = useMemo(() => {
-    const items = [...biasArticles];
-    if (biasSort === "newest") {
-      return items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    }
-    if (biasSort === "outlet") {
-      return items.sort((a, b) => a.outlet.localeCompare(b.outlet));
-    }
-    if (biasSort === "topic") {
-      return items.sort((a, b) => (a.topic_label || a.topic_key).localeCompare(b.topic_label || b.topic_key));
-    }
+  const sorted = useMemo(() => {
+    const items = [...articles];
+    if (sort === "newest") return items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    if (sort === "outlet") return items.sort((a, b) => a.outlet.localeCompare(b.outlet));
+    if (sort === "topic") return items.sort((a, b) => (a.topic_label || a.topic_key).localeCompare(b.topic_label || b.topic_key));
     return items.sort((a, b) => Math.abs(b.sentiment_bias) - Math.abs(a.sentiment_bias));
-  }, [biasArticles, biasSort]);
+  }, [articles, sort]);
 
+  return (
+    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-4 space-y-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">All Bias-Scored Articles</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Every article with its latest bias score and topic.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={outletFilter}
+            onChange={(e) => setOutletFilter(e.target.value)}
+            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
+          >
+            <option value="">All outlets</option>
+            {outlets.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
+          >
+            <option value="most_biased">Most biased first</option>
+            <option value="newest">Newest first</option>
+            <option value="outlet">By outlet</option>
+            <option value="topic">By topic</option>
+          </select>
+          <button
+            onClick={() => load(0, true)}
+            disabled={loading}
+            className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs text-left text-slate-600 dark:text-slate-300">
+          <thead className="text-[11px] uppercase text-slate-400">
+            <tr>
+              <th className="pb-2 pr-3">Title</th>
+              <th className="pb-2 pr-3">Outlet</th>
+              <th className="pb-2 pr-3">Topic</th>
+              <th className="pb-2 pr-3 text-center">Sentiment</th>
+              <th className="pb-2 pr-3 text-center">Bias vs. peers</th>
+              <th className="pb-2 pr-3 text-center">Story emphasis</th>
+              <th className="pb-2 text-center">Coverage</th>
+              <th className="pb-2">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((row) => (
+              <tr key={row.id} className="border-t border-slate-200/60 dark:border-slate-700/60 hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                <td className="py-2 pr-3 min-w-50">
+                  <a href={row.url} target="_blank" rel="noopener noreferrer"
+                    className="text-slate-900 dark:text-slate-100 font-medium hover:text-blue-600 dark:hover:text-blue-400 hover:underline line-clamp-2">
+                    {row.title}
+                  </a>
+                </td>
+                <td className="py-2 pr-3 font-semibold whitespace-nowrap text-slate-700 dark:text-slate-300">{row.outlet}</td>
+                <td className="py-2 pr-3 max-w-35">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{row.topic_label || row.topic_key}</span>
+                </td>
+                <td className="py-2 pr-3 text-center">
+                  <span className={`font-semibold ${row.sentiment_score > 0.1 ? "text-emerald-600 dark:text-emerald-400" : row.sentiment_score < -0.1 ? "text-rose-600 dark:text-rose-400" : "text-slate-500"}`}>
+                    {row.sentiment_score > 0 ? "+" : ""}{row.sentiment_score.toFixed(2)}
+                  </span>
+                  <div className="text-[10px] text-slate-400 capitalize">{row.sentiment_label}</div>
+                </td>
+                <td className="py-2 pr-3">
+                  <div className="flex flex-col items-center gap-1">
+                    <span className={`font-bold ${biasColor(row.sentiment_bias)}`}>
+                      {row.sentiment_bias > 0 ? "+" : ""}{row.sentiment_bias.toFixed(3)}
+                    </span>
+                    <BiasBar value={row.sentiment_bias} />
+                    <span className="text-[10px] text-slate-400">{biasLabel(row.sentiment_bias)}</span>
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-center">
+                  {row.emphasis_bias != null ? (
+                    <span className={`text-[11px] font-medium ${emphasisColor(row.emphasis_bias)}`}>
+                      {row.emphasis_bias > 0 ? "+" : ""}{Math.round(row.emphasis_bias * 100)}%
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-300 dark:text-slate-600">—</span>
+                  )}
+                </td>
+                <td className="py-2 pr-3 text-center">
+                  {row.coverage_majority ? (
+                    <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">Major story</span>
+                  ) : (
+                    <span className="text-[10px] text-slate-400">Niche</span>
+                  )}
+                </td>
+                <td className="py-2 whitespace-nowrap">{new Date(row.date).toLocaleDateString("en-GB")}</td>
+              </tr>
+            ))}
+            {articles.length === 0 && !loading && (
+              <tr>
+                <td colSpan={8} className="py-8 text-center text-slate-400">No bias scores found yet. Run bias analysis first.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-slate-400">
+        <span>{loading ? "Loading…" : `${articles.length} articles loaded`}</span>
+        {hasMore && (
+          <button
+            onClick={() => load(offset, false)}
+            disabled={loading}
+            className="rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-60"
+          >
+            Load more
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main panel ───────────────────────────────────────────────────────────────
+
+export default function BiasResultsPanel({ outlets }: Props) {
   return (
     <section className="space-y-6">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Bias Analysis Results</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Inspect the latest bias profiles and article-level scores.
+            Outlet profiles, side-by-side comparison, and every scored article.
           </p>
         </div>
 
-        <div className="p-5 grid grid-cols-1 lg:grid-cols-3 gap-5">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Outlet Profile</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Returns the outlet's current bias profile.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <select
-                value={selectedOutlet}
-                onChange={(event) => setSelectedOutlet(event.target.value)}
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
-              >
-                {outlets.map((outlet) => (
-                  <option key={outlet} value={outlet}>
-                    {outlet}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={loadProfile}
-                disabled={profileLoading || !selectedOutlet}
-                className="w-full rounded-lg bg-blue-600 text-white text-sm font-semibold py-2 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {profileLoading ? "Loading..." : "Load Profile"}
-              </button>
-            </div>
-            {profileMessage && (
-              <p className="text-xs text-red-600 dark:text-red-400">{profileMessage}</p>
-            )}
-            {profile && (
-              <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                {profileStats.map((item) => (
-                  <div key={item.label} className="flex items-start justify-between py-1 border-b border-slate-100/50 dark:border-slate-800/50 last:border-0">
-                    <div className="flex flex-col">
-                      <span className="font-medium text-slate-700 dark:text-slate-200">{item.label}</span>
-                      {item.description && (
-                        <span className="text-[10px] text-slate-400 dark:text-slate-500 italic">({item.description})</span>
-                      )}
-                    </div>
-                    <span className="font-bold text-slate-900 dark:text-slate-100">{item.value}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {profile && profile.missed_topics && profile.missed_topics.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
-                <h4 className="text-[11px] font-bold uppercase text-slate-400 mb-2">Missed Major Stories</h4>
-                <div className="max-h-32 overflow-y-auto space-y-1.5 pr-1">
-                  {profile.missed_topics.map((topic, i) => (
-                    <div key={i} className="flex items-center gap-2 text-[10px] text-slate-600 dark:text-slate-400 leading-tight">
-                      <span className="w-1 h-1 rounded-full bg-red-400 flex-shrink-0" />
-                      <span>{topic}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Compare Outlets</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Returns side-by-side comparison for selected outlets.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
-              {outlets.map((outlet) => (
-                <label key={outlet} className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={compareSelections.includes(outlet)}
-                    onChange={() => toggleCompareOutlet(outlet)}
-                  />
-                  <span className="truncate">{outlet}</span>
-                </label>
-              ))}
-            </div>
-            <button
-              onClick={loadCompare}
-              disabled={compareLoading || !compareEnabled}
-              className="w-full rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-semibold py-2 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {compareLoading ? "Comparing..." : "Compare Profiles"}
-            </button>
-            {!compareEnabled && (
-              <p className="text-[11px] text-slate-400">Select at least two outlets.</p>
-            )}
-            {compareMessage && (
-              <p className="text-xs text-red-600 dark:text-red-400">{compareMessage}</p>
-            )}
-            {compareResults.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-left text-slate-600 dark:text-slate-300">
-                  <thead className="text-[11px] uppercase text-slate-400">
-                    <tr>
-                      <th className="pb-2">Outlet</th>
-                      <th className="pb-2">
-                        Sentiment Bias
-                        <div className="text-[9px] lowercase font-normal italic leading-tight">(avg. deviation)</div>
-                      </th>
-                      <th className="pb-2">
-                        Coverage Bias
-                        <div className="text-[9px] lowercase font-normal italic leading-tight">(missed major topics)</div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {compareResults.map((row) => (
-                      <tr key={row.outlet} className="border-t border-slate-200/60 dark:border-slate-700/60">
-                        <td className="py-2 font-semibold text-slate-900 dark:text-slate-100">
-                          {row.outlet}
-                        </td>
-                        <td className="py-2">{row.sentiment_bias_avg.toFixed(3)}</td>
-                        <td className="py-2">{row.coverage_bias_rate.toFixed(3)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Article Bias</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Returns the bias score for a single article.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={articleId}
-                onChange={(event) => setArticleId(event.target.value)}
-                placeholder="Article ID"
-                className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
-              />
-              <button
-                onClick={loadArticleBias}
-                disabled={articleLoading || !articleId.trim()}
-                className="rounded-lg bg-amber-600 text-white text-sm font-semibold px-3 hover:bg-amber-700 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {articleLoading ? "..." : "Fetch"}
-              </button>
-            </div>
-            {articleMessage && (
-              <p className="text-xs text-red-600 dark:text-red-400">{articleMessage}</p>
-            )}
-            {articleResult && (
-              <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                <div className="flex items-center justify-between">
-                  <span>Outlet</span>
-                  <span className="font-semibold text-slate-900 dark:text-slate-100">{articleResult.outlet}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Sentiment label</span>
-                  <span className="font-semibold text-slate-900 dark:text-slate-100">{articleResult.sentiment_label}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Sentiment score</span>
-                  <span className="font-semibold text-slate-900 dark:text-slate-100">
-                    {articleResult.sentiment_score.toFixed(3)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Sentiment bias</span>
-                  <span className="font-semibold text-slate-900 dark:text-slate-100">
-                    {articleResult.sentiment_bias.toFixed(3)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Coverage majority</span>
-                  <span className="font-semibold text-slate-900 dark:text-slate-100">
-                    {articleResult.coverage_majority ? "Yes" : "No"}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
+        <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <OutletProfileCard outlets={outlets} />
+          <CompareCard outlets={outlets} />
         </div>
 
         <div className="px-5 pb-6">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-4 space-y-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  All Bias-Scored Articles
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  All articles with their latest bias scores.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={biasOutletFilter}
-                  onChange={(event) => setBiasOutletFilter(event.target.value)}
-                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
-                >
-                  <option value="">All outlets</option>
-                  {outlets.map((outlet) => (
-                    <option key={outlet} value={outlet}>
-                      {outlet}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={biasSort}
-                  onChange={(event) =>
-                    setBiasSort(event.target.value as "most_biased" | "newest" | "outlet" | "topic")
-                  }
-                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs"
-                >
-                  <option value="most_biased">Most biased</option>
-                  <option value="newest">Newest</option>
-                  <option value="outlet">Outlet</option>
-                  <option value="topic">Topic</option>
-                </select>
-                <button
-                  onClick={() => loadBiasArticles(0, true)}
-                  disabled={biasLoading}
-                  className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60"
-                >
-                  Refresh
-                </button>
-              </div>
-            </div>
-
-            {biasMessage && (
-              <p className="text-xs text-red-600 dark:text-red-400">{biasMessage}</p>
-            )}
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left text-slate-600 dark:text-slate-300">
-                <thead className="text-[11px] uppercase text-slate-400">
-                  <tr>
-                    <th className="pb-2">Title</th>
-                    <th className="pb-2">Outlet</th>
-                    <th className="pb-2">Sentiment</th>
-                    <th className="pb-2">Bias</th>
-                    <th className="pb-2">Coverage</th>
-                    <th className="pb-2">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedBiasArticles.map((row) => (
-                    <tr key={row.id} className="border-t border-slate-200/60 dark:border-slate-700/60">
-                      <td className="py-2 min-w-[220px]">
-                        <a
-                          href={row.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-slate-900 dark:text-slate-100 font-medium hover:underline"
-                        >
-                          {row.title}
-                        </a>
-                      </td>
-                      <td className="py-2 font-semibold text-slate-900 dark:text-slate-100">{row.outlet}</td>
-                      <td className="py-2">
-                        {formatSentiment(row.sentiment_label, row.sentiment_score)}
-                      </td>
-                      <td className="py-2">
-                        {formatBias(row.sentiment_bias)} ({row.sentiment_bias.toFixed(3)})
-                      </td>
-                      <td className="py-2">{row.coverage_majority ? "Covered by most outlets" : "Limited coverage"}</td>
-                      <td className="py-2">
-                        {new Date(row.date).toLocaleDateString("en-GB")}
-                      </td>
-                    </tr>
-                  ))}
-                  {biasArticles.length === 0 && !biasLoading && (
-                    <tr>
-                      <td colSpan={6} className="py-6 text-center text-slate-400">
-                        No bias scores found yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>{biasLoading ? "Loading..." : `${biasArticles.length} articles loaded`}</span>
-              {biasHasMore && (
-                <button
-                  onClick={() => loadBiasArticles(biasOffset, false)}
-                  disabled={biasLoading}
-                  className="rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-3 py-1.5 text-xs font-semibold hover:opacity-90 disabled:opacity-60"
-                >
-                  Load more
-                </button>
-              )}
-            </div>
-          </div>
+          <ArticlesTable outlets={outlets} />
         </div>
       </div>
     </section>

@@ -87,6 +87,7 @@ export interface ArticleBiasScoreData {
   group_sentiment_mean: number;
   coverage_majority: boolean;
   coverage_present: boolean;
+  emphasis_bias?: number | null;
   created_at: string;
 }
 
@@ -106,6 +107,7 @@ export interface ArticleBiasWithArticleData {
   group_sentiment_mean: number;
   coverage_majority: boolean;
   coverage_present: boolean;
+  emphasis_bias?: number | null;
   created_at: string;
 }
 
@@ -120,6 +122,7 @@ export interface OutletBiasProfileData {
   coverage_missing_majority: number;
   coverage_bias_rate: number;
   missed_topics: string[] | null;
+  emphasis_bias_avg?: number | null;
   updated_at: string;
 }
 
@@ -272,7 +275,7 @@ export async function deleteArticle(articleId: number): Promise<{ status: string
 
 export async function triggerBiasAnalysis(
   embeddingProvider: "local" | "gemini" = "local",
-  localEmbeddingKey: string = "minilm_l6"
+  localEmbeddingKey: string = "mpnet_v2"
 ): Promise<BiasRunResponse> {
   const params = new URLSearchParams({
     embedding_provider: embeddingProvider,
@@ -294,7 +297,7 @@ export async function triggerBiasAnalysis(
 export async function triggerBiasAnalysisWithClusters(
   clusters: BiasTopicClusterInput[],
   embeddingProvider: "local" | "gemini" = "local",
-  localEmbeddingKey: string = "minilm_l6"
+  localEmbeddingKey: string = "mpnet_v2"
 ): Promise<BiasRunResponse> {
   const params = new URLSearchParams({
     embedding_provider: embeddingProvider,
