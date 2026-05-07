@@ -15,8 +15,10 @@ Known info from audit:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 
@@ -28,6 +30,29 @@ logger = logging.getLogger(__name__)
 
 _SITEMAP_PAGE_SIZE = 300       # Daily FT returns exactly this many per page
 _MAX_SITEMAP_PAGES = 20        # Safety cap: 20 × 300 = 6,000 URLs max
+_PROBE_STEP = 5000
+_FALLBACK_IDX = 320000
+_STATE_FILE = Path(__file__).parent.parent.parent.parent / "data" / "dailyft_state.json"
+
+
+def _load_state() -> int:
+    try:
+        if _STATE_FILE.exists():
+            data = json.loads(_STATE_FILE.read_text())
+            return int(data.get("latest_idx", _FALLBACK_IDX))
+    except Exception:
+        pass
+    return _FALLBACK_IDX
+
+
+def _save_state(latest_idx: int) -> None:
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(
+            json.dumps({"latest_idx": latest_idx, "updated": datetime.now().isoformat()})
+        )
+    except Exception:
+        pass
 
 
 class DailyFTOutlet(BaseOutletScraper):
@@ -59,19 +84,43 @@ class DailyFTOutlet(BaseOutletScraper):
             logger.warning("[DailyFT] Home page discovery failed: %s", e)
 
         # 2. Discovery via Sitemap (robust for catching up)
-        # We need to find the latest english-N index. 
-        # We'll probe starting from a known high index and go up until 404.
-        latest_idx = 320000  # Known good as of April 2026
-        # Probe up in increments of 5000 to find the ceiling
-        for probe_idx in range(latest_idx, 500000, 5000):
+        # Load the last known good sitemap index from state file to avoid probing from scratch.
+        latest_idx = _load_state()
+
+        # Verify the stored index is still valid; if not, search backward for the real latest.
+        try:
+            verify_resp = await client.head(
+                f"{self.url}/sitemaps/english-{latest_idx}", timeout=5.0
+            )
+            if verify_resp.status_code != 200:
+                logger.warning("[DailyFT] Stored sitemap index %d returned %d, searching backward", latest_idx, verify_resp.status_code)
+                found = 0
+                for probe_idx in range(latest_idx - _PROBE_STEP, max(0, latest_idx - 20 * _PROBE_STEP), -_PROBE_STEP):
+                    try:
+                        r = await client.head(f"{self.url}/sitemaps/english-{probe_idx}", timeout=5.0)
+                        if r.status_code == 200:
+                            found = probe_idx
+                            break
+                    except Exception:
+                        continue
+                latest_idx = found if found else _FALLBACK_IDX
+                logger.info("[DailyFT] Backward search found sitemap index: %d", latest_idx)
+        except Exception:
+            pass
+
+        # Probe forward from the verified index to find the current ceiling.
+        for probe_idx in range(latest_idx, latest_idx + 20 * _PROBE_STEP, _PROBE_STEP):
             try:
                 probe_resp = await client.head(f"{self.url}/sitemaps/english-{probe_idx}", timeout=5.0)
                 if probe_resp.status_code == 200:
                     latest_idx = probe_idx
                 else:
                     break
-            except:
+            except Exception:
                 break
+
+        _save_state(latest_idx)
+        logger.info("[DailyFT] Using sitemap ceiling index: %d", latest_idx)
         
         # Now crawl backwards from latest_idx
         pages_to_crawl = []

@@ -125,7 +125,7 @@ async def fetch(client: httpx.AsyncClient, url: str, *,
                 response = await client.get(url, follow_redirects=follow_redirects, headers=headers)
 
             if response.status_code in _FETCH_RETRYABLE_STATUSES and attempt < _FETCH_MAX_ATTEMPTS:
-                await asyncio.sleep(0.5 * attempt)
+                await asyncio.sleep(min(1.0 * (2 ** (attempt - 1)), 8.0))
                 continue
 
             response.raise_for_status()
@@ -138,7 +138,7 @@ async def fetch(client: httpx.AsyncClient, url: str, *,
                     raise
             if attempt >= _FETCH_MAX_ATTEMPTS:
                 raise
-            await asyncio.sleep(0.5 * attempt)
+            await asyncio.sleep(min(1.0 * (2 ** (attempt - 1)), 8.0))
 
     if last_exc is not None:
         raise last_exc
