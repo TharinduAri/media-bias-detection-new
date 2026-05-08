@@ -1,13 +1,11 @@
-"""Ceylon Today scraper (ceylontoday.lk).
+"""Colombo Gazette scraper (colombogazette.com).
 
-WordPress CMS. Homepage returns 403 — all entry points bypass the root.
+WordPress-based online news portal.
 
-Discovery (priority order):
-  1. WP REST API (/wp-json/wp/v2/posts) — open even when frontend blocks
-  2. XML Sitemap (/sitemap.xml — follows 301 redirect automatically)
-  3. RSS feed (/feed/) — WordPress default, accessible despite 403 homepage
-
-Content extraction: standard trafilatura.
+Discovery:
+  1. WordPress REST API (/wp-json/wp/v2/posts)
+  2. WordPress sitemap index (/wp-sitemap.xml → posts-post shards)
+  3. RSS feed (/feed)
 """
 from __future__ import annotations
 
@@ -28,11 +26,9 @@ _WP_API_PATH = "/wp-json/wp/v2/posts"
 _WP_FIELDS = "id,date,title,link,content"
 _WP_PER_PAGE = 100
 
-_RSS_CANDIDATES = ["/feed/", "/feed", "/rss", "/feed/rss2"]
 
-
-class CeylonTodayOutlet(BaseOutletScraper):
-    """Ceylon Today (ceylontoday.lk) — WP API primary, sitemap + RSS fallback."""
+class ColomboGazetteOutlet(BaseOutletScraper):
+    """Colombo Gazette (colombogazette.com) — WordPress, WP API primary."""
 
     async def discover_urls(
         self,
@@ -42,29 +38,22 @@ class CeylonTodayOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
 
-        # 1. WP REST API (bypasses homepage 403)
         api = await self._wp_api(client, days_back, max_articles)
         for a in api:
             articles[a["url"]] = a
-        logger.info("[CeylonToday] WP API: %d", len(articles))
+        logger.info("[ColomboGazette] WP API: %d", len(articles))
 
-        # 2. Sitemap (301 redirect followed automatically)
         if len(articles) < max_articles:
-            sm = await self._sitemap_traverse(client, days_back, max_articles - len(articles))
+            sm = await self._wp_sitemap(client, days_back, max_articles - len(articles))
             for a in sm:
                 if a["url"] not in articles:
                     articles[a["url"]] = a
-            if sm:
-                logger.info("[CeylonToday] Sitemap added %d", len(sm))
 
-        # 3. RSS fallback
         if len(articles) < max_articles:
             rss = await self._rss(client, days_back, max_articles - len(articles))
             for a in rss:
                 if a["url"] not in articles:
                     articles[a["url"]] = a
-            if rss:
-                logger.info("[CeylonToday] RSS added %d", len(rss))
 
         return list(articles.values())[:max_articles]
 
@@ -74,9 +63,8 @@ class CeylonTodayOutlet(BaseOutletScraper):
         cutoff = datetime.now() - timedelta(days=days_back)
         endpoint = f"{self.url}{_WP_API_PATH}"
         articles: list[dict[str, str]] = []
-        max_pages = 14
 
-        for page in range(1, max_pages + 1):
+        for page in range(1, 15):
             if len(articles) >= max_articles:
                 break
             params = urlencode({
@@ -89,12 +77,8 @@ class CeylonTodayOutlet(BaseOutletScraper):
             try:
                 resp = await fetch(client, f"{endpoint}?{params}")
                 posts = resp.json()
-                if page == 1:
-                    total = resp.headers.get("X-WP-TotalPages", "")
-                    if total.isdigit():
-                        max_pages = min(14, int(total))
             except Exception as exc:
-                logger.debug("[CeylonToday] WP API page %d failed: %s", page, exc)
+                logger.debug("[ColomboGazette] WP API page %d failed: %s", page, exc)
                 break
 
             if not isinstance(posts, list) or not posts:
@@ -127,36 +111,34 @@ class CeylonTodayOutlet(BaseOutletScraper):
 
         return articles
 
-    async def _sitemap_traverse(
+    async def _wp_sitemap(
         self, client: httpx.AsyncClient, days_back: int, max_articles: int
     ) -> list[dict[str, str]]:
         cutoff = datetime.now() - timedelta(days=days_back)
-        root = await self._fetch_xml(client, f"{self.url}/sitemap.xml")
-        if root is None:
-            root = await self._fetch_xml(client, f"{self.url}/wp-sitemap.xml")
-        if root is None:
+        index_root = await self._fetch_xml(client, f"{self.url}/wp-sitemap.xml")
+        if index_root is None:
             return []
 
-        shard_queue: list[str] = []
-        if self._tag(root.tag) == "sitemapindex":
-            for child in root:
+        shard_urls: list[str] = []
+        if self._tag(index_root.tag) == "sitemapindex":
+            for child in index_root:
                 if self._tag(child.tag) != "sitemap":
                     continue
                 for node in child:
                     if self._tag(node.tag) == "loc" and node.text:
-                        shard_queue.append(node.text.strip())
-        else:
-            shard_queue = [f"{self.url}/sitemap.xml"]
+                        loc = node.text.strip()
+                        if "posts-post" in loc:
+                            shard_urls.append(loc)
 
-        urls: dict[str, dict[str, str]] = {}
-        for i in range(0, len(shard_queue), 10):
-            if len(urls) >= max_articles:
+        articles: dict[str, dict[str, str]] = {}
+        for i in range(0, len(shard_urls), 10):
+            if len(articles) >= max_articles:
                 break
-            roots = await asyncio.gather(*[self._fetch_xml(client, u) for u in shard_queue[i:i + 10]])
-            for shard_root in roots:
-                if shard_root is None or self._tag(shard_root.tag) != "urlset":
+            roots = await asyncio.gather(*[self._fetch_xml(client, u) for u in shard_urls[i:i + 10]])
+            for root in roots:
+                if root is None or self._tag(root.tag) != "urlset":
                     continue
-                for child in shard_root:
+                for child in root:
                     if self._tag(child.tag) != "url":
                         continue
                     loc = lastmod = None
@@ -171,17 +153,17 @@ class CeylonTodayOutlet(BaseOutletScraper):
                     pub = self._parse_dt(lastmod)
                     if pub and pub < cutoff:
                         continue
-                    urls[loc] = self._article_stub(loc, pub)
-                    if len(urls) >= max_articles:
+                    articles[loc] = self._article_stub(loc, pub)
+                    if len(articles) >= max_articles:
                         break
 
-        return list(urls.values())
+        return list(articles.values())
 
     async def _rss(
         self, client: httpx.AsyncClient, days_back: int, max_articles: int
     ) -> list[dict[str, str]]:
         cutoff = datetime.now() - timedelta(days=days_back)
-        for path in _RSS_CANDIDATES:
+        for path in ["/feed", "/rss", "/feed/rss2", "/?feed=rss2"]:
             root = await self._fetch_xml(client, f"{self.url}{path}")
             if root is None:
                 continue

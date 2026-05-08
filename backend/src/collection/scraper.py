@@ -17,9 +17,16 @@ from .outlets import (
     EconomyNextOutlet,
     LBOOutlet,
     NewsfirstOutlet,
+    TheMorningOutlet,
+    ColomboGazetteOutlet,
+    TheIslandOutlet,
+    DailyMirrorOutlet,
+    DailyNewsOutlet,
+    SundayObserverOutlet,
+    NewsLKOutlet,
     BaseOutletScraper,
 )
-from src.collection.core.db import load_outlets_from_db, replay_fallback_articles, save_to_db
+from src.collection.core.db import replay_fallback_articles, save_to_db
 from src.collection.core.http_client import (
     GhostResponseError, set_semaphore, get_blocked_paths, clear_blocked_paths, record_blocked_path, fetch
 )
@@ -202,13 +209,37 @@ def _filter_adaderana_legacy_urls(outlet_name: str, articles: list[dict[str, str
     return filtered
 
 
+_OUTLETS: list[dict[str, str]] = [
+    # Specialist scrapers (matched by domain in _OUTLET_REGISTRY below)
+    {"name": "Ada Derana",       "url": "https://www.adaderana.lk"},
+    {"name": "Ceylon Today",     "url": "https://www.ceylontoday.lk"},
+    {"name": "Daily FT",         "url": "https://www.ft.lk"},
+    {"name": "Economy Next",     "url": "https://economynext.com"},
+    {"name": "LBO",              "url": "https://www.lankabusinessonline.com"},
+    {"name": "Newsfirst",        "url": "https://english.newsfirst.lk"},
+    {"name": "Daily Mirror",     "url": "https://www.dailymirror.lk"},
+    {"name": "The Morning",      "url": "https://www.themorning.lk"},
+    {"name": "Daily News",       "url": "https://www.dailynews.lk"},
+    {"name": "The Island",       "url": "https://island.lk"},
+    {"name": "Sunday Observer",  "url": "https://www.sundayobserver.lk"},
+    {"name": "Colombo Gazette",  "url": "https://colombogazette.com"},
+    {"name": "News LK",          "url": "https://www.news.lk"},
+]
+
 _OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
-    (("adaderana.lk",),                          AdaDeranaOutlet),
-    (("ceylontoday.lk",),                         CeylonTodayOutlet),
-    (("ft.lk", "dailyft.lk"),                     DailyFTOutlet),
+    (("adaderana.lk",),                            AdaDeranaOutlet),
+    (("ceylontoday.lk",),                          CeylonTodayOutlet),
+    (("ft.lk", "dailyft.lk"),                      DailyFTOutlet),
     (("economynext.com",),                         EconomyNextOutlet),
     (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
     (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
+    (("themorning.lk",),                           TheMorningOutlet),
+    (("colombogazette.com",),                      ColomboGazetteOutlet),
+    (("island.lk",),                               TheIslandOutlet),
+    (("dailymirror.lk",),                          DailyMirrorOutlet),
+    (("dailynews.lk",),                            DailyNewsOutlet),
+    (("sundayobserver.lk",),                       SundayObserverOutlet),
+    (("news.lk",),                                 NewsLKOutlet),
 ]
 
 
@@ -317,20 +348,30 @@ async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[st
     return extract_with_trafilatura(raw_html, url)
 
 
-async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
+async def collect_data(
+    days_back: int = DAYS_BACK,
+    target_outlet: str | None = None,
+    target_outlets: list[str] | None = None,
+):
     all_articles: list[dict[str, str]] = []
     run = _RunSummary()
     clear_blocked_paths()
-    outlets = await asyncio.to_thread(load_outlets_from_db)
-    if target_outlet:
-        outlets = [o for o in outlets if o["name"].lower() == target_outlet.lower()]
-        if not outlets:
-            logging.warning("No outlet found matching: %s", target_outlet)
-            return
+    outlets: list[dict[str, str]] = list(_OUTLETS)
 
-    if not outlets:
-        logging.warning("No outlets configured in DB. Add outlets before running scraper.")
-        return
+    # Resolve filter: target_outlets takes precedence over legacy target_outlet
+    names_filter: list[str] | None = None
+    if target_outlets:
+        names_filter = [n.strip().lower() for n in target_outlets if n.strip()]
+    elif target_outlet:
+        names_filter = [target_outlet.strip().lower()]
+
+    if names_filter:
+        outlets = [o for o in outlets if o["name"].lower() in names_filter]
+        missing = set(names_filter) - {o["name"].lower() for o in outlets}
+        for name in missing:
+            logging.warning("No outlet found matching: %s", name)
+        if not outlets:
+            return
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     set_semaphore(sem)
@@ -507,12 +548,17 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run the media scraper.")
-    parser.add_argument("--outlet", type=str, help="Target outlet name to scrape")
-    parser.add_argument("--days-back", type=int, default=DAYS_BACK, help="Number of days to look back for articles")
+    parser.add_argument("--outlets", type=str, nargs="+", help="One or more outlet names to scrape")
+    parser.add_argument("--outlet", type=str, help="Single outlet name (legacy; prefer --outlets)")
+    parser.add_argument("--days-back", type=int, default=DAYS_BACK, help="Number of days to look back")
     args = parser.parse_args()
 
     try:
-        asyncio.run(collect_data(days_back=args.days_back, target_outlet=args.outlet))
+        asyncio.run(collect_data(
+            days_back=args.days_back,
+            target_outlet=args.outlet,
+            target_outlets=args.outlets,
+        ))
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise

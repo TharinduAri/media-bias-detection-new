@@ -245,9 +245,13 @@ class AdaDeranaOutlet(BaseOutletScraper):
     async def extract_content(
         self, url: str, client: httpx.AsyncClient
     ) -> dict[str, str]:
-        """Follow any 301 redirect (news.php?nid= → canonical) then trafilatura."""
+        """Follow any 301 redirect (news.php?nid= → canonical) then trafilatura.
+
+        Ada Derana serves ISO-8859-1 — decode bytes explicitly rather than
+        trusting httpx's charset detection, which can mangle Sinhala transliterations.
+        """
         resp = await fetch(client, url, follow_redirects=True)
-        raw_html = resp.text
+        raw_html = resp.content.decode("iso-8859-1", errors="replace")
         result = extract_with_trafilatura(raw_html, url)
         result["raw_html"] = raw_html
         return result

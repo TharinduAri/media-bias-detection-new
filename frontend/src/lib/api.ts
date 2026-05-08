@@ -1,19 +1,5 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
-export interface OutletData {
-  id: number;
-  name: string;
-  url: string;
-  rss_feeds?: string[];
-  created_at: string;
-}
-
-export interface CreateOutletPayload {
-  name: string;
-  url: string;
-  rss_feeds?: string[];
-}
-
 export interface OutletRegistryEntry {
   domain: string;
   scraper_class: string;
@@ -221,6 +207,38 @@ export interface BiasTopicClusterInput {
   article_ids: number[];
 }
 
+export const OUTLET_NAMES: string[] = [
+  "Ada Derana",
+  "Ceylon Today",
+  "Daily FT",
+  "Economy Next",
+  "LBO",
+  "Newsfirst",
+  "Daily Mirror",
+  "The Morning",
+  "Daily News",
+  "The Island",
+  "Sunday Observer",
+  "Colombo Gazette",
+  "News LK",
+];
+
+export async function triggerScrape(
+  outlets?: string[]
+): Promise<{ status: string; message: string; outlets: string[] }> {
+  const res = await fetch(`${API_BASE_URL}/system/scrape`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outlets: outlets ?? [] }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to start scraper");
+  }
+  return res.json();
+}
+
 export async function triggerCleanScrape(): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API_BASE_URL}/system/clean-and-rescrape`, {
     method: "POST",
@@ -265,47 +283,9 @@ export async function fetchBiasLogs(limit = 10): Promise<BiasRunLogData[]> {
   return res.json();
 }
 
-export async function fetchOutlets(): Promise<OutletData[]> {
-  const res = await fetch(`${API_BASE_URL}/outlets/`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch outlets");
-  return res.json();
-}
-
 export async function fetchOutletRegistry(): Promise<OutletRegistryEntry[]> {
   const res = await fetch(`${API_BASE_URL}/outlets/registry`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch outlet registry");
-  return res.json();
-}
-
-export async function createOutlet(payload: CreateOutletPayload): Promise<OutletData> {
-  const res = await fetch(`${API_BASE_URL}/outlets/`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || "Failed to create outlet");
-  }
-
-  return res.json();
-}
-
-export async function deleteOutlet(outletId: number): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/outlets/${outletId}`, {
-    method: "DELETE",
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || "Failed to delete outlet");
-  }
-
   return res.json();
 }
 

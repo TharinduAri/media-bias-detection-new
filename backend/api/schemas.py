@@ -2,19 +2,9 @@ from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 from typing import Optional, List
 
-class OutletResponse(BaseModel):
-    id: int
-    name: str
-    url: str
-    rss_feeds: Optional[List[str]] = None
-    created_at: datetime
+class ScrapeRequest(BaseModel):
+    outlets: Optional[List[str]] = None
 
-    model_config = ConfigDict(from_attributes=True)
-
-class OutletCreateRequest(BaseModel):
-    name: str
-    url: str
-    rss_feeds: Optional[List[str]] = None
 
 class ArticleResponse(BaseModel):
     id: int

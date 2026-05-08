@@ -1,7 +1,8 @@
-import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles, fetchScrapeLogs } from "@/lib/api";
+import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles } from "@/lib/api";
 import CleanScrapeButton from "@/components/CleanScrapeButton";
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import OutletManager from "@/components/OutletManager";
+import ScrapeOutletsPanel from "@/components/ScrapeOutletsPanel";
 import RawArticlesView from "@/components/RawArticlesView";
 
 export const metadata = {
@@ -40,6 +41,7 @@ export default async function Home() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-8">
         <OutletManager />
+        <ScrapeOutletsPanel />
         <RawArticlesView
           outlets={outlets}
           outletCounts={outletCounts}

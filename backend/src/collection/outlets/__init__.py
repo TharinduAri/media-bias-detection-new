@@ -5,6 +5,13 @@ from .dailyft import DailyFTOutlet
 from .economynext import EconomyNextOutlet
 from .lbo import LBOOutlet
 from .newsfirst import NewsfirstOutlet
+from .themorning import TheMorningOutlet
+from .colombogazette import ColomboGazetteOutlet
+from .theisland import TheIslandOutlet
+from .dailymirror import DailyMirrorOutlet
+from .dailynews import DailyNewsOutlet
+from .sundayobserver import SundayObserverOutlet
+from .newslk import NewsLKOutlet
 from .base import BaseOutletScraper
 
 __all__ = [
@@ -15,4 +22,11 @@ __all__ = [
     "EconomyNextOutlet",
     "LBOOutlet",
     "NewsfirstOutlet",
+    "TheMorningOutlet",
+    "ColomboGazetteOutlet",
+    "TheIslandOutlet",
+    "DailyMirrorOutlet",
+    "DailyNewsOutlet",
+    "SundayObserverOutlet",
+    "NewsLKOutlet",
 ]

@@ -103,11 +103,10 @@ def _persist_scrape_run_log(
         session.close()
 
 
-def run_scraper_task():
-    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    script_path = os.path.join(backend_dir, "src", "collection", "scraper.py")
+def _run_scraper(cmd: List[str], backend_dir: str, label: str = "Scraper") -> None:
+    """Shared subprocess runner used by both full and per-outlet scrape tasks."""
     started_at = datetime.utcnow()
-    run_logs: List[str] = ["Scraper started..."]
+    run_logs: List[str] = [f"{label} started..."]
     run_status = "done"
     run_error: Optional[str] = None
 
@@ -121,7 +120,6 @@ def run_scraper_task():
         error=None,
     )
 
-    cmd = [sys.executable, "-m", "src.collection.scraper"]
     try:
         proc = subprocess.Popen(
             cmd,
@@ -140,43 +138,43 @@ def run_scraper_task():
 
         if proc.returncode != 0:
             run_status = "error"
-            run_error = f"Scraper failed with exit code {proc.returncode}"
-            run_logs.append(f"Scraper failed (exit {proc.returncode})")
-            _update_state(
-                running=False,
-                status="error",
-                finished_at=datetime.utcnow().isoformat(),
-                error=run_error,
-            )
-            _append_log(f"Scraper failed (exit {proc.returncode})")
+            run_error = f"{label} failed with exit code {proc.returncode}"
+            run_logs.append(f"{label} failed (exit {proc.returncode})")
+            _update_state(running=False, status="error",
+                          finished_at=datetime.utcnow().isoformat(), error=run_error)
+            _append_log(run_error)
             return
 
-        run_logs.append("Scraper completed successfully")
-        _append_log("Scraper completed successfully")
-        _update_state(
-            running=False,
-            status="done",
-            current_stage_index=1,
-            finished_at=datetime.utcnow().isoformat(),
-        )
+        run_logs.append(f"{label} completed successfully")
+        _append_log(f"{label} completed successfully")
+        _update_state(running=False, status="done", current_stage_index=1,
+                      finished_at=datetime.utcnow().isoformat())
     except Exception as exc:
         run_status = "error"
         run_error = str(exc)
-        run_logs.append(f"Error running scraper: {str(exc)}")
-        _append_log(f"Error running scraper: {str(exc)}")
-        _update_state(
-            running=False,
-            status="error",
-            finished_at=datetime.utcnow().isoformat(),
-            error=run_error,
-        )
+        run_logs.append(f"Error: {str(exc)}")
+        _append_log(f"Error: {str(exc)}")
+        _update_state(running=False, status="error",
+                      finished_at=datetime.utcnow().isoformat(), error=run_error)
     finally:
         finished_at = datetime.utcnow()
         try:
             _persist_scrape_run_log(started_at, finished_at, run_status, run_error, run_logs)
         except Exception:
-            # Do not fail scraper flow if persisting logs fails.
             pass
+
+
+def run_scraper_task():
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    cmd = [sys.executable, "-m", "src.collection.scraper"]
+    _run_scraper(cmd, backend_dir, label="Scraper")
+
+
+def run_scraper_task_for_outlets(outlet_names: List[str]) -> None:
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    cmd = [sys.executable, "-m", "src.collection.scraper", "--outlets"] + outlet_names
+    label = f"Scraper ({', '.join(outlet_names)})"
+    _run_scraper(cmd, backend_dir, label=label)
 
 
 @router.get("/pipeline-status")
@@ -240,3 +238,31 @@ def clean_db_only(db: Session = Depends(get_db)):
         "status": "ok",
         "message": "Article table cleaned successfully.",
     }
+
+
+@router.post("/scrape")
+def scrape_outlets(
+    payload: schemas.ScrapeRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Run the scraper for specific outlets (or all if none specified). Does not wipe the DB."""
+    with _state_lock:
+        if _pipeline_state["running"]:
+            raise HTTPException(status_code=409, detail="Scraper is already running.")
+
+    outlet_names = [n.strip() for n in (payload.outlets or []) if n.strip()]
+
+    if outlet_names:
+        background_tasks.add_task(run_scraper_task_for_outlets, outlet_names)
+        return {
+            "status": "ok",
+            "message": f"Scraping {len(outlet_names)} outlet(s) in the background.",
+            "outlets": outlet_names,
+        }
+    else:
+        background_tasks.add_task(run_scraper_task)
+        return {
+            "status": "ok",
+            "message": "Scraping all outlets in the background.",
+            "outlets": [],
+        }
