@@ -348,15 +348,29 @@ async def scrape_article_payload(url: str, client: httpx.AsyncClient) -> dict[st
     return extract_with_trafilatura(raw_html, url)
 
 
-async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
+async def collect_data(
+    days_back: int = DAYS_BACK,
+    target_outlet: str | None = None,
+    target_outlets: list[str] | None = None,
+):
     all_articles: list[dict[str, str]] = []
     run = _RunSummary()
     clear_blocked_paths()
     outlets: list[dict[str, str]] = list(_OUTLETS)
-    if target_outlet:
-        outlets = [o for o in outlets if o["name"].lower() == target_outlet.lower()]
+
+    # Resolve filter: target_outlets takes precedence over legacy target_outlet
+    names_filter: list[str] | None = None
+    if target_outlets:
+        names_filter = [n.strip().lower() for n in target_outlets if n.strip()]
+    elif target_outlet:
+        names_filter = [target_outlet.strip().lower()]
+
+    if names_filter:
+        outlets = [o for o in outlets if o["name"].lower() in names_filter]
+        missing = set(names_filter) - {o["name"].lower() for o in outlets}
+        for name in missing:
+            logging.warning("No outlet found matching: %s", name)
         if not outlets:
-            logging.warning("No outlet found matching: %s", target_outlet)
             return
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -534,12 +548,17 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run the media scraper.")
-    parser.add_argument("--outlet", type=str, help="Target outlet name to scrape")
-    parser.add_argument("--days-back", type=int, default=DAYS_BACK, help="Number of days to look back for articles")
+    parser.add_argument("--outlets", type=str, nargs="+", help="One or more outlet names to scrape")
+    parser.add_argument("--outlet", type=str, help="Single outlet name (legacy; prefer --outlets)")
+    parser.add_argument("--days-back", type=int, default=DAYS_BACK, help="Number of days to look back")
     args = parser.parse_args()
 
     try:
-        asyncio.run(collect_data(days_back=args.days_back, target_outlet=args.outlet))
+        asyncio.run(collect_data(
+            days_back=args.days_back,
+            target_outlet=args.outlet,
+            target_outlets=args.outlets,
+        ))
     except Exception as e:
         sentry_sdk.capture_exception(e)
         raise

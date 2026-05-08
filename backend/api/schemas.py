@@ -2,6 +2,10 @@ from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 from typing import Optional, List
 
+class ScrapeRequest(BaseModel):
+    outlets: Optional[List[str]] = None
+
+
 class ArticleResponse(BaseModel):
     id: int
     outlet: str

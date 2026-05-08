@@ -207,6 +207,38 @@ export interface BiasTopicClusterInput {
   article_ids: number[];
 }
 
+export const OUTLET_NAMES: string[] = [
+  "Ada Derana",
+  "Ceylon Today",
+  "Daily FT",
+  "Economy Next",
+  "LBO",
+  "Newsfirst",
+  "Daily Mirror",
+  "The Morning",
+  "Daily News",
+  "The Island",
+  "Sunday Observer",
+  "Colombo Gazette",
+  "News LK",
+];
+
+export async function triggerScrape(
+  outlets?: string[]
+): Promise<{ status: string; message: string; outlets: string[] }> {
+  const res = await fetch(`${API_BASE_URL}/system/scrape`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outlets: outlets ?? [] }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to start scraper");
+  }
+  return res.json();
+}
+
 export async function triggerCleanScrape(): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API_BASE_URL}/system/clean-and-rescrape`, {
     method: "POST",
