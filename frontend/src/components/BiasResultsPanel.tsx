@@ -153,6 +153,37 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
+          {/* BSI Score */}
+          {profile.bsi_score != null && (
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Bias Signal Index</p>
+                <p className={`text-lg font-bold mt-0.5 ${
+                  profile.bsi_score >= 0.6
+                    ? "text-rose-600 dark:text-rose-400"
+                    : profile.bsi_score >= 0.3
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-emerald-600 dark:text-emerald-400"
+                }`}>
+                  {profile.bsi_score.toFixed(3)}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Composite bias score [0–1]</p>
+              </div>
+              <div className="w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${
+                    profile.bsi_score >= 0.6
+                      ? "bg-rose-400"
+                      : profile.bsi_score >= 0.3
+                      ? "bg-amber-400"
+                      : "bg-emerald-400"
+                  }`}
+                  style={{ width: `${Math.min(profile.bsi_score * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Counts */}
           <div className="grid grid-cols-2 gap-2 text-center text-xs">
             <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-2">
@@ -475,25 +506,49 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
 
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
+type Tab = "profiles" | "articles";
+
 export default function BiasResultsPanel({ outlets }: Props) {
+  const [tab, setTab] = useState<Tab>("profiles");
+
   return (
     <section className="space-y-6">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm overflow-hidden">
+        {/* Header + tabs */}
         <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Bias Analysis Results</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             Outlet profiles, side-by-side comparison, and every scored article.
           </p>
+          <div className="mt-4 flex gap-1">
+            {(["profiles", "articles"] as Tab[]).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  tab === t
+                    ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900"
+                    : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {t === "profiles" ? "Profiles & Compare" : "Scored Articles"}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <OutletProfileCard outlets={outlets} />
-          <CompareCard outlets={outlets} />
-        </div>
+        {tab === "profiles" && (
+          <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <OutletProfileCard outlets={outlets} />
+            <CompareCard outlets={outlets} />
+          </div>
+        )}
 
-        <div className="px-5 pb-6">
-          <ArticlesTable outlets={outlets} />
-        </div>
+        {tab === "articles" && (
+          <div className="px-5 py-5">
+            <ArticlesTable outlets={outlets} />
+          </div>
+        )}
       </div>
     </section>
   );

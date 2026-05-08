@@ -40,12 +40,28 @@ CLUSTER_ENTITY_LIMIT = int(os.getenv("BIAS_CLUSTER_ENTITY_LIMIT", "12"))
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 32
 SENTIMENT_MODEL = os.getenv("BIAS_SENTIMENT_MODEL", "ProsusAI/finbert")
+OMISSION_THRESHOLD = 0.15
+OMISSION_LOOKBACK_RUNS = 5
 LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
     "minilm_l6": "all-MiniLM-L6-v2",
     "minilm_l12": "all-MiniLM-L12-v2",
     "mpnet_v2": "all-mpnet-base-v2",
     "multilingual_minilm": "paraphrase-multilingual-MiniLM-L12-v2",
 }
+
+
+def _compute_bsi(
+    sentiment_bias_avg: float,
+    coverage_bias_rate: float,
+    emphasis_bias_avg: float,
+) -> float:
+    """Bias Signal Index [0-1]. Higher = more biased.
+    BSI = 0.4 * clamp(|sentiment| / 0.5) + 0.4 * coverage_rate + 0.2 * clamp(|emphasis|)
+    """
+    s = min(abs(sentiment_bias_avg) / 0.5, 1.0)
+    c = min(max(coverage_bias_rate, 0.0), 1.0)
+    e = min(abs(emphasis_bias_avg), 1.0)
+    return round(0.4 * s + 0.4 * c + 0.2 * e, 6)
 
 
 @dataclass(frozen=True)
@@ -304,6 +320,8 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
         models.ArticleEmbedding.__table__,
         models.OutletBiasProfile.__table__,
         models.BiasRunLog.__table__,
+        models.OutletBiasSnapshot.__table__,
+        models.OutletTopicBSI.__table__,
     ]
     if drop_first:
         Base.metadata.drop_all(bind=db_manager.engine, tables=target_tables)
@@ -470,6 +488,7 @@ def _run_bias_analysis_impl(
 
         article_scores: List[models.ArticleBiasScore] = []
         outlet_stats = _init_outlet_stats(outlets)
+        outlet_topic_stats: Dict[str, Dict[str, Dict[str, Any]]] = {o: {} for o in outlets}
         topics_processed = 0
         skipped_single_outlet = 0
         skipped_low_diversity = 0
@@ -529,6 +548,16 @@ def _run_bias_analysis_impl(
                 stats["sentiment_score_sum"] += sentiment.score
                 stats["emphasis_bias_sum"] += emph
                 stats["articles_scored"] += 1
+                t = outlet_topic_stats[article.outlet].setdefault(topic_key, {
+                    "sentiment_bias_sum": 0.0,
+                    "emphasis_bias_sum": 0.0,
+                    "article_count": 0,
+                    "topic_label": topic_label,
+                    "coverage_present": True,
+                })
+                t["sentiment_bias_sum"] += bias_score
+                t["emphasis_bias_sum"] += emph
+                t["article_count"] += 1
 
             if is_dominated:
                 # Improvement 5: don't discard minority articles.
@@ -569,6 +598,13 @@ def _run_bias_analysis_impl(
                     if outlet not in cluster_outlets:
                         stats["coverage_missing_majority"] += 1
                         stats["missed_topics"].append(topic_label)
+                        outlet_topic_stats[outlet].setdefault(topic_key, {
+                            "sentiment_bias_sum": 0.0,
+                            "emphasis_bias_sum": 0.0,
+                            "article_count": 0,
+                            "topic_label": topic_label,
+                            "coverage_present": False,
+                        })["coverage_present"] = False
 
         if article_scores:
             article_scores_saved = _upsert_article_bias_scores(db, article_scores)
@@ -586,11 +622,23 @@ def _run_bias_analysis_impl(
             f"outlet-dominance={skipped_outlet_dominance}"
         )
 
-        profiles = _build_profiles(outlet_stats, now)
+        # Flush run log first (no commit) to obtain run_id for snapshots and topic BSI
+        log_row = _persist_bias_run_log(
+            db, started_at, datetime.utcnow(), run_status, run_error, run_logs, commit=False
+        )
+        run_id = log_row.id
+
+        # Build profile objects + topic BSI objects (pure, no DB)
+        profiles, topic_bsi_rows = _build_profiles(outlet_stats, outlet_topic_stats, now, run_id)
+
+        # Upsert current profiles — also commits the flushed run log row
         profiles_updated = _upsert_profiles(db, profiles)
         run_logs.append(f"Outlet profiles updated: {profiles_updated}")
 
-        _persist_bias_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
+        # Insert snapshots (with omission computation) + topic BSI in one final transaction
+        _insert_snapshots_with_omission(db, profiles, run_id, now)
+        _insert_topic_bsi_rows(db, topic_bsi_rows)
+        db.commit()
 
         return {
             "status": "ok",
@@ -613,8 +661,15 @@ def _run_bias_analysis_impl(
         raise
 
 
-def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) -> List[models.OutletBiasProfile]:
+def _build_profiles(
+    outlet_stats: Dict[str, Dict[str, float]],
+    outlet_topic_stats: Dict[str, Dict[str, Dict[str, Any]]],
+    now: datetime,
+    run_id: int,
+) -> Tuple[List[models.OutletBiasProfile], List[models.OutletTopicBSI]]:
     profiles: List[models.OutletBiasProfile] = []
+    topic_bsi_rows: List[models.OutletTopicBSI] = []
+
     for outlet, stats in outlet_stats.items():
         articles_scored = int(stats["articles_scored"])
         topics_considered = int(stats["topics_considered"])
@@ -623,6 +678,8 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
         emphasis_bias_avg = stats["emphasis_bias_sum"] / articles_scored if articles_scored else 0.0
         coverage_missing = int(stats["coverage_missing_majority"])
         coverage_bias_rate = coverage_missing / topics_considered if topics_considered else 0.0
+        bsi = _compute_bsi(sentiment_bias_avg, coverage_bias_rate, emphasis_bias_avg)
+
         profiles.append(
             models.OutletBiasProfile(
                 outlet=outlet,
@@ -635,10 +692,32 @@ def _build_profiles(outlet_stats: Dict[str, Dict[str, float]], now: datetime) ->
                 coverage_missing_majority=coverage_missing,
                 coverage_bias_rate=float(coverage_bias_rate),
                 missed_topics=stats["missed_topics"],
+                bsi_score=float(bsi),
                 updated_at=now,
             )
         )
-    return profiles
+
+        for t_key, t in outlet_topic_stats.get(outlet, {}).items():
+            cnt = t["article_count"]
+            t_sent = t["sentiment_bias_sum"] / cnt if cnt else 0.0
+            t_emph = t["emphasis_bias_sum"] / cnt if cnt else 0.0
+            t_cov_rate = 0.0 if t["coverage_present"] else 1.0
+            topic_bsi_rows.append(
+                models.OutletTopicBSI(
+                    run_id=run_id,
+                    outlet=outlet,
+                    topic_key=t_key,
+                    topic_label=t.get("topic_label"),
+                    sentiment_bias_avg=float(t_sent),
+                    emphasis_bias_avg=float(t_emph),
+                    coverage_present=bool(t["coverage_present"]),
+                    article_count=cnt,
+                    bsi_score=_compute_bsi(t_sent, t_cov_rate, t_emph),
+                    snapshot_date=now,
+                )
+            )
+
+    return profiles, topic_bsi_rows
 
 
 def _load_recent_articles(db: Session, since: datetime) -> List[models.Article]:
@@ -963,12 +1042,85 @@ def _upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) 
             existing.coverage_bias_rate = profile.coverage_bias_rate
             existing.missed_topics = profile.missed_topics
             existing.emphasis_bias_avg = profile.emphasis_bias_avg
+            existing.bsi_score = profile.bsi_score
             existing.updated_at = profile.updated_at
         else:
             db.add(profile)
         updated += 1
     db.commit()
     return updated
+
+
+def _insert_snapshots_with_omission(
+    db: Session,
+    profiles: List[models.OutletBiasProfile],
+    run_id: int,
+    now: datetime,
+) -> None:
+    for profile in profiles:
+        recent_snaps = (
+            db.query(models.OutletBiasSnapshot)
+            .filter(models.OutletBiasSnapshot.outlet == profile.outlet)
+            .filter(models.OutletBiasSnapshot.run_id != run_id)
+            .order_by(models.OutletBiasSnapshot.snapshot_date.desc())
+            .limit(OMISSION_LOOKBACK_RUNS)
+            .all()
+        )
+
+        omission_score: float | None = None
+        systematic_omission: bool | None = None
+        baseline_used_runs: int | None = None
+
+        if recent_snaps:
+            baseline_used_runs = len(recent_snaps)
+            hist_cov_avg = sum(s.coverage_bias_rate for s in recent_snaps) / baseline_used_runs
+            omission_score = round(float(profile.coverage_bias_rate) - hist_cov_avg, 6)
+            systematic_omission = omission_score > OMISSION_THRESHOLD
+
+        snapshot = models.OutletBiasSnapshot(
+            outlet=profile.outlet,
+            run_id=run_id,
+            snapshot_date=now,
+            sentiment_bias_avg=profile.sentiment_bias_avg,
+            sentiment_score_avg=profile.sentiment_score_avg,
+            articles_scored=profile.articles_scored,
+            topics_covered=profile.topics_covered,
+            topics_considered=profile.topics_considered,
+            coverage_missing_majority=profile.coverage_missing_majority,
+            coverage_bias_rate=profile.coverage_bias_rate,
+            missed_topics=profile.missed_topics,
+            emphasis_bias_avg=profile.emphasis_bias_avg,
+            bsi_score=profile.bsi_score,
+            omission_score=omission_score,
+            systematic_omission=systematic_omission,
+            baseline_used_runs=baseline_used_runs,
+        )
+        db.add(snapshot)
+
+
+def _insert_topic_bsi_rows(db: Session, rows: List[models.OutletTopicBSI]) -> int:
+    if not rows:
+        return 0
+    for row in rows:
+        existing = (
+            db.query(models.OutletTopicBSI)
+            .filter(
+                models.OutletTopicBSI.run_id == row.run_id,
+                models.OutletTopicBSI.outlet == row.outlet,
+                models.OutletTopicBSI.topic_key == row.topic_key,
+            )
+            .first()
+        )
+        if existing:
+            existing.sentiment_bias_avg = row.sentiment_bias_avg
+            existing.emphasis_bias_avg = row.emphasis_bias_avg
+            existing.coverage_present = row.coverage_present
+            existing.article_count = row.article_count
+            existing.bsi_score = row.bsi_score
+            existing.topic_label = row.topic_label
+        else:
+            db.add(row)
+    return len(rows)
 
 
 def _upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore]) -> int:
@@ -1506,7 +1658,8 @@ def _persist_bias_run_log(
     status: str,
     error: str | None,
     log_lines: List[str],
-) -> None:
+    commit: bool = True,
+) -> models.BiasRunLog:
     ensure_bias_tables()
     log_row = models.BiasRunLog(
         started_at=started_at,
@@ -1517,4 +1670,8 @@ def _persist_bias_run_log(
         created_at=datetime.utcnow(),
     )
     db.add(log_row)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return log_row

@@ -98,7 +98,51 @@ class OutletBiasProfile(Base):
     coverage_bias_rate = Column(Float, nullable=False)
     missed_topics = Column(JSON, nullable=True)
     emphasis_bias_avg = Column(Float, nullable=True)
+    bsi_score = Column(Float, nullable=True)
     updated_at = Column(DateTime, nullable=False)
+
+
+class OutletBiasSnapshot(Base):
+    __tablename__ = "OutletBiasSnapshot"
+
+    id = Column(Integer, primary_key=True, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    run_id = Column(Integer, nullable=False, index=True)
+    snapshot_date = Column(DateTime, nullable=False, index=True)
+    sentiment_bias_avg = Column(Float, nullable=False)
+    sentiment_score_avg = Column(Float, nullable=False)
+    articles_scored = Column(Integer, nullable=False)
+    topics_covered = Column(Integer, nullable=False)
+    topics_considered = Column(Integer, nullable=False)
+    coverage_missing_majority = Column(Integer, nullable=False)
+    coverage_bias_rate = Column(Float, nullable=False)
+    missed_topics = Column(JSON, nullable=True)
+    emphasis_bias_avg = Column(Float, nullable=True)
+    bsi_score = Column(Float, nullable=True)
+    omission_score = Column(Float, nullable=True)
+    systematic_omission = Column(Boolean, nullable=True)
+    baseline_used_runs = Column(Integer, nullable=True)
+
+
+class OutletTopicBSI(Base):
+    __tablename__ = "OutletTopicBSI"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, nullable=False, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    topic_key = Column(String, nullable=False, index=True)
+    topic_label = Column(String, nullable=True)
+    sentiment_bias_avg = Column(Float, nullable=False)
+    emphasis_bias_avg = Column(Float, nullable=True)
+    coverage_present = Column(Boolean, nullable=False, default=True)
+    article_count = Column(Integer, nullable=False)
+    bsi_score = Column(Float, nullable=False)
+    snapshot_date = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "outlet", "topic_key",
+                         name="uq_outlet_topic_bsi_run_outlet_topic"),
+    )
 
 
 class BiasRunLog(Base):

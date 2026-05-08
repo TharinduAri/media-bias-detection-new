@@ -1,6 +1,9 @@
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -11,6 +14,11 @@ from src.bias.service import (
     run_bias_analysis,
     run_bias_analysis_with_clusters,
 )
+
+
+def _get_last_run_at(db: Session) -> datetime | None:
+    row = db.query(models.BiasRunLog).order_by(models.BiasRunLog.id.desc()).first()
+    return row.finished_at if row else None
 
 router = APIRouter(
     prefix="/api/v1/bias",
@@ -197,6 +205,8 @@ def cleanup_bias_results(db: Session = Depends(get_db)):
     deleted_embeddings = db.query(models.ArticleEmbedding).delete(synchronize_session=False)
     deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
     deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
+    db.query(models.OutletBiasSnapshot).delete(synchronize_session=False)
+    db.query(models.OutletTopicBSI).delete(synchronize_session=False)
     db.commit()
     return {
         "status": "ok",
@@ -206,3 +216,114 @@ def cleanup_bias_results(db: Session = Depends(get_db)):
         "deleted_outlet_profiles": deleted_profiles,
         "deleted_run_logs": deleted_logs,
     }
+
+
+# ── Agentic-layer & longitudinal endpoints ────────────────────────────────────
+
+@router.get("/profiles", response_model=schemas.AllProfilesResponse)
+def get_all_profiles(db: Session = Depends(get_db)):
+    ensure_bias_tables()
+    profiles = (
+        db.query(models.OutletBiasProfile)
+        .order_by(models.OutletBiasProfile.outlet.asc())
+        .all()
+    )
+    return schemas.AllProfilesResponse(
+        last_run_at=_get_last_run_at(db),
+        profiles=profiles,
+    )
+
+
+@router.get("/outlets/{outlet_name}/trend", response_model=list[schemas.OutletBiasSnapshotResponse])
+def get_outlet_trend(
+    outlet_name: str,
+    days_back: int = Query(90, ge=1, le=730),
+    db: Session = Depends(get_db),
+):
+    ensure_bias_tables()
+    since = datetime.utcnow() - timedelta(days=days_back)
+    rows = (
+        db.query(models.OutletBiasSnapshot)
+        .filter(models.OutletBiasSnapshot.outlet == outlet_name)
+        .filter(models.OutletBiasSnapshot.snapshot_date >= since)
+        .order_by(models.OutletBiasSnapshot.snapshot_date.asc())
+        .all()
+    )
+    return rows
+
+
+@router.get("/trends", response_model=schemas.AllTrendsResponse)
+def get_all_trends(
+    days_back: int = Query(90, ge=1, le=730),
+    db: Session = Depends(get_db),
+):
+    ensure_bias_tables()
+    since = datetime.utcnow() - timedelta(days=days_back)
+    rows = (
+        db.query(models.OutletBiasSnapshot)
+        .filter(models.OutletBiasSnapshot.snapshot_date >= since)
+        .order_by(
+            models.OutletBiasSnapshot.outlet.asc(),
+            models.OutletBiasSnapshot.snapshot_date.asc(),
+        )
+        .all()
+    )
+    outlet_map: dict = defaultdict(list)
+    for row in rows:
+        outlet_map[row.outlet].append(row)
+    trends = [
+        schemas.OutletTrendResponse(outlet=outlet, snapshots=snaps)
+        for outlet, snaps in outlet_map.items()
+    ]
+    return schemas.AllTrendsResponse(last_run_at=_get_last_run_at(db), trends=trends)
+
+
+@router.get("/scores", response_model=schemas.BiasScoresResponse)
+def get_bias_scores(
+    outlet: str | None = Query(None),
+    topic_key: str | None = Query(None),
+    run_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    ensure_bias_tables()
+    q = db.query(models.OutletTopicBSI)
+    if outlet:
+        q = q.filter(models.OutletTopicBSI.outlet == outlet)
+    if topic_key:
+        q = q.filter(models.OutletTopicBSI.topic_key == topic_key)
+    if run_id is not None:
+        q = q.filter(models.OutletTopicBSI.run_id == run_id)
+    rows = q.order_by(models.OutletTopicBSI.bsi_score.desc()).all()
+    return schemas.BiasScoresResponse(last_run_at=_get_last_run_at(db), scores=rows)
+
+
+@router.get("/omissions", response_model=schemas.AllOmissionsResponse)
+def get_omissions(db: Session = Depends(get_db)):
+    ensure_bias_tables()
+    subq = (
+        db.query(
+            models.OutletBiasSnapshot.outlet,
+            func.max(models.OutletBiasSnapshot.id).label("max_id"),
+        )
+        .group_by(models.OutletBiasSnapshot.outlet)
+        .subquery()
+    )
+    latest_snaps = (
+        db.query(models.OutletBiasSnapshot)
+        .join(subq, models.OutletBiasSnapshot.id == subq.c.max_id)
+        .order_by(models.OutletBiasSnapshot.outlet.asc())
+        .all()
+    )
+    omissions = [
+        schemas.OutletOmissionResponse(
+            outlet=s.outlet,
+            current_coverage_bias_rate=s.coverage_bias_rate,
+            current_bsi_score=s.bsi_score,
+            omission_score=s.omission_score,
+            systematic_omission=s.systematic_omission,
+            baseline_used_runs=s.baseline_used_runs,
+            last_run_at=s.snapshot_date,
+        )
+        for s in latest_snaps
+    ]
+    return schemas.AllOmissionsResponse(last_run_at=_get_last_run_at(db), omissions=omissions)
