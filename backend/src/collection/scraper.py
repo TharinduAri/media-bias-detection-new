@@ -19,7 +19,7 @@ from .outlets import (
     NewsfirstOutlet,
     BaseOutletScraper,
 )
-from src.collection.core.db import load_outlets_from_db, replay_fallback_articles, save_to_db
+from src.collection.core.db import replay_fallback_articles, save_to_db
 from src.collection.core.http_client import (
     GhostResponseError, set_semaphore, get_blocked_paths, clear_blocked_paths, record_blocked_path, fetch
 )
@@ -202,6 +202,25 @@ def _filter_adaderana_legacy_urls(outlet_name: str, articles: list[dict[str, str
     return filtered
 
 
+_OUTLETS: list[dict[str, str]] = [
+    # Specialist scrapers (matched by domain in _OUTLET_REGISTRY below)
+    {"name": "Ada Derana",       "url": "https://www.adaderana.lk"},
+    {"name": "Ceylon Today",     "url": "https://www.ceylontoday.lk"},
+    {"name": "Daily FT",         "url": "https://www.ft.lk"},
+    {"name": "Economy Next",     "url": "https://economynext.com"},
+    {"name": "LBO",              "url": "https://www.lbo.lk"},
+    {"name": "Newsfirst",        "url": "https://english.newsfirst.lk"},
+    # Generic sitemap scraper
+    {"name": "Daily Mirror",     "url": "https://www.dailymirror.lk"},
+    {"name": "The Morning",      "url": "https://themorning.lk"},
+    {"name": "Daily News",       "url": "https://www.dailynews.lk"},
+    {"name": "The Island",       "url": "https://www.island.lk"},
+    {"name": "Sunday Observer",  "url": "https://www.sundayobserver.lk"},
+    {"name": "Colombo Gazette",  "url": "https://colombogazette.com"},
+    {"name": "Colombo Page",     "url": "https://www.colombopage.com"},
+    {"name": "News LK",          "url": "https://www.news.lk"},
+]
+
 _OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
     (("adaderana.lk",),                          AdaDeranaOutlet),
     (("ceylontoday.lk",),                         CeylonTodayOutlet),
@@ -321,16 +340,12 @@ async def collect_data(days_back=DAYS_BACK, target_outlet: str | None = None):
     all_articles: list[dict[str, str]] = []
     run = _RunSummary()
     clear_blocked_paths()
-    outlets = await asyncio.to_thread(load_outlets_from_db)
+    outlets: list[dict[str, str]] = list(_OUTLETS)
     if target_outlet:
         outlets = [o for o in outlets if o["name"].lower() == target_outlet.lower()]
         if not outlets:
             logging.warning("No outlet found matching: %s", target_outlet)
             return
-
-    if not outlets:
-        logging.warning("No outlets configured in DB. Add outlets before running scraper.")
-        return
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     set_semaphore(sem)

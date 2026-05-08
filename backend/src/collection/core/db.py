@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from api import models
 from api.database import db_manager
 
+
 DB_CONNECT_MAX_RETRIES = 5
 DB_CONNECT_BACKOFF_BASE_SECONDS = 1.5
 STRICT_RECENT_ONLY = True
@@ -24,10 +25,6 @@ STRICT_RECENT_ONLY = os.getenv("STRICT_RECENT_ONLY", "true").strip().lower() == 
 DAYS_BACK = int(os.getenv("DAYS_BACK", "28"))
 
 FALLBACK_JSONL_PATH = Path(__file__).resolve().parents[3] / "data" / "db_fallback_articles.jsonl"
-
-
-def _normalize_outlet_url(url: str) -> str:
-    return url.strip().rstrip("/")
 
 
 def _append_articles_to_fallback_jsonl(articles: list[dict[str, str]]) -> None:
@@ -166,21 +163,6 @@ def replay_fallback_articles() -> None:
         logging.info("Fallback replay succeeded; cleared local fallback queue")
     else:
         logging.warning("Fallback replay failed; keeping queued records on disk")
-
-
-def load_outlets_from_db() -> list[dict[str, str]]:
-    session = db_manager.session_factory()
-    try:
-        outlets = session.query(models.Outlet).all()
-        result: list[dict[str, str]] = []
-        for outlet in outlets:
-            normalized_url = _normalize_outlet_url(outlet.url or "")
-            if not normalized_url:
-                continue
-            result.append({"name": outlet.name, "url": normalized_url})
-        return result
-    finally:
-        session.close()
 
 
 def save_to_db(valid_articles: list[dict[str, Any]], allow_fallback: bool = True) -> bool:

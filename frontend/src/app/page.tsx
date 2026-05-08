@@ -1,4 +1,4 @@
-import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles, fetchScrapeLogs } from "@/lib/api";
+import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles } from "@/lib/api";
 import CleanScrapeButton from "@/components/CleanScrapeButton";
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import OutletManager from "@/components/OutletManager";

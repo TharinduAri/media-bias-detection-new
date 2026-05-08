@@ -35,6 +35,22 @@ def _build_outlet_blocklist(outlets: List[str]) -> Set[str]:
             "ceylon today",
             "ceylontoday",
             "newsfirst",
+            "daily mirror",
+            "dailymirror",
+            "the morning",
+            "themorning",
+            "daily news",
+            "dailynews",
+            "the island",
+            "island",
+            "sunday observer",
+            "sundayobserver",
+            "colombo gazette",
+            "colombogazette",
+            "colombo page",
+            "colombopage",
+            "news lk",
+            "newslk",
         }
     )
     return {item for item in blocklist if item}

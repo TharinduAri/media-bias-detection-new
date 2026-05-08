@@ -17,16 +17,6 @@ class Article(Base):
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
 
-class Outlet(Base):
-    __tablename__ = "Outlet"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    url = Column(String)
-    rss_feeds = Column(JSON, nullable=True)
-    created_at = Column(DateTime)
-
-
 class ScrapeRunLog(Base):
     __tablename__ = "ScrapeRunLog"
 
