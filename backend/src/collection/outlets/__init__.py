@@ -9,7 +9,6 @@ from .themorning import TheMorningOutlet
 from .colombogazette import ColomboGazetteOutlet
 from .theisland import TheIslandOutlet
 from .dailymirror import DailyMirrorOutlet
-from .colombopage import ColomboPageOutlet
 from .dailynews import DailyNewsOutlet
 from .sundayobserver import SundayObserverOutlet
 from .newslk import NewsLKOutlet
@@ -27,7 +26,6 @@ __all__ = [
     "ColomboGazetteOutlet",
     "TheIslandOutlet",
     "DailyMirrorOutlet",
-    "ColomboPageOutlet",
     "DailyNewsOutlet",
     "SundayObserverOutlet",
     "NewsLKOutlet",

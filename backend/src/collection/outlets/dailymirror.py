@@ -40,7 +40,14 @@ _RSS_CANDIDATES = [
     "/rss/top-story",
 ]
 _SITEMAP_CANDIDATES = ["/sitemap.xml", "/news-sitemap.xml", "/sitemap_index.xml"]
-_SECTION_PATHS = ["/", "/breaking-news/", "/business/", "/political-news/", "/top-story/"]
+# Homepage returns 403 — use section-level URLs directly
+_SECTION_PATHS = [
+    "/breaking-news/1",
+    "/business/1",
+    "/political-news/1",
+    "/top-story/1",
+    "/opinion/1",
+]
 
 _ARTICLE_URL_RE = re.compile(
     r"https?://(?:www\.)?dailymirror\.lk/[a-z0-9\-]+/[^\"'\s<>]{5,}/\d+-\d+"

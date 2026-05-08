@@ -26,18 +26,23 @@ from src.collection.core.extraction import extract_with_trafilatura
 logger = logging.getLogger(__name__)
 
 _RSS_CANDIDATES = [
+    "/feed/",
+    "/feed",
     "/rss.xml",
     "/rss",
-    "/feed",
-    "/news/rss.xml",
-    "/business/rss.xml",
-    "/features/rss.xml",
 ]
-_SITEMAP_CANDIDATES = ["/sitemap.xml", "/news-sitemap.xml", "/sitemap_index.xml"]
-_SECTION_PATHS = ["/", "/news/", "/business/", "/features/", "/opinion/"]
+_SITEMAP_CANDIDATES = ["/sitemap.xml", "/sitemap_index.xml", "/news-sitemap.xml"]
+# Homepage returns 403 — use section-level paths directly
+_SECTION_PATHS = [
+    "/news/",
+    "/business/",
+    "/sport/",
+    "/features/",
+    "/opinion/",
+]
 
 _ARTICLE_URL_RE = re.compile(
-    r"https?://(?:www\.)?sundayobserver\.lk/\d{4}/\d{2}/\d{2}/[a-z0-9\-]+/[a-z0-9\-]+"
+    r"https?://(?:www\.)?sundayobserver\.lk/\d{4}/\d{2}/\d{2}/[a-z0-9\-]+/\d+/[a-z0-9\-]+"
 )
 
 

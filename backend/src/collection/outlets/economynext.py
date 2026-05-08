@@ -93,16 +93,26 @@ class EconomyNextOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
 
-        # 1. Live WordPress sitemap discovery (primary)
-        live_sitemap_items = await self._live_sitemap_discover(client, days_back, max_articles)
-        for item in live_sitemap_items:
+        # 1. WP REST API (fastest; returns full structured JSON)
+        api_items = await self._wp_api_discover(client, days_back, max_articles)
+        for item in api_items:
             url = item.get("url")
             if url and url not in articles:
                 articles[url] = item
-        if live_sitemap_items:
-            logger.info("[EconomyNext] Live sitemap added %d URLs", len(live_sitemap_items))
+        if api_items:
+            logger.info("[EconomyNext] WP API: %d", len(articles))
 
-        # 2. RSS fallback
+        # 2. Live WordPress sitemap discovery
+        if len(articles) < max_articles:
+            live_sitemap_items = await self._live_sitemap_discover(client, days_back, max_articles - len(articles))
+            for item in live_sitemap_items:
+                url = item.get("url")
+                if url and url not in articles:
+                    articles[url] = item
+            if live_sitemap_items:
+                logger.info("[EconomyNext] Live sitemap added %d URLs", len(live_sitemap_items))
+
+        # 3. RSS fallback
         if len(articles) < max_articles:
             rss_items = await self._rss_discover(client, days_back, max_articles - len(articles))
             for item in rss_items:
@@ -151,6 +161,61 @@ class EconomyNextOutlet(BaseOutletScraper):
 
         logger.info("[EconomyNext] Total discovered: %d URLs via Wayback Machine", len(articles))
         return list(articles.values())[:max_articles]
+
+    async def _wp_api_discover(
+        self, client: httpx.AsyncClient, days_back: int, max_articles: int
+    ) -> list[dict[str, str]]:
+        from urllib.parse import urlencode
+        cutoff = datetime.now() - timedelta(days=days_back)
+        endpoint = f"{self.url}/wp-json/wp/v2/posts"
+        articles: list[dict[str, str]] = []
+
+        for page in range(1, 15):
+            if len(articles) >= max_articles:
+                break
+            params = urlencode({
+                "_fields": "id,date,title,link,content",
+                "per_page": "100",
+                "page": str(page),
+                "orderby": "date",
+                "order": "desc",
+            })
+            try:
+                resp = await fetch(client, f"{endpoint}?{params}", extra_headers=_BROWSER_HEADERS)
+                posts = resp.json()
+            except Exception as exc:
+                logger.debug("[EconomyNext] WP API page %d failed: %s", page, exc)
+                break
+
+            if not isinstance(posts, list) or not posts:
+                break
+
+            for post in posts:
+                if not isinstance(post, dict):
+                    continue
+                url = (post.get("link") or "").strip()
+                if not url or self.should_skip_url(url):
+                    continue
+                pub = self._parse_dt(post.get("date"))
+                if pub and pub < cutoff:
+                    continue
+                content_obj = post.get("content")
+                title_obj = post.get("title")
+                raw_html = content_obj.get("rendered", "") if isinstance(content_obj, dict) else ""
+                title = self._strip_html(title_obj.get("rendered", "") if isinstance(title_obj, dict) else "")
+                text = self._strip_html(raw_html)
+                stub = self._article_stub(url, pub, title)
+                if text and len(text) >= 50:
+                    stub["text"] = text
+                    stub["raw_html"] = raw_html
+                articles.append(stub)
+                if len(articles) >= max_articles:
+                    break
+
+            if len(posts) < 100:
+                break
+
+        return articles
 
     async def _live_sitemap_discover(
         self,

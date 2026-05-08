@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
@@ -26,9 +27,17 @@ _WP_API_PATH = "/wp-json/wp/v2/posts"
 _WP_FIELDS = "id,date,title,link,content"
 _WP_PER_PAGE = 100
 
+# Firebase Firestore document IDs used as article slugs
+_FIREBASE_ARTICLE_RE = re.compile(r"https?://(?:www\.)?themorning\.lk/articles/[A-Za-z0-9]{10,}")
+
 
 class TheMorningOutlet(BaseOutletScraper):
-    """The Morning (themorning.lk) — WordPress, WP API primary."""
+    """The Morning (themorning.lk) — Next.js frontend, Firebase article IDs."""
+
+    def should_skip_url(self, url: str) -> bool:
+        if _FIREBASE_ARTICLE_RE.match(url):
+            return False
+        return super().should_skip_url(url)
 
     async def discover_urls(
         self,
@@ -52,6 +61,13 @@ class TheMorningOutlet(BaseOutletScraper):
         if len(articles) < max_articles:
             rss = await self._rss(client, days_back, max_articles - len(articles))
             for a in rss:
+                if a["url"] not in articles:
+                    articles[a["url"]] = a
+
+        # Homepage regex — fallback for Firebase IDs not in sitemap/RSS
+        if len(articles) < max_articles:
+            hp = await self._homepage_scrape(client, max_articles - len(articles))
+            for a in hp:
                 if a["url"] not in articles:
                     articles[a["url"]] = a
 
@@ -182,6 +198,22 @@ class TheMorningOutlet(BaseOutletScraper):
             if articles:
                 return articles
         return []
+
+    async def _homepage_scrape(
+        self, client: httpx.AsyncClient, max_articles: int
+    ) -> list[dict[str, str]]:
+        articles: dict[str, dict[str, str]] = {}
+        try:
+            resp = await fetch(client, self.url)
+            for match in _FIREBASE_ARTICLE_RE.finditer(resp.text):
+                url = match.group(0).rstrip("\"'")
+                if url not in articles:
+                    articles[url] = self._article_stub(url)
+                if len(articles) >= max_articles:
+                    break
+        except Exception as exc:
+            logger.debug("[TheMorning] Homepage scrape failed: %s", exc)
+        return list(articles.values())
 
     async def extract_content(self, url: str, client: httpx.AsyncClient) -> dict[str, str]:
         resp = await fetch(client, url, follow_redirects=True)

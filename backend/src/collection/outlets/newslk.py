@@ -27,18 +27,25 @@ from src.collection.core.extraction import extract_with_trafilatura
 logger = logging.getLogger(__name__)
 
 _RSS_CANDIDATES = [
+    "/feed",
     "/rss.xml",
     "/rss",
-    "/feed",
-    "/news/rss",
-    "/component/rss/",
     "/?format=feed&type=rss",
 ]
 _SITEMAP_CANDIDATES = ["/sitemap.xml", "/news-sitemap.xml", "/sitemap_index.xml"]
-_SECTION_PATHS = ["/", "/news/local/", "/news/economy/", "/news/politics/"]
+# Use section-level entry points — homepage may return 403
+_SECTION_PATHS = [
+    "/current-affairs",
+    "/economy-development",
+    "/parliament",
+    "/district-news",
+    "/features",
+    "/sports",
+    "/foreign",
+]
 
 _ARTICLE_URL_RE = re.compile(
-    r"https?://(?:www\.)?news\.lk/(?:news/[a-z0-9\-]+/item/\d+|[a-z0-9\-]+/[a-z0-9\-]{5,})"
+    r"https?://(?:www\.)?news\.lk/[a-z\-]+/[a-z0-9][a-z0-9\-]{10,}"
 )
 
 

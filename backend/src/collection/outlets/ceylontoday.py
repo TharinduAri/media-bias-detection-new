@@ -1,33 +1,38 @@
-"""Ceylon Today scraper.
+"""Ceylon Today scraper (ceylontoday.lk).
 
-Discovery strategy:
-  1. Sitemap (follows the 301 redirect on /sitemap.xml → canonical sitemap location)
-  2. RSS feed fallback (/feed or /rss)
+WordPress CMS. Homepage returns 403 — all entry points bypass the root.
 
-Known issues from audit:
-  - /sitemap.xml returns 301 (sitemap moved) — httpx follows redirects automatically
-  - No special content quirks; trafilatura handles the HTML well
+Discovery (priority order):
+  1. WP REST API (/wp-json/wp/v2/posts) — open even when frontend blocks
+  2. XML Sitemap (/sitemap.xml — follows 301 redirect automatically)
+  3. RSS feed (/feed/) — WordPress default, accessible despite 403 homepage
 
-Content extraction: standard trafilatura pipeline.
+Content extraction: standard trafilatura.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 
 import httpx
 
 from .base import BaseOutletScraper
-from src.collection.core.http_client import GhostResponseError, fetch
+from src.collection.core.http_client import fetch
 from src.collection.core.extraction import extract_with_trafilatura
 
 logger = logging.getLogger(__name__)
 
-_RSS_CANDIDATES = ["/feed", "/rss", "/feed/rss2", "/rss.xml"]
+_WP_API_PATH = "/wp-json/wp/v2/posts"
+_WP_FIELDS = "id,date,title,link,content"
+_WP_PER_PAGE = 100
+
+_RSS_CANDIDATES = ["/feed/", "/feed", "/rss", "/feed/rss2"]
 
 
 class CeylonTodayOutlet(BaseOutletScraper):
-    """Ceylon Today (ceylontoday.lk) — sitemap with 301 redirect handling."""
+    """Ceylon Today (ceylontoday.lk) — WP API primary, sitemap + RSS fallback."""
 
     async def discover_urls(
         self,
@@ -37,38 +42,102 @@ class CeylonTodayOutlet(BaseOutletScraper):
     ) -> list[dict[str, str]]:
         articles: dict[str, dict[str, str]] = {}
 
-        # Primary: sitemap (client follows 301 automatically)
-        sitemap_urls = await self._sitemap_traverse(client, days_back, max_articles)
-        for art in sitemap_urls:
-            articles[art["url"]] = art
-        logger.info("[CeylonToday] Sitemap: %d URLs", len(articles))
+        # 1. WP REST API (bypasses homepage 403)
+        api = await self._wp_api(client, days_back, max_articles)
+        for a in api:
+            articles[a["url"]] = a
+        logger.info("[CeylonToday] WP API: %d", len(articles))
 
-        # Fallback: RSS
-        if len(articles) < max(20, max_articles // 6):
-            rss_urls = await self._rss_discover(client, days_back, max_articles)
-            for art in rss_urls:
-                if art["url"] not in articles:
-                    articles[art["url"]] = art
-            if rss_urls:
-                logger.info("[CeylonToday] RSS added %d URLs", len(rss_urls))
+        # 2. Sitemap (301 redirect followed automatically)
+        if len(articles) < max_articles:
+            sm = await self._sitemap_traverse(client, days_back, max_articles - len(articles))
+            for a in sm:
+                if a["url"] not in articles:
+                    articles[a["url"]] = a
+            if sm:
+                logger.info("[CeylonToday] Sitemap added %d", len(sm))
+
+        # 3. RSS fallback
+        if len(articles) < max_articles:
+            rss = await self._rss(client, days_back, max_articles - len(articles))
+            for a in rss:
+                if a["url"] not in articles:
+                    articles[a["url"]] = a
+            if rss:
+                logger.info("[CeylonToday] RSS added %d", len(rss))
 
         return list(articles.values())[:max_articles]
 
-    # -- Sitemap ------------------------------------------------------------ #
+    async def _wp_api(
+        self, client: httpx.AsyncClient, days_back: int, max_articles: int
+    ) -> list[dict[str, str]]:
+        cutoff = datetime.now() - timedelta(days=days_back)
+        endpoint = f"{self.url}{_WP_API_PATH}"
+        articles: list[dict[str, str]] = []
+        max_pages = 14
+
+        for page in range(1, max_pages + 1):
+            if len(articles) >= max_articles:
+                break
+            params = urlencode({
+                "_fields": _WP_FIELDS,
+                "per_page": str(_WP_PER_PAGE),
+                "page": str(page),
+                "orderby": "date",
+                "order": "desc",
+            })
+            try:
+                resp = await fetch(client, f"{endpoint}?{params}")
+                posts = resp.json()
+                if page == 1:
+                    total = resp.headers.get("X-WP-TotalPages", "")
+                    if total.isdigit():
+                        max_pages = min(14, int(total))
+            except Exception as exc:
+                logger.debug("[CeylonToday] WP API page %d failed: %s", page, exc)
+                break
+
+            if not isinstance(posts, list) or not posts:
+                break
+
+            for post in posts:
+                if not isinstance(post, dict):
+                    continue
+                url = (post.get("link") or "").strip()
+                if not url or self.should_skip_url(url):
+                    continue
+                pub = self._parse_dt(post.get("date"))
+                if pub and pub < cutoff:
+                    continue
+                content_obj = post.get("content")
+                title_obj = post.get("title")
+                raw_html = content_obj.get("rendered", "") if isinstance(content_obj, dict) else ""
+                title = self._strip_html(title_obj.get("rendered", "") if isinstance(title_obj, dict) else "")
+                text = self._strip_html(raw_html)
+                stub = self._article_stub(url, pub, title)
+                if text and len(text) >= 50:
+                    stub["text"] = text
+                    stub["raw_html"] = raw_html
+                articles.append(stub)
+                if len(articles) >= max_articles:
+                    break
+
+            if len(posts) < _WP_PER_PAGE:
+                break
+
+        return articles
 
     async def _sitemap_traverse(
         self, client: httpx.AsyncClient, days_back: int, max_articles: int
     ) -> list[dict[str, str]]:
         cutoff = datetime.now() - timedelta(days=days_back)
-        # follow_redirects=True handles the 301 sitemap move
         root = await self._fetch_xml(client, f"{self.url}/sitemap.xml")
+        if root is None:
+            root = await self._fetch_xml(client, f"{self.url}/wp-sitemap.xml")
         if root is None:
             return []
 
-        # Could be sitemapindex or urlset
-        urls: dict[str, dict[str, str]] = {}
         shard_queue: list[str] = []
-
         if self._tag(root.tag) == "sitemapindex":
             for child in root:
                 if self._tag(child.tag) != "sitemap":
@@ -79,13 +148,11 @@ class CeylonTodayOutlet(BaseOutletScraper):
         else:
             shard_queue = [f"{self.url}/sitemap.xml"]
 
-        import asyncio
-        batch_size = 10
-        for i in range(0, len(shard_queue), batch_size):
+        urls: dict[str, dict[str, str]] = {}
+        for i in range(0, len(shard_queue), 10):
             if len(urls) >= max_articles:
                 break
-            batch = shard_queue[i:i + batch_size]
-            roots = await asyncio.gather(*[self._fetch_xml(client, u) for u in batch])
+            roots = await asyncio.gather(*[self._fetch_xml(client, u) for u in shard_queue[i:i + 10]])
             for shard_root in roots:
                 if shard_root is None or self._tag(shard_root.tag) != "urlset":
                     continue
@@ -110,48 +177,31 @@ class CeylonTodayOutlet(BaseOutletScraper):
 
         return list(urls.values())
 
-    # -- RSS fallback ------------------------------------------------------- #
-
-    async def _rss_discover(
+    async def _rss(
         self, client: httpx.AsyncClient, days_back: int, max_articles: int
     ) -> list[dict[str, str]]:
-        import xml.etree.ElementTree as ET
         cutoff = datetime.now() - timedelta(days=days_back)
-
         for path in _RSS_CANDIDATES:
-            try:
-                resp = await fetch(client, f"{self.url}{path}")
-                root = ET.fromstring(resp.text)
-            except Exception:
+            root = await self._fetch_xml(client, f"{self.url}{path}")
+            if root is None:
                 continue
-
-            items: list[dict[str, str]] = []
-            channel = root.find("channel")
-            entries = channel.findall("item") if channel is not None else root.findall(".//item")
-            for item in entries:
-                link_el = item.find("link")
-                pub_el = item.find("pubDate")
-                title_el = item.find("title")
-                url = (link_el.text or "").strip() if link_el is not None else ""
-                if not url or self.should_skip_url(url):
+            articles: list[dict[str, str]] = []
+            for item in root.findall(".//item"):
+                link = item.findtext("link")
+                if not link or self.should_skip_url(link):
                     continue
-                pub = self._parse_dt(pub_el.text if pub_el is not None else None)
+                pub = self._parse_dt(item.findtext("pubDate"))
                 if pub and pub < cutoff:
                     continue
-                title = (title_el.text or "").strip() if title_el is not None else ""
-                items.append(self._article_stub(url, pub, title))
-                if len(items) >= max_articles:
+                title = item.findtext("title") or ""
+                articles.append(self._article_stub(link, pub, title))
+                if len(articles) >= max_articles:
                     break
-            if items:
-                return items
-
+            if articles:
+                return articles
         return []
 
-    # -- Content ------------------------------------------------------------ #
-
-    async def extract_content(
-        self, url: str, client: httpx.AsyncClient
-    ) -> dict[str, str]:
+    async def extract_content(self, url: str, client: httpx.AsyncClient) -> dict[str, str]:
         resp = await fetch(client, url, follow_redirects=True)
         raw_html = resp.text
         result = extract_with_trafilatura(raw_html, url)

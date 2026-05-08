@@ -27,18 +27,23 @@ from src.collection.core.extraction import extract_with_trafilatura
 logger = logging.getLogger(__name__)
 
 _RSS_CANDIDATES = [
+    "/feed/",
+    "/feed",
     "/rss.xml",
     "/rss",
-    "/feed",
-    "/local/rss.xml",
-    "/business/rss.xml",
-    "/features/rss.xml",
 ]
-_SITEMAP_CANDIDATES = ["/sitemap.xml", "/news-sitemap.xml", "/sitemap_index.xml"]
-_SECTION_PATHS = ["/", "/local/", "/business/", "/features/", "/editorial/"]
+_SITEMAP_CANDIDATES = ["/sitemap.xml", "/sitemap_index.xml", "/news-sitemap.xml"]
+# Homepage returns 403 — use /category/ paths to bypass
+_SECTION_PATHS = [
+    "/category/breaking-news/",
+    "/category/business/",
+    "/category/politics/",
+    "/category/local/",
+    "/category/features/",
+]
 
 _ARTICLE_URL_RE = re.compile(
-    r"https?://(?:www\.)?dailynews\.lk/\d{4}/\d{2}/\d{2}/[a-z0-9\-]+/[a-z0-9\-]+"
+    r"https?://(?:www\.)?dailynews\.lk/\d{4}/\d{2}/\d{2}/[a-z0-9\-]+/\d+/[a-z0-9\-]+"
 )
 
 
