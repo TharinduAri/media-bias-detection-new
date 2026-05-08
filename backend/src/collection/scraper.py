@@ -17,6 +17,14 @@ from .outlets import (
     EconomyNextOutlet,
     LBOOutlet,
     NewsfirstOutlet,
+    TheMorningOutlet,
+    ColomboGazetteOutlet,
+    TheIslandOutlet,
+    DailyMirrorOutlet,
+    ColomboPageOutlet,
+    DailyNewsOutlet,
+    SundayObserverOutlet,
+    NewsLKOutlet,
     BaseOutletScraper,
 )
 from src.collection.core.db import replay_fallback_articles, save_to_db
@@ -222,12 +230,20 @@ _OUTLETS: list[dict[str, str]] = [
 ]
 
 _OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
-    (("adaderana.lk",),                          AdaDeranaOutlet),
-    (("ceylontoday.lk",),                         CeylonTodayOutlet),
-    (("ft.lk", "dailyft.lk"),                     DailyFTOutlet),
+    (("adaderana.lk",),                            AdaDeranaOutlet),
+    (("ceylontoday.lk",),                          CeylonTodayOutlet),
+    (("ft.lk", "dailyft.lk"),                      DailyFTOutlet),
     (("economynext.com",),                         EconomyNextOutlet),
     (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
     (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
+    (("themorning.lk",),                           TheMorningOutlet),
+    (("colombogazette.com",),                      ColomboGazetteOutlet),
+    (("island.lk",),                               TheIslandOutlet),
+    (("dailymirror.lk",),                          DailyMirrorOutlet),
+    (("colombopage.com",),                         ColomboPageOutlet),
+    (("dailynews.lk",),                            DailyNewsOutlet),
+    (("sundayobserver.lk",),                       SundayObserverOutlet),
+    (("news.lk",),                                 NewsLKOutlet),
 ]
 
 
