@@ -9,6 +9,7 @@ const navLinks = [
     { href: "/", label: "Scraping Workspace" },
     { href: "/bias", label: "Bias Results" },
     { href: "/logs", label: "Scrape Logs" },
+    { href: "/api-explorer", label: "Exposed API" },
 ];
 
 function ThemeToggle() {
