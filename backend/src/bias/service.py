@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -51,6 +52,28 @@ __all__ = [
 
 DAYS_LOOKBACK = 28
 
+# ── Live run state (in-memory, cleared on each new run) ──────────────────────
+
+_run_lock = threading.Lock()
+_run_state: Dict[str, Any] = {"running": False, "logs": [], "status": "idle"}
+
+
+class _LiveLog(list):
+    """List whose .append() mirrors each entry into the global run state."""
+    def append(self, item: str) -> None:  # type: ignore[override]
+        super().append(item)
+        with _run_lock:
+            _run_state["logs"] = list(self)
+
+
+def get_run_state() -> Dict[str, Any]:
+    with _run_lock:
+        return {
+            "running": _run_state["running"],
+            "logs": list(_run_state["logs"]),
+            "status": _run_state["status"],
+        }
+
 
 def ensure_bias_tables(drop_first: bool = False) -> None:
     target_tables = [
@@ -87,10 +110,14 @@ def _run_bias_analysis_impl(
     external_clusters: List[TopicClusterSpec] | None,
 ) -> Dict[str, object]:
     started_at = datetime.utcnow()
-    run_logs: List[str] = ["Bias analysis started..."]
+    run_logs: _LiveLog = _LiveLog()
     run_status = "done"
     run_error: str | None = None
     cluster_source = "external" if external_clusters is not None else "internal"
+
+    with _run_lock:
+        _run_state.update({"running": True, "logs": [], "status": "running"})
+    run_logs.append("Bias analysis started...")
 
     try:
         ensure_bias_tables()
@@ -314,6 +341,10 @@ def _run_bias_analysis_impl(
         insert_topic_bsi_rows(db, topic_bsi_rows)
         db.commit()
 
+        run_logs.append("Done.")
+        with _run_lock:
+            _run_state.update({"running": False, "status": "done"})
+
         return {
             "status": "ok",
             "message": "Bias analysis completed.",
@@ -330,6 +361,8 @@ def _run_bias_analysis_impl(
         run_status = "error"
         run_error = str(exc)
         run_logs.append(f"Error: {run_error}")
+        with _run_lock:
+            _run_state.update({"running": False, "status": "error"})
         db.rollback()
         _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
         raise

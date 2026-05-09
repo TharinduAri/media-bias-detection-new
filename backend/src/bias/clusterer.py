@@ -60,6 +60,8 @@ def build_internal_clusters(
             "Merged single-outlet clusters: "
             f"{merge_stats['merged_clusters']} (articles merged: {merge_stats['merged_articles']})"
         )
+    # Re-run coherence refinement after merging to catch any oversized clusters
+    clusters = _refine_clusters_for_coherence(clusters, embeddings)
     return clusters
 
 
@@ -360,6 +362,9 @@ def _merge_single_outlet_clusters(
 
         if best_label is not None and best_similarity >= MERGE_SIMILARITY_THRESHOLD:
             target = cluster_items[best_label]
+            # Don't merge if it would push the target over the size cap
+            if len(target["indices"]) + len(item["indices"]) > MAX_CLUSTER_SIZE:
+                continue
             target_indices = target["indices"]
             target_indices.extend(item["indices"])
             target["outlets"] = target["outlets"].union(outlets)

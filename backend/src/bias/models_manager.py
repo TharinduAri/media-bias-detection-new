@@ -78,14 +78,14 @@ class BiasModelManager:
             raw_results = self.sentiment_pipeline(
                 all_chunks,
                 truncation=True,
-                max_length=SENTIMENT_CHUNK_SIZE,
+                max_length=512,
                 top_k=None,
             )
         except TypeError:
             raw_results = self.sentiment_pipeline(
                 all_chunks,
                 truncation=True,
-                max_length=SENTIMENT_CHUNK_SIZE,
+                max_length=512,
                 return_all_scores=True,
             )
 
@@ -173,7 +173,9 @@ class BiasModelManager:
     def _tokenize_into_chunks(self, text: str) -> List[str]:
         try:
             tokenizer = self.sentiment_pipeline.tokenizer
-            token_ids = tokenizer.encode(text, add_special_tokens=False)
+            # truncation=False + no max_length suppresses the "> model_max_length" warning;
+            # we want all tokens here so we can slice them into chunks ourselves.
+            token_ids = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=None)
             step = SENTIMENT_CHUNK_SIZE - SENTIMENT_CHUNK_OVERLAP
             chunks: List[str] = []
             for start in range(0, max(1, len(token_ids)), step):
@@ -183,9 +185,9 @@ class BiasModelManager:
                 chunks.append(tokenizer.decode(chunk_ids, skip_special_tokens=True))
                 if start + SENTIMENT_CHUNK_SIZE >= len(token_ids):
                     break
-            return chunks if chunks else [text[:1000]]
+            return chunks if chunks else [text[:400]]
         except Exception:
-            return [text[:1000]]
+            return [text[:400]]
 
     def _find_most_central_article_title(
         self,

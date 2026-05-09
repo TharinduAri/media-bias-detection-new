@@ -335,6 +335,18 @@ export async function deleteArticle(articleId: number): Promise<{ status: string
   return res.json();
 }
 
+export interface BiasRunStatus {
+  running: boolean;
+  logs: string[];
+  status: "idle" | "running" | "done" | "error";
+}
+
+export async function fetchBiasRunStatus(): Promise<BiasRunStatus> {
+  const res = await fetch(`${API_BASE_URL}/bias/run-status`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch run status");
+  return res.json();
+}
+
 export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
   const res = await fetch(`${API_BASE_URL}/bias/run`, {
     method: "POST",

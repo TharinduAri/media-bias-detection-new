@@ -10,6 +10,7 @@ from ..database import get_db
 from src.bias.service import (
     ensure_bias_tables,
     get_models,
+    get_run_state,
     run_bias_analysis,
     run_bias_analysis_with_clusters,
 )
@@ -40,6 +41,11 @@ def bias_health():
             "sentiment_model": None,
             "error": str(exc),
         }
+
+
+@router.get("/run-status")
+def bias_run_status():
+    return get_run_state()
 
 
 @router.post("/run", response_model=schemas.BiasRunResponse)
