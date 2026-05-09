@@ -78,7 +78,9 @@ def generate_labels_with_gemini(clusters: List[List[str]]) -> List[str | None]:
             print(f"[Gemini labels] No JSON array found in response: {raw[:300]}")
             return [None] * len(clusters)
 
-        labels = json.loads(raw[start : end + 1])
+        # Strip trailing commas (common LLM JSON quirk) before parsing
+        clean = re.sub(r",\s*([}\]])", r"\1", raw[start : end + 1])
+        labels = json.loads(clean)
         if not isinstance(labels, list):
             return [None] * len(clusters)
 

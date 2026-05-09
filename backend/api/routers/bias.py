@@ -12,6 +12,7 @@ from src.bias.service import (
     get_models,
     get_run_state,
     run_bias_analysis,
+    run_bias_analysis_fast,
     run_bias_analysis_with_clusters,
 )
 
@@ -48,10 +49,31 @@ def bias_run_status():
     return get_run_state()
 
 
+@router.get("/embedding-status")
+def embedding_status(db: Session = Depends(get_db)):
+    ensure_bias_tables()
+    count = db.query(func.count(models.ArticleEmbedding.id)).scalar() or 0
+    last_row = (
+        db.query(models.ArticleEmbedding.updated_at)
+        .order_by(models.ArticleEmbedding.updated_at.desc())
+        .first()
+    )
+    last_computed_at = last_row[0] if last_row else None
+    return {"count": count, "last_computed_at": last_computed_at}
+
+
 @router.post("/run", response_model=schemas.BiasRunResponse)
 def run_bias(db: Session = Depends(get_db)):
     try:
         return run_bias_analysis(db)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/run-fast", response_model=schemas.BiasRunResponse)
+def run_bias_fast(db: Session = Depends(get_db)):
+    try:
+        return run_bias_analysis_fast(db)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -180,6 +202,25 @@ def list_bias_logs(
         .all()
     )
     return rows
+
+
+@router.delete("/cleanup-results")
+def cleanup_bias_results_keep_embeddings(db: Session = Depends(get_db)):
+    """Clear all bias results but keep article embeddings."""
+    ensure_bias_tables()
+    deleted_articles = db.query(models.ArticleBiasScore).delete(synchronize_session=False)
+    deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
+    deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
+    db.query(models.OutletBiasSnapshot).delete(synchronize_session=False)
+    db.query(models.OutletTopicBSI).delete(synchronize_session=False)
+    db.commit()
+    return {
+        "status": "ok",
+        "message": "Bias results cleared. Embeddings preserved.",
+        "deleted_article_scores": deleted_articles,
+        "deleted_outlet_profiles": deleted_profiles,
+        "deleted_run_logs": deleted_logs,
+    }
 
 
 @router.delete("/cleanup")

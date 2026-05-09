@@ -90,7 +90,12 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
 
 
 def run_bias_analysis(db: Session) -> Dict[str, object]:
-    return _run_bias_analysis_impl(db=db, external_clusters=None)
+    return _run_bias_analysis_impl(db=db, external_clusters=None, skip_embedding=False)
+
+
+def run_bias_analysis_fast(db: Session) -> Dict[str, object]:
+    """Skip embedding step — use whatever is already saved in ArticleEmbedding."""
+    return _run_bias_analysis_impl(db=db, external_clusters=None, skip_embedding=True)
 
 
 def run_bias_analysis_with_clusters(
@@ -98,7 +103,7 @@ def run_bias_analysis_with_clusters(
     clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
 ) -> Dict[str, object]:
     normalized_clusters = normalize_external_clusters(clusters)
-    return _run_bias_analysis_impl(db=db, external_clusters=normalized_clusters)
+    return _run_bias_analysis_impl(db=db, external_clusters=normalized_clusters, skip_embedding=False)
 
 
 EMBEDDING_PROVIDER = "local"
@@ -108,6 +113,7 @@ EMBEDDING_MODEL_KEY = "mpnet_v2"
 def _run_bias_analysis_impl(
     db: Session,
     external_clusters: List[TopicClusterSpec] | None,
+    skip_embedding: bool = False,
 ) -> Dict[str, object]:
     started_at = datetime.utcnow()
     run_logs: _LiveLog = _LiveLog()
@@ -143,16 +149,20 @@ def _run_bias_analysis_impl(
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
         model_manager = get_models()
-        embeddings_saved = prepare_embeddings(
-            db=db,
-            recent_articles=recent_articles,
-            outlet_blocklist=outlet_blocklist,
-            embedding_provider=EMBEDDING_PROVIDER,
-            local_embedding_key=EMBEDDING_MODEL_KEY,
-            embedding_model=embedding_model,
-            model_manager=model_manager,
-            run_logs=run_logs,
-        )
+        if skip_embedding:
+            run_logs.append("Skipping embedding step — using saved embeddings.")
+            embeddings_saved = 0
+        else:
+            embeddings_saved = prepare_embeddings(
+                db=db,
+                recent_articles=recent_articles,
+                outlet_blocklist=outlet_blocklist,
+                embedding_provider=EMBEDDING_PROVIDER,
+                local_embedding_key=EMBEDDING_MODEL_KEY,
+                embedding_model=embedding_model,
+                model_manager=model_manager,
+                run_logs=run_logs,
+            )
         analysis_rows, embeddings = load_analysis_rows(
             db=db,
             recent_articles=recent_articles,
