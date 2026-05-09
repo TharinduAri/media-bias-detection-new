@@ -27,7 +27,7 @@ from .embedder import (
     load_analysis_rows,
     prepare_embeddings,
 )
-from .models_manager import SentimentResult, get_models
+from .models_manager import SentimentResult, generate_labels_with_gemini, get_models
 from .scorer import (
     COVERAGE_MAJORITY_THRESHOLD,
     build_profiles,
@@ -207,7 +207,28 @@ def _run_bias_analysis_impl(
         skipped_low_diversity = 0
         skipped_outlet_dominance = 0
 
-        for label, indices in clusters.items():
+        # Build a list of clusters that will actually be scored (same filters as the loop)
+        # so we can send one batched Gemini request for all their labels.
+        cluster_items = list(clusters.items())
+        scoreable = [
+            (label, indices)
+            for label, indices in cluster_items
+            if len({analysis_articles[idx].outlet for idx in indices}) >= MIN_TOPIC_OUTLETS
+            and not topic_overrides.get(label, {}).get("topic_label")
+        ]
+        cluster_title_batches = [
+            [analysis_articles[idx].title for idx in indices]
+            for _, indices in scoreable
+        ]
+        gemini_labels: List[str | None] = generate_labels_with_gemini(cluster_title_batches)
+        gemini_label_map: Dict[int, str | None] = {
+            label: gemini_labels[i] for i, (label, _) in enumerate(scoreable)
+        }
+        run_logs.append(
+            f"Gemini label batch: {sum(1 for v in gemini_labels if v)} / {len(gemini_labels)} succeeded."
+        )
+
+        for label, indices in cluster_items:
             cluster_outlets = {analysis_articles[idx].outlet for idx in indices}
             if len(cluster_outlets) < 2:
                 skipped_single_outlet += len(indices)
@@ -225,7 +246,10 @@ def _run_bias_analysis_impl(
             topic_key: str | None = topic_override.get("topic_key")
             topic_titles = [analysis_articles[idx].title for idx in indices]
             if not topic_label:
-                topic_label = model_manager.generate_topic_label(topic_titles, outlet_blocklist, cluster_vecs)
+                gemini_label = gemini_label_map.get(label)
+                topic_label = model_manager.generate_topic_label(
+                    topic_titles, outlet_blocklist, cluster_vecs, gemini_label=gemini_label
+                )
             if not topic_key:
                 topic_key = stable_topic_key(cluster_vecs, analysis_articles, indices)
 
