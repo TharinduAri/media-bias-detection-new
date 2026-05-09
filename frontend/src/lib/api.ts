@@ -359,6 +359,41 @@ export async function fetchBiasRunStatus(): Promise<BiasRunStatus> {
   return res.json();
 }
 
+export interface EmbeddingStatusData {
+  count: number;
+  last_computed_at: string | null;
+}
+
+export async function fetchEmbeddingStatus(): Promise<EmbeddingStatusData> {
+  const res = await fetch(`${API_BASE_URL}/bias/embedding-status`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch embedding status");
+  return res.json();
+}
+
+export async function triggerBiasAnalysisFast(): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run-fast`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to run fast bias analysis");
+  }
+  return res.json();
+}
+
+export async function triggerCleanupKeepEmbeddings(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/bias/cleanup-results`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to clear bias results");
+  }
+  return res.json();
+}
+
 export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
   const res = await fetch(`${API_BASE_URL}/bias/run`, {
     method: "POST",
