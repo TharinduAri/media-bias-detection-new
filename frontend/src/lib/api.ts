@@ -177,6 +177,18 @@ export interface AllOmissionsData {
   omissions: OutletOmissionData[];
 }
 
+export interface TopicCoverageData {
+  topic_key: string;
+  topic_label?: string | null;
+  covered_by: string[];
+  missed_by: string[];
+}
+
+export interface OmittedTopicsData {
+  last_run_at: string | null;
+  topics: TopicCoverageData[];
+}
+
 export interface AllProfilesData {
   last_run_at: string | null;
   profiles: OutletBiasProfileData[];
@@ -481,6 +493,12 @@ export async function fetchBiasScores(opts?: {
   if (opts?.run_id != null) params.set("run_id", String(opts.run_id));
   const res = await fetch(`${API_BASE_URL}/bias/scores?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch bias scores");
+  return res.json();
+}
+
+export async function fetchOmittedTopics(): Promise<OmittedTopicsData> {
+  const res = await fetch(`${API_BASE_URL}/bias/omitted-topics`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch omitted topics");
   return res.json();
 }
 

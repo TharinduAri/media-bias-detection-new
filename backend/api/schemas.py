@@ -214,3 +214,15 @@ class AllOmissionsResponse(BaseModel):
 class BiasScoresResponse(BaseModel):
     last_run_at: Optional[datetime] = None
     scores: List[OutletTopicBSIResponse]
+
+
+class TopicCoverageResponse(BaseModel):
+    topic_key: str
+    topic_label: Optional[str] = None
+    covered_by: List[str]
+    missed_by: List[str]
+
+
+class OmittedTopicsResponse(BaseModel):
+    last_run_at: Optional[datetime] = None
+    topics: List[TopicCoverageResponse]

@@ -281,6 +281,53 @@ def get_bias_scores(
     return schemas.BiasScoresResponse(last_run_at=_get_last_run_at(db), scores=rows)
 
 
+@router.get("/omitted-topics", response_model=schemas.OmittedTopicsResponse)
+def get_omitted_topics(db: Session = Depends(get_db)):
+    ensure_bias_tables()
+
+    # Use the latest run only
+    latest = (
+        db.query(func.max(models.OutletTopicBSI.run_id))
+        .scalar()
+    )
+    if latest is None:
+        return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at(db), topics=[])
+
+    rows = (
+        db.query(models.OutletTopicBSI)
+        .filter(models.OutletTopicBSI.run_id == latest)
+        .order_by(models.OutletTopicBSI.topic_label.asc(), models.OutletTopicBSI.outlet.asc())
+        .all()
+    )
+
+    # Group by topic, collecting which outlets covered vs missed
+    topic_map: dict = {}
+    for row in rows:
+        if row.topic_key not in topic_map:
+            topic_map[row.topic_key] = {
+                "topic_label": row.topic_label,
+                "covered_by": [],
+                "missed_by": [],
+            }
+        if row.coverage_present:
+            topic_map[row.topic_key]["covered_by"].append(row.outlet)
+        else:
+            topic_map[row.topic_key]["missed_by"].append(row.outlet)
+
+    topics = [
+        schemas.TopicCoverageResponse(
+            topic_key=topic_key,
+            topic_label=data["topic_label"],
+            covered_by=sorted(data["covered_by"]),
+            missed_by=sorted(data["missed_by"]),
+        )
+        for topic_key, data in topic_map.items()
+    ]
+    # Sort by most missed first so the most contentious topics surface at the top
+    topics.sort(key=lambda t: len(t.missed_by), reverse=True)
+    return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at(db), topics=topics)
+
+
 @router.get("/omissions", response_model=schemas.AllOmissionsResponse)
 def get_omissions(db: Session = Depends(get_db)):
     ensure_bias_tables()

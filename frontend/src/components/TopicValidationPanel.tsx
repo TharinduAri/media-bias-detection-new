@@ -338,8 +338,6 @@ export default function TopicValidationPanel() {
                   <tr className="bg-gray-50/50 dark:bg-gray-800/50 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     <th className="px-4 py-4">Article Title & Outlet</th>
                     <th className="px-4 py-4 text-center">Sentiment</th>
-                    <th className="px-4 py-4 text-center">Topic Mean</th>
-                    <th className="px-4 py-4 text-center">Calculation</th>
                     <th className="px-4 py-4 text-center">Bias Score</th>
                     <th className="px-4 py-4 text-right">Action</th>
                   </tr>
@@ -371,23 +369,13 @@ export default function TopicValidationPanel() {
                         </div>
                       </td>
                       <td className="px-4 py-4 text-center">
-                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                          {article.group_sentiment_mean.toFixed(3)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-4 text-center">
-                        <span className="text-xs font-mono text-gray-600 dark:text-gray-300">
-                          {article.sentiment_score.toFixed(3)} - {article.group_sentiment_mean.toFixed(3)} = {article.sentiment_bias > 0 ? "+" : ""}{article.sentiment_bias.toFixed(3)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-4 text-center">
                         <div className="flex flex-col items-center">
                           <span className={`text-sm ${getBiasColor(article.sentiment_bias)}`}>
                             {article.sentiment_bias > 0 ? '+' : ''}{article.sentiment_bias.toFixed(3)}
                           </span>
                           <div className="w-24 h-2 bg-gray-100 dark:bg-gray-800 rounded-full mt-1.5 overflow-hidden relative">
                             <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-300 dark:bg-gray-600" />
-                            <div 
+                            <div
                               className={`absolute top-0 h-full rounded-full ${article.sentiment_bias > 0 ? 'left-1/2 bg-emerald-500' : 'right-1/2 bg-rose-500'}`}
                               style={{ width: `${Math.min(Math.abs(article.sentiment_bias) * 100, 50)}%` }}
                             />
@@ -395,9 +383,9 @@ export default function TopicValidationPanel() {
                         </div>
                       </td>
                       <td className="px-4 py-4 text-right">
-                        <a 
-                          href={article.url} 
-                          target="_blank" 
+                        <a
+                          href={article.url}
+                          target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-all"
                         >
