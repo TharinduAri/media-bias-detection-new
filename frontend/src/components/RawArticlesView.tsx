@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { ArticleData, ArticleOutletCountData, deleteArticle, fetchArticles } from "@/lib/api";
+import { ArticleData, ArticleOutletCountData, deleteArticle, deleteOutletArticles, fetchArticles } from "@/lib/api";
 
 interface Props {
     outlets: string[];
@@ -21,6 +21,7 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
     const [search, setSearch] = useState("");
     const [expandedId, setExpandedId] = useState<number | null>(null);
     const [deletingId, setDeletingId] = useState<number | null>(null);
+    const [deletingOutlet, setDeletingOutlet] = useState(false);
     const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
     const loadArticles = useCallback(async (outlet: string, newOffset: number, replace: boolean) => {
@@ -70,6 +71,30 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
             });
         } finally {
             setDeletingId(null);
+        }
+    };
+
+    const handleDeleteOutlet = async () => {
+        if (!selectedOutlet) return;
+        const count = outletTotals.get(selectedOutlet) ?? 0;
+        const confirmed = window.confirm(`Delete all ${count} articles from "${selectedOutlet}"? This cannot be undone.`);
+        if (!confirmed) return;
+
+        setDeletingOutlet(true);
+        setMessage(null);
+        try {
+            const result = await deleteOutletArticles(selectedOutlet);
+            setArticles([]);
+            setOffset(0);
+            setHasMore(false);
+            setMessage({ text: result.message, type: "success" });
+        } catch (error) {
+            setMessage({
+                text: error instanceof Error ? error.message : "Failed to delete outlet articles.",
+                type: "error",
+            });
+        } finally {
+            setDeletingOutlet(false);
         }
     };
 
@@ -127,7 +152,7 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
                 )}
             </div>
 
-            {/* Count badge */}
+            {/* Count badge + outlet delete */}
             <div className="flex items-center justify-between">
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                     {outlets.length === 0
@@ -140,9 +165,20 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
                             </>
                         )}
                 </p>
-                {loading && (
-                    <span className="text-xs text-gray-400 dark:text-gray-500 animate-pulse">Loading…</span>
-                )}
+                <div className="flex items-center gap-3">
+                    {loading && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500 animate-pulse">Loading…</span>
+                    )}
+                    {selectedOutlet && (
+                        <button
+                            onClick={handleDeleteOutlet}
+                            disabled={deletingOutlet}
+                            className="px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                            {deletingOutlet ? "Deleting…" : `Delete all ${selectedOutlet} articles`}
+                        </button>
+                    )}
+                </div>
             </div>
 
             {message && (

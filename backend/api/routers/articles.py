@@ -79,6 +79,18 @@ def get_articles(
     return q.offset(offset).limit(limit).all()
 
 
+@router.delete("/outlet/{outlet_name}")
+def delete_outlet_articles(outlet_name: str, db: Session = Depends(get_db)):
+    """Delete all articles for a specific outlet."""
+    deleted = (
+        db.query(models.Article)
+        .filter(models.Article.outlet == outlet_name)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {"status": "ok", "message": f"Deleted {deleted} articles for {outlet_name}.", "deleted": deleted}
+
+
 @router.delete("/{article_id}")
 def delete_article(article_id: int, db: Session = Depends(get_db)):
     """Delete a single article by ID."""
