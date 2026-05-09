@@ -73,6 +73,10 @@ class ArticleBiasScoreResponse(BaseModel):
     coverage_majority: bool
     coverage_present: bool
     emphasis_bias: Optional[float] = None
+    dominant_outlet: bool = False
+    emphasis_length_bias: Optional[float] = None
+    emphasis_sentence_bias: Optional[float] = None
+    emphasis_entity_bias: Optional[float] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -95,6 +99,10 @@ class ArticleBiasWithArticleResponse(BaseModel):
     coverage_majority: bool
     coverage_present: bool
     emphasis_bias: Optional[float] = None
+    dominant_outlet: bool = False
+    emphasis_length_bias: Optional[float] = None
+    emphasis_sentence_bias: Optional[float] = None
+    emphasis_entity_bias: Optional[float] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -113,6 +121,10 @@ class OutletBiasProfileResponse(BaseModel):
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
     bsi_score: Optional[float] = None
+    bsi_confidence_low: Optional[float] = None
+    bsi_confidence_high: Optional[float] = None
+    article_count_per_topic_avg: Optional[float] = None
+    coverage_bias_rate_soft: Optional[float] = None
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -156,6 +168,10 @@ class OutletBiasSnapshotResponse(BaseModel):
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
     bsi_score: Optional[float] = None
+    bsi_confidence_low: Optional[float] = None
+    bsi_confidence_high: Optional[float] = None
+    article_count_per_topic_avg: Optional[float] = None
+    coverage_bias_rate_soft: Optional[float] = None
     omission_score: Optional[float] = None
     systematic_omission: Optional[bool] = None
     baseline_used_runs: Optional[int] = None
@@ -179,6 +195,7 @@ class OutletTopicBSIResponse(BaseModel):
     coverage_present: bool
     article_count: int
     bsi_score: float
+    label_source: Optional[str] = None
     snapshot_date: datetime
 
     model_config = ConfigDict(from_attributes=True)

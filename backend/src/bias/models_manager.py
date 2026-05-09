@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 import httpx
 import numpy as np
@@ -18,7 +21,10 @@ from .text_utils import _sanitize_topic_label, _strip_outlet_markers
 SENTIMENT_CHUNK_SIZE = 256
 SENTIMENT_CHUNK_OVERLAP = 32
 SENTIMENT_LEAD_WEIGHT = 2.0
-SENTIMENT_MODEL = os.getenv("BIAS_SENTIMENT_MODEL", "ProsusAI/finbert")
+SENTIMENT_MODEL = os.getenv(
+    "SENTIMENT_MODEL",
+    os.getenv("BIAS_SENTIMENT_MODEL", "cardiffnlp/twitter-roberta-base-sentiment-latest"),
+)
 
 LOCAL_EMBEDDING_MODEL_KEY = "mpnet_v2"
 GEMINI_TOPIC_MODEL = os.getenv("GEMINI_TOPIC_MODEL", "gemini-2.0-flash")
@@ -60,13 +66,17 @@ def generate_labels_with_gemini(clusters: List[List[str]]) -> List[str | None]:
                 resp = client.post(url, headers=headers, json=payload)
             if resp.status_code == 429:
                 wait = 10 * (2 ** attempt)  # 10s, 20s, 40s
-                print(f"[Gemini labels] 429 rate limit, retrying in {wait}s (attempt {attempt + 1}/3)...")
+                logger.warning("[Gemini labels] 429 rate limit, retrying in %ds (attempt %d/3)...", wait, attempt + 1)
                 time.sleep(wait)
                 continue
             break
 
         if resp is None or resp.status_code != 200:
-            print(f"[Gemini labels] HTTP {resp.status_code if resp else 'no response'}: {resp.text[:300] if resp else ''}")
+            logger.warning(
+                "[Gemini labels] HTTP %s: %s",
+                resp.status_code if resp else "no response",
+                resp.text[:300] if resp else "",
+            )
             return [None] * len(clusters)
 
         raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -75,7 +85,7 @@ def generate_labels_with_gemini(clusters: List[List[str]]) -> List[str | None]:
         start = raw.find("[")
         end = raw.rfind("]")
         if start == -1 or end == -1:
-            print(f"[Gemini labels] No JSON array found in response: {raw[:300]}")
+            logger.warning("[Gemini labels] No JSON array found in response: %s", raw[:300])
             return [None] * len(clusters)
 
         # Strip trailing commas (common LLM JSON quirk) before parsing
@@ -94,7 +104,7 @@ def generate_labels_with_gemini(clusters: List[List[str]]) -> List[str | None]:
         return result
 
     except Exception as exc:
-        print(f"[Gemini labels] Exception: {exc}")
+        logger.warning("[Gemini labels] Exception: %s", exc, exc_info=True)
         return [None] * len(clusters)
 LOCAL_EMBEDDING_MODEL_NAME = "all-mpnet-base-v2"
 
@@ -212,21 +222,25 @@ class BiasModelManager:
         outlet_blocklist: Set[str],
         cluster_embeddings: np.ndarray | None = None,
         gemini_label: str | None = None,
-    ) -> str:
+    ) -> Tuple[str, str]:
+        """Return (topic_label, label_source).
+
+        label_source: "gemini" | "centroid_title" | "keybert" | "first_title" | "fallback"
+        """
         if not titles:
-            return "Unknown Topic"
+            return "Unknown Topic", "fallback"
 
         try:
             cleaned_titles = [_strip_outlet_markers(t or "", outlet_blocklist) for t in titles]
             cleaned_titles = [t for t in cleaned_titles if t]
             if not cleaned_titles:
-                return "General News"
+                return "General News", "fallback"
 
             # 1. Use pre-fetched Gemini label if available
             if gemini_label:
                 sanitized = _sanitize_topic_label(gemini_label, outlet_blocklist)
                 if sanitized and len(sanitized.split()) >= 2:
-                    return sanitized.title()
+                    return sanitized.title(), "gemini"
 
             # 2. Fall back: most central article title
             if cluster_embeddings is not None and len(cluster_embeddings) == len(titles):
@@ -234,7 +248,7 @@ class BiasModelManager:
                 if central_title:
                     sanitized = _sanitize_topic_label(central_title, outlet_blocklist)
                     if sanitized and len(sanitized.split()) >= 3:
-                        return sanitized.title()
+                        return sanitized.title(), "centroid_title"
 
             # 3. Fall back: KeyBERT keyword extraction
             combined_text = " ".join(cleaned_titles)
@@ -248,14 +262,14 @@ class BiasModelManager:
                 for keyphrase, _ in keywords:
                     label = _sanitize_topic_label(str(keyphrase), outlet_blocklist)
                     if label:
-                        return label.title()
+                        return label.title(), "keybert"
 
             fallback = _sanitize_topic_label(cleaned_titles[0][:60].strip(), outlet_blocklist)
-            return (fallback or "General News").title()
+            return (fallback or "General News").title(), "first_title"
         except Exception:
             fallback_src = titles[0] if titles else ""
             fallback = _sanitize_topic_label(fallback_src[:60].strip(), outlet_blocklist)
-            return (fallback or "General News").title()
+            return (fallback or "General News").title(), "fallback"
 
     def _tokenize_into_chunks(self, text: str) -> List[str]:
         try:

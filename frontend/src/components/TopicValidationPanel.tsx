@@ -269,26 +269,9 @@ export default function TopicValidationPanel() {
                       Key: {selectedTopic}
                     </p>
                   </div>
-                  <div className="rounded-xl bg-white/90 dark:bg-gray-900/70 border border-indigo-100 dark:border-indigo-800 px-4 py-3">
-                    <p className="text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400">Bias Formula</p>
-                    <p className="text-sm md:text-base font-semibold text-gray-900 dark:text-white mt-1">
-                      Bias = Article Sentiment - Topic Mean
-                    </p>
-                    <p className="text-xs text-indigo-700 dark:text-indigo-300 mt-1">
-                      {topicMetrics.strongestOutlier.sentiment_score.toFixed(3)} - {topicMetrics.topicGroupMean.toFixed(3)} = {topicMetrics.strongestOutlier.sentiment_bias > 0 ? "+" : ""}{topicMetrics.strongestOutlier.sentiment_bias.toFixed(3)}
-                    </p>
-                  </div>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-                  <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-3">
-                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Topic Mean</p>
-                    <p className="text-xl font-bold text-gray-900 dark:text-white mt-1">{topicMetrics.topicGroupMean.toFixed(3)}</p>
-                  </div>
-                  <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-3">
-                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Avg |Bias|</p>
-                    <p className="text-xl font-bold text-gray-900 dark:text-white mt-1">{topicMetrics.avgAbsBias.toFixed(3)}</p>
-                  </div>
+                <div className="grid grid-cols-2 gap-3 mt-4">
                   <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-3">
                     <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Articles / Outlets</p>
                     <p className="text-xl font-bold text-gray-900 dark:text-white mt-1">{articles.length} / {topicMetrics.outlets}</p>
@@ -301,7 +284,7 @@ export default function TopicValidationPanel() {
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div className="mt-4">
                   <div className="rounded-xl border border-gray-100 dark:border-gray-800 bg-white/95 dark:bg-gray-900/70 p-3">
                     <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Bias Direction Split</p>
                     <div className="h-3 rounded-full overflow-hidden bg-gray-100 dark:bg-gray-800 flex">
@@ -310,22 +293,9 @@ export default function TopicValidationPanel() {
                       <div className="bg-rose-500" style={{ width: `${(topicMetrics.negativeBias / articles.length) * 100}%` }} />
                     </div>
                     <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
-                      <span>Above mean: {topicMetrics.positiveBias}</span>
-                      <span>Near mean: {topicMetrics.neutralBias}</span>
-                      <span>Below mean: {topicMetrics.negativeBias}</span>
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-gray-100 dark:border-gray-800 bg-white/95 dark:bg-gray-900/70 p-3">
-                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Outlet Deviation Ranking</p>
-                    <div className="space-y-2 max-h-28 overflow-y-auto pr-1">
-                      {topicMetrics.outletBias.map((item) => (
-                        <div key={item.outlet} className="flex items-center justify-between text-xs">
-                          <span className="font-medium text-gray-700 dark:text-gray-300">{item.outlet}</span>
-                          <span className={getBiasColor(item.avgBias)}>
-                            {item.avgBias > 0 ? "+" : ""}{item.avgBias.toFixed(3)} avg bias ({item.count})
-                          </span>
-                        </div>
-                      ))}
+                      <span>Positive sentiment: {topicMetrics.positiveBias}</span>
+                      <span>Neutral: {topicMetrics.neutralBias}</span>
+                      <span>Negative sentiment: {topicMetrics.negativeBias}</span>
                     </div>
                   </div>
                 </div>
