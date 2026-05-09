@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set, Tuple
 
+import httpx
 import numpy as np
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
@@ -18,6 +21,79 @@ SENTIMENT_LEAD_WEIGHT = 2.0
 SENTIMENT_MODEL = os.getenv("BIAS_SENTIMENT_MODEL", "ProsusAI/finbert")
 
 LOCAL_EMBEDDING_MODEL_KEY = "mpnet_v2"
+GEMINI_TOPIC_MODEL = os.getenv("GEMINI_TOPIC_MODEL", "gemini-2.0-flash")
+
+
+def generate_labels_with_gemini(clusters: List[List[str]]) -> List[str | None]:
+    """Send all topic clusters in one Gemini request and return a label per cluster.
+
+    Returns a list of the same length as `clusters`. Each entry is a label string
+    or None if Gemini failed for that position.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key or not clusters:
+        return [None] * len(clusters)
+
+    cluster_blocks = []
+    for i, titles in enumerate(clusters):
+        lines = "\n".join(f"  - {t}" for t in titles[:10])
+        cluster_blocks.append(f"Cluster {i + 1}:\n{lines}")
+
+    prompt = (
+        "Label each news cluster below with a concise 4-7 word topic (title case).\n\n"
+        + "\n\n".join(cluster_blocks)
+        + "\n\nRespond with ONLY a JSON array of strings, one per cluster, same order. "
+        "Example for 3 clusters: [\"Sri Lanka Budget Crisis\", \"Cricket World Cup\", \"IMF Debt Relief\"]"
+    )
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_TOPIC_MODEL}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+
+    try:
+        resp = None
+        for attempt in range(3):
+            with httpx.Client(timeout=90) as client:
+                resp = client.post(url, headers=headers, json=payload)
+            if resp.status_code == 429:
+                wait = 10 * (2 ** attempt)  # 10s, 20s, 40s
+                print(f"[Gemini labels] 429 rate limit, retrying in {wait}s (attempt {attempt + 1}/3)...")
+                time.sleep(wait)
+                continue
+            break
+
+        if resp is None or resp.status_code != 200:
+            print(f"[Gemini labels] HTTP {resp.status_code if resp else 'no response'}: {resp.text[:300] if resp else ''}")
+            return [None] * len(clusters)
+
+        raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+        # Extract JSON array robustly — find the first '[' and last ']'
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1:
+            print(f"[Gemini labels] No JSON array found in response: {raw[:300]}")
+            return [None] * len(clusters)
+
+        labels = json.loads(raw[start : end + 1])
+        if not isinstance(labels, list):
+            return [None] * len(clusters)
+
+        result: List[str | None] = []
+        for i in range(len(clusters)):
+            val = labels[i] if i < len(labels) else None
+            if val and str(val).strip():
+                result.append(str(val).strip().strip('"').strip("'"))
+            else:
+                result.append(None)
+        return result
+
+    except Exception as exc:
+        print(f"[Gemini labels] Exception: {exc}")
+        return [None] * len(clusters)
 LOCAL_EMBEDDING_MODEL_NAME = "all-mpnet-base-v2"
 
 
@@ -133,6 +209,7 @@ class BiasModelManager:
         titles: List[str],
         outlet_blocklist: Set[str],
         cluster_embeddings: np.ndarray | None = None,
+        gemini_label: str | None = None,
     ) -> str:
         if not titles:
             return "Unknown Topic"
@@ -143,6 +220,13 @@ class BiasModelManager:
             if not cleaned_titles:
                 return "General News"
 
+            # 1. Use pre-fetched Gemini label if available
+            if gemini_label:
+                sanitized = _sanitize_topic_label(gemini_label, outlet_blocklist)
+                if sanitized and len(sanitized.split()) >= 2:
+                    return sanitized.title()
+
+            # 2. Fall back: most central article title
             if cluster_embeddings is not None and len(cluster_embeddings) == len(titles):
                 central_title = self._find_most_central_article_title(cleaned_titles, cluster_embeddings)
                 if central_title:
@@ -150,6 +234,7 @@ class BiasModelManager:
                     if sanitized and len(sanitized.split()) >= 3:
                         return sanitized.title()
 
+            # 3. Fall back: KeyBERT keyword extraction
             combined_text = " ".join(cleaned_titles)
             keywords = self.kw_model.extract_keywords(
                 combined_text,
