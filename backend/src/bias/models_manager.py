@@ -17,20 +17,12 @@ SENTIMENT_CHUNK_OVERLAP = 32
 SENTIMENT_LEAD_WEIGHT = 2.0
 SENTIMENT_MODEL = os.getenv("BIAS_SENTIMENT_MODEL", "ProsusAI/finbert")
 
-LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
-    "minilm_l6": "all-MiniLM-L6-v2",
-    "minilm_l12": "all-MiniLM-L12-v2",
-    "mpnet_v2": "all-mpnet-base-v2",
-    "multilingual_minilm": "paraphrase-multilingual-MiniLM-L12-v2",
-}
+LOCAL_EMBEDDING_MODEL_KEY = "mpnet_v2"
+LOCAL_EMBEDDING_MODEL_NAME = "all-mpnet-base-v2"
 
 
 def _resolve_local_embedding_model(local_embedding_key: str) -> str:
-    key = (local_embedding_key or "minilm_l6").strip().lower()
-    if key not in LOCAL_EMBEDDING_MODELS:
-        supported = ", ".join(sorted(LOCAL_EMBEDDING_MODELS.keys()))
-        raise ValueError(f"Unsupported local embedding key '{local_embedding_key}'. Supported: {supported}")
-    return LOCAL_EMBEDDING_MODELS[key]
+    return LOCAL_EMBEDDING_MODEL_NAME
 
 
 @dataclass(frozen=True)
@@ -86,14 +78,14 @@ class BiasModelManager:
             raw_results = self.sentiment_pipeline(
                 all_chunks,
                 truncation=True,
-                max_length=SENTIMENT_CHUNK_SIZE,
+                max_length=512,
                 top_k=None,
             )
         except TypeError:
             raw_results = self.sentiment_pipeline(
                 all_chunks,
                 truncation=True,
-                max_length=SENTIMENT_CHUNK_SIZE,
+                max_length=512,
                 return_all_scores=True,
             )
 
@@ -181,7 +173,9 @@ class BiasModelManager:
     def _tokenize_into_chunks(self, text: str) -> List[str]:
         try:
             tokenizer = self.sentiment_pipeline.tokenizer
-            token_ids = tokenizer.encode(text, add_special_tokens=False)
+            # truncation=False + no max_length suppresses the "> model_max_length" warning;
+            # we want all tokens here so we can slice them into chunks ourselves.
+            token_ids = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=None)
             step = SENTIMENT_CHUNK_SIZE - SENTIMENT_CHUNK_OVERLAP
             chunks: List[str] = []
             for start in range(0, max(1, len(token_ids)), step):
@@ -191,9 +185,9 @@ class BiasModelManager:
                 chunks.append(tokenizer.decode(chunk_ids, skip_special_tokens=True))
                 if start + SENTIMENT_CHUNK_SIZE >= len(token_ids):
                     break
-            return chunks if chunks else [text[:1000]]
+            return chunks if chunks else [text[:400]]
         except Exception:
-            return [text[:1000]]
+            return [text[:400]]
 
     def _find_most_central_article_title(
         self,
@@ -250,10 +244,9 @@ class BiasModelManager:
 _MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
 
 
-def get_models(local_embedding_key: str = "mpnet_v2") -> BiasModelManager:
-    model_name = _resolve_local_embedding_model(local_embedding_key)
-    manager = _MODEL_MANAGERS.get(model_name)
+def get_models(local_embedding_key: str = LOCAL_EMBEDDING_MODEL_KEY) -> BiasModelManager:
+    manager = _MODEL_MANAGERS.get(LOCAL_EMBEDDING_MODEL_NAME)
     if manager is None:
-        manager = BiasModelManager(model_name)
-        _MODEL_MANAGERS[model_name] = manager
+        manager = BiasModelManager(LOCAL_EMBEDDING_MODEL_NAME)
+        _MODEL_MANAGERS[LOCAL_EMBEDDING_MODEL_NAME] = manager
     return manager

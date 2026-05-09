@@ -1,6 +1,5 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
@@ -11,6 +10,7 @@ from ..database import get_db
 from src.bias.service import (
     ensure_bias_tables,
     get_models,
+    get_run_state,
     run_bias_analysis,
     run_bias_analysis_with_clusters,
 )
@@ -43,21 +43,15 @@ def bias_health():
         }
 
 
+@router.get("/run-status")
+def bias_run_status():
+    return get_run_state()
+
+
 @router.post("/run", response_model=schemas.BiasRunResponse)
-def run_bias(
-    embedding_provider: Literal["local", "gemini"] = Query("local"),
-    local_embedding_key: str = Query(
-        "mpnet_v2",
-        description="Local model key when embedding_provider=local",
-    ),
-    db: Session = Depends(get_db),
-):
+def run_bias(db: Session = Depends(get_db)):
     try:
-        return run_bias_analysis(
-            db,
-            embedding_provider=embedding_provider,
-            local_embedding_key=local_embedding_key,
-        )
+        return run_bias_analysis(db)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -65,20 +59,10 @@ def run_bias(
 @router.post("/run-with-clusters", response_model=schemas.BiasRunResponse)
 def run_bias_with_clusters(
     payload: schemas.BiasRunWithClustersRequest,
-    embedding_provider: Literal["local", "gemini"] = Query("local"),
-    local_embedding_key: str = Query(
-        "mpnet_v2",
-        description="Local model key when embedding_provider=local",
-    ),
     db: Session = Depends(get_db),
 ):
     try:
-        return run_bias_analysis_with_clusters(
-            db=db,
-            clusters=payload.clusters,
-            embedding_provider=embedding_provider,
-            local_embedding_key=local_embedding_key,
-        )
+        return run_bias_analysis_with_clusters(db=db, clusters=payload.clusters)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -295,6 +279,53 @@ def get_bias_scores(
         q = q.filter(models.OutletTopicBSI.run_id == run_id)
     rows = q.order_by(models.OutletTopicBSI.bsi_score.desc()).all()
     return schemas.BiasScoresResponse(last_run_at=_get_last_run_at(db), scores=rows)
+
+
+@router.get("/omitted-topics", response_model=schemas.OmittedTopicsResponse)
+def get_omitted_topics(db: Session = Depends(get_db)):
+    ensure_bias_tables()
+
+    # Use the latest run only
+    latest = (
+        db.query(func.max(models.OutletTopicBSI.run_id))
+        .scalar()
+    )
+    if latest is None:
+        return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at(db), topics=[])
+
+    rows = (
+        db.query(models.OutletTopicBSI)
+        .filter(models.OutletTopicBSI.run_id == latest)
+        .order_by(models.OutletTopicBSI.topic_label.asc(), models.OutletTopicBSI.outlet.asc())
+        .all()
+    )
+
+    # Group by topic, collecting which outlets covered vs missed
+    topic_map: dict = {}
+    for row in rows:
+        if row.topic_key not in topic_map:
+            topic_map[row.topic_key] = {
+                "topic_label": row.topic_label,
+                "covered_by": [],
+                "missed_by": [],
+            }
+        if row.coverage_present:
+            topic_map[row.topic_key]["covered_by"].append(row.outlet)
+        else:
+            topic_map[row.topic_key]["missed_by"].append(row.outlet)
+
+    topics = [
+        schemas.TopicCoverageResponse(
+            topic_key=topic_key,
+            topic_label=data["topic_label"],
+            covered_by=sorted(data["covered_by"]),
+            missed_by=sorted(data["missed_by"]),
+        )
+        for topic_key, data in topic_map.items()
+    ]
+    # Sort by most missed first so the most contentious topics surface at the top
+    topics.sort(key=lambda t: len(t.missed_by), reverse=True)
+    return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at(db), topics=topics)
 
 
 @router.get("/omissions", response_model=schemas.AllOmissionsResponse)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -51,6 +52,28 @@ __all__ = [
 
 DAYS_LOOKBACK = 28
 
+# ── Live run state (in-memory, cleared on each new run) ──────────────────────
+
+_run_lock = threading.Lock()
+_run_state: Dict[str, Any] = {"running": False, "logs": [], "status": "idle"}
+
+
+class _LiveLog(list):
+    """List whose .append() mirrors each entry into the global run state."""
+    def append(self, item: str) -> None:  # type: ignore[override]
+        super().append(item)
+        with _run_lock:
+            _run_state["logs"] = list(self)
+
+
+def get_run_state() -> Dict[str, Any]:
+    with _run_lock:
+        return {
+            "running": _run_state["running"],
+            "logs": list(_run_state["logs"]),
+            "status": _run_state["status"],
+        }
+
 
 def ensure_bias_tables(drop_first: bool = False) -> None:
     target_tables = [
@@ -66,45 +89,35 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
     Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
 
 
-def run_bias_analysis(
-    db: Session,
-    embedding_provider: str = "local",
-    local_embedding_key: str = "mpnet_v2",
-) -> Dict[str, object]:
-    return _run_bias_analysis_impl(
-        db=db,
-        embedding_provider=embedding_provider,
-        local_embedding_key=local_embedding_key,
-        external_clusters=None,
-    )
+def run_bias_analysis(db: Session) -> Dict[str, object]:
+    return _run_bias_analysis_impl(db=db, external_clusters=None)
 
 
 def run_bias_analysis_with_clusters(
     db: Session,
     clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
-    embedding_provider: str = "local",
-    local_embedding_key: str = "mpnet_v2",
 ) -> Dict[str, object]:
     normalized_clusters = normalize_external_clusters(clusters)
-    return _run_bias_analysis_impl(
-        db=db,
-        embedding_provider=embedding_provider,
-        local_embedding_key=local_embedding_key,
-        external_clusters=normalized_clusters,
-    )
+    return _run_bias_analysis_impl(db=db, external_clusters=normalized_clusters)
+
+
+EMBEDDING_PROVIDER = "local"
+EMBEDDING_MODEL_KEY = "mpnet_v2"
 
 
 def _run_bias_analysis_impl(
     db: Session,
-    embedding_provider: str,
-    local_embedding_key: str,
     external_clusters: List[TopicClusterSpec] | None,
 ) -> Dict[str, object]:
     started_at = datetime.utcnow()
-    run_logs: List[str] = ["Bias analysis started..."]
+    run_logs: _LiveLog = _LiveLog()
     run_status = "done"
     run_error: str | None = None
     cluster_source = "external" if external_clusters is not None else "internal"
+
+    with _run_lock:
+        _run_state.update({"running": True, "logs": [], "status": "running"})
+    run_logs.append("Bias analysis started...")
 
     try:
         ensure_bias_tables()
@@ -112,16 +125,15 @@ def _run_bias_analysis_impl(
         since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
         recent_articles = _load_recent_articles(db, since)
 
-        embedding_model = _resolve_embedding_model_name(embedding_provider, local_embedding_key)
+        embedding_model = _resolve_embedding_model_name(EMBEDDING_PROVIDER, EMBEDDING_MODEL_KEY)
         run_logs.append(f"Cluster source: {cluster_source}")
-        run_logs.append(f"Embedding provider: {embedding_provider}")
         run_logs.append(f"Embedding model: {embedding_model}")
         run_logs.append(f"Recent articles found: {len(recent_articles)}")
 
         if not recent_articles:
             run_logs.append("No recent articles with enough text in the last 28 days.")
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(0, embedding_provider, embedding_model, cluster_source, external_clusters)
+            return _empty_result(0, embedding_model, cluster_source, external_clusters)
 
         outlets = [
             row[0]
@@ -130,13 +142,13 @@ def _run_bias_analysis_impl(
         run_logs.append(f"Outlets in window: {len(outlets)}")
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
-        model_manager = get_models(local_embedding_key)
+        model_manager = get_models()
         embeddings_saved = prepare_embeddings(
             db=db,
             recent_articles=recent_articles,
             outlet_blocklist=outlet_blocklist,
-            embedding_provider=embedding_provider,
-            local_embedding_key=local_embedding_key,
+            embedding_provider=EMBEDDING_PROVIDER,
+            local_embedding_key=EMBEDDING_MODEL_KEY,
             embedding_model=embedding_model,
             model_manager=model_manager,
             run_logs=run_logs,
@@ -145,7 +157,7 @@ def _run_bias_analysis_impl(
             db=db,
             recent_articles=recent_articles,
             outlet_blocklist=outlet_blocklist,
-            embedding_provider=embedding_provider,
+            embedding_provider=EMBEDDING_PROVIDER,
             embedding_model=embedding_model,
         )
         run_logs.append(f"Embeddings available for analysis: {len(analysis_rows)}")
@@ -153,7 +165,7 @@ def _run_bias_analysis_impl(
         if len(analysis_rows) < 2:
             run_logs.append("Not enough articles to form topic groups.")
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(embeddings_saved, embedding_provider, embedding_model, cluster_source, external_clusters)
+            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
 
         analysis_articles = [row["article"] for row in analysis_rows]
         if external_clusters is None:
@@ -173,7 +185,7 @@ def _run_bias_analysis_impl(
         if not clusters:
             run_logs.append("No valid topic groups available for scoring.")
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(embeddings_saved, embedding_provider, embedding_model, cluster_source, external_clusters)
+            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
 
         texts = [row["text"] for row in analysis_rows]
         sentiment_results = model_manager.analyze_sentiment(texts)
@@ -329,6 +341,10 @@ def _run_bias_analysis_impl(
         insert_topic_bsi_rows(db, topic_bsi_rows)
         db.commit()
 
+        run_logs.append("Done.")
+        with _run_lock:
+            _run_state.update({"running": False, "status": "done"})
+
         return {
             "status": "ok",
             "message": "Bias analysis completed.",
@@ -336,7 +352,7 @@ def _run_bias_analysis_impl(
             "topics_processed": topics_processed,
             "profiles_updated": profiles_updated,
             "embeddings_saved": embeddings_saved,
-            "embedding_provider": embedding_provider,
+            "embedding_provider": EMBEDDING_PROVIDER,
             "embedding_model": embedding_model,
             "cluster_source": cluster_source,
             "clusters_received": len(external_clusters) if external_clusters is not None else None,
@@ -345,6 +361,8 @@ def _run_bias_analysis_impl(
         run_status = "error"
         run_error = str(exc)
         run_logs.append(f"Error: {run_error}")
+        with _run_lock:
+            _run_state.update({"running": False, "status": "error"})
         db.rollback()
         _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
         raise
@@ -389,7 +407,6 @@ def _persist_run_log(
 
 def _empty_result(
     embeddings_saved: int,
-    embedding_provider: str,
     embedding_model: str,
     cluster_source: str,
     external_clusters: List[TopicClusterSpec] | None,
@@ -401,7 +418,7 @@ def _empty_result(
         "topics_processed": 0,
         "profiles_updated": 0,
         "embeddings_saved": embeddings_saved,
-        "embedding_provider": embedding_provider,
+        "embedding_provider": EMBEDDING_PROVIDER,
         "embedding_model": embedding_model,
         "cluster_source": cluster_source,
         "clusters_received": len(external_clusters) if external_clusters is not None else None,

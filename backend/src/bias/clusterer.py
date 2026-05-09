@@ -60,6 +60,8 @@ def build_internal_clusters(
             "Merged single-outlet clusters: "
             f"{merge_stats['merged_clusters']} (articles merged: {merge_stats['merged_articles']})"
         )
+    # Re-run coherence refinement after merging to catch any oversized clusters
+    clusters = _refine_clusters_for_coherence(clusters, embeddings)
     return clusters
 
 
@@ -211,9 +213,10 @@ def _adaptive_cluster_threshold(
     embeddings: np.ndarray,
     sample_size: int = 500,
 ) -> float:
-    """40th-percentile pairwise cosine distance, clamped to [0.30, 0.70].
+    """25th-percentile pairwise cosine distance, clamped to [0.38, 0.62].
 
     Adapts to corpus density: dense news cycles get a tighter threshold.
+    Lower percentile + tighter ceiling prevents enormous loose initial clusters.
     """
     n = len(embeddings)
     if n < 4:
@@ -230,8 +233,8 @@ def _adaptive_cluster_threshold(
     upper = np.triu_indices(len(sample), k=1)
     pairwise_dists = 1.0 - sim_matrix[upper]
 
-    threshold = float(np.percentile(pairwise_dists, 40.0))
-    return float(np.clip(threshold, 0.30, 0.70))
+    threshold = float(np.percentile(pairwise_dists, 25.0))
+    return float(np.clip(threshold, 0.38, 0.62))
 
 
 def _group_by_label(labels: np.ndarray) -> Dict[int, List[int]]:
@@ -262,7 +265,10 @@ def _split_cluster_if_needed(
 ) -> List[List[int]]:
     if len(indices) <= 2:
         return [indices]
-    if depth >= MAX_SPLIT_DEPTH:
+
+    # Absolute hard cap prevents infinite recursion regardless of size.
+    _ABS_MAX_DEPTH = MAX_SPLIT_DEPTH * 3
+    if depth >= _ABS_MAX_DEPTH:
         return [indices]
 
     cluster_vectors = embeddings[indices]
@@ -272,6 +278,12 @@ def _split_cluster_if_needed(
     mean_sim = float(np.mean(sims))
     too_large = len(indices) > MAX_CLUSTER_SIZE
     low_coherence = mean_sim < MIN_CLUSTER_CENTROID_SIMILARITY
+
+    # Honour the soft depth cap only when the cluster is already small enough;
+    # if it is still over the size limit keep splitting past MAX_SPLIT_DEPTH.
+    if depth >= MAX_SPLIT_DEPTH and not too_large:
+        return [indices]
+
     if not too_large and not low_coherence:
         return [indices]
 
@@ -360,6 +372,9 @@ def _merge_single_outlet_clusters(
 
         if best_label is not None and best_similarity >= MERGE_SIMILARITY_THRESHOLD:
             target = cluster_items[best_label]
+            # Don't merge if it would push the target over the size cap
+            if len(target["indices"]) + len(item["indices"]) > MAX_CLUSTER_SIZE:
+                continue
             target_indices = target["indices"]
             target_indices.extend(item["indices"])
             target["outlets"] = target["outlets"].union(outlets)

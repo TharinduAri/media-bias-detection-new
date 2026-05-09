@@ -177,6 +177,18 @@ export interface AllOmissionsData {
   omissions: OutletOmissionData[];
 }
 
+export interface TopicCoverageData {
+  topic_key: string;
+  topic_label?: string | null;
+  covered_by: string[];
+  missed_by: string[];
+}
+
+export interface OmittedTopicsData {
+  last_run_at: string | null;
+  topics: TopicCoverageData[];
+}
+
 export interface AllProfilesData {
   last_run_at: string | null;
   profiles: OutletBiasProfileData[];
@@ -309,6 +321,18 @@ export async function fetchArticles(outlet?: string, limit = 50, offset = 0): Pr
   return res.json();
 }
 
+export async function deleteOutletArticles(outlet: string): Promise<{ status: string; message: string; deleted: number }> {
+  const res = await fetch(`${API_BASE_URL}/articles/outlet/${encodeURIComponent(outlet)}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to delete outlet articles");
+  }
+  return res.json();
+}
+
 export async function deleteArticle(articleId: number): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API_BASE_URL}/articles/${articleId}`, {
     method: "DELETE",
@@ -323,15 +347,20 @@ export async function deleteArticle(articleId: number): Promise<{ status: string
   return res.json();
 }
 
-export async function triggerBiasAnalysis(
-  embeddingProvider: "local" | "gemini" = "local",
-  localEmbeddingKey: string = "mpnet_v2"
-): Promise<BiasRunResponse> {
-  const params = new URLSearchParams({
-    embedding_provider: embeddingProvider,
-    local_embedding_key: localEmbeddingKey,
-  });
-  const res = await fetch(`${API_BASE_URL}/bias/run?${params.toString()}`, {
+export interface BiasRunStatus {
+  running: boolean;
+  logs: string[];
+  status: "idle" | "running" | "done" | "error";
+}
+
+export async function fetchBiasRunStatus(): Promise<BiasRunStatus> {
+  const res = await fetch(`${API_BASE_URL}/bias/run-status`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch run status");
+  return res.json();
+}
+
+export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run`, {
     method: "POST",
     cache: "no-store",
   });
@@ -345,20 +374,11 @@ export async function triggerBiasAnalysis(
 }
 
 export async function triggerBiasAnalysisWithClusters(
-  clusters: BiasTopicClusterInput[],
-  embeddingProvider: "local" | "gemini" = "local",
-  localEmbeddingKey: string = "mpnet_v2"
+  clusters: BiasTopicClusterInput[]
 ): Promise<BiasRunResponse> {
-  const params = new URLSearchParams({
-    embedding_provider: embeddingProvider,
-    local_embedding_key: localEmbeddingKey,
-  });
-
-  const res = await fetch(`${API_BASE_URL}/bias/run-with-clusters?${params.toString()}`, {
+  const res = await fetch(`${API_BASE_URL}/bias/run-with-clusters`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clusters }),
     cache: "no-store",
   });
@@ -473,6 +493,12 @@ export async function fetchBiasScores(opts?: {
   if (opts?.run_id != null) params.set("run_id", String(opts.run_id));
   const res = await fetch(`${API_BASE_URL}/bias/scores?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch bias scores");
+  return res.json();
+}
+
+export async function fetchOmittedTopics(): Promise<OmittedTopicsData> {
+  const res = await fetch(`${API_BASE_URL}/bias/omitted-topics`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch omitted topics");
   return res.json();
 }
 

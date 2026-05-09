@@ -1,103 +1,148 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { triggerBiasAnalysis } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { fetchBiasRunStatus, triggerBiasAnalysis } from "@/lib/api";
 
-type EmbeddingProvider = "local" | "gemini";
-type LocalEmbeddingKey = "minilm_l6" | "minilm_l12" | "mpnet_v2" | "multilingual_minilm";
+type RunStatus = "idle" | "running" | "done" | "error";
 
 export default function BiasAnalysisButton() {
   const [isRunning, setIsRunning] = useState(false);
-  const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
-  const [provider, setProvider] = useState<EmbeddingProvider>("local");
-  const [localModel, setLocalModel] = useState<LocalEmbeddingKey>("mpnet_v2");
+  const [status, setStatus] = useState<RunStatus>("idle");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [showLogs, setShowLogs] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Auto-scroll log window to bottom when new lines arrive
   useEffect(() => {
-    const storedProvider = window.localStorage.getItem("bias_embedding_provider");
-    if (storedProvider === "local" || storedProvider === "gemini") {
-      setProvider(storedProvider);
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-    const storedModel = window.localStorage.getItem("bias_local_embedding_model");
-    if (
-      storedModel === "minilm_l6" ||
-      storedModel === "minilm_l12" ||
-      storedModel === "mpnet_v2" ||
-      storedModel === "multilingual_minilm"
-    ) {
-      setLocalModel(storedModel);
-    }
-  }, []);
+  }, [logs]);
 
-  const handleRun = async () => {
-    setIsRunning(true);
-    setMessage(null);
-    try {
-      const result = await triggerBiasAnalysis(provider, localModel);
-      setMessage({
-        text: `${result.message} Provider: ${result.embedding_provider}. Model: ${result.embedding_model}. Embeddings saved: ${result.embeddings_saved}. Topics: ${result.topics_processed}. Articles scored: ${result.processed_articles}.`,
-        type: "success",
-      });
-    } catch (error) {
-      setMessage({
-        text: error instanceof Error ? error.message : "Failed to run bias analysis.",
-        type: "error",
-      });
-    } finally {
-      setIsRunning(false);
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
   };
 
+  const startPolling = () => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const state = await fetchBiasRunStatus();
+        setLogs(state.logs);
+        setStatus(state.status);
+        if (!state.running) {
+          stopPolling();
+          setIsRunning(false);
+        }
+      } catch {
+        // ignore poll failures
+      }
+    }, 1000);
+  };
+
+  useEffect(() => () => stopPolling(), []);
+
+  const handleRun = async () => {
+    setIsRunning(true);
+    setStatus("running");
+    setLogs([]);
+    setShowLogs(true);
+
+    // Fire-and-forget — let polling track progress and detect completion
+    triggerBiasAnalysis().catch((error) => {
+      setStatus("error");
+      setLogs((prev) => [
+        ...prev,
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      ]);
+      stopPolling();
+      setIsRunning(false);
+    });
+
+    startPolling();
+  };
+
+  const statusColor: Record<RunStatus, string> = {
+    idle: "text-gray-400",
+    running: "text-amber-400",
+    done: "text-emerald-400",
+    error: "text-red-400",
+  };
+
+  const statusLabel: Record<RunStatus, string> = {
+    idle: "",
+    running: "Running…",
+    done: "Done",
+    error: "Error",
+  };
+
   return (
-    <div className="flex flex-col items-end gap-2">
+    <div className="flex flex-col items-end gap-2 w-full">
       <div className="flex items-center gap-2">
-        <label htmlFor="embedding-provider" className="text-xs text-gray-500 dark:text-gray-400">
-          Embeddings
-        </label>
-        <select
-          id="embedding-provider"
-          value={provider}
-          onChange={(event) => {
-            const next = event.target.value as EmbeddingProvider;
-            setProvider(next);
-            window.localStorage.setItem("bias_embedding_provider", next);
-          }}
-          disabled={isRunning}
-          className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-700 dark:text-slate-200"
-        >
-          <option value="local">Local</option>
-          <option value="gemini">Gemini</option>
-        </select>
-        {provider === "local" && (
-          <select
-            value={localModel}
-            onChange={(event) => {
-              const next = event.target.value as LocalEmbeddingKey;
-              setLocalModel(next);
-              window.localStorage.setItem("bias_local_embedding_model", next);
-            }}
-            disabled={isRunning}
-            className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-700 dark:text-slate-200"
+        {showLogs && (
+          <button
+            onClick={() => setShowLogs((v) => !v)}
+            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 underline"
           >
-            <option value="minilm_l6">all-MiniLM-L6-v2 (fast baseline)</option>
-            <option value="minilm_l12">all-MiniLM-L12-v2 (stronger MiniLM)</option>
-            <option value="mpnet_v2">all-mpnet-base-v2 (best quality local)</option>
-            <option value="multilingual_minilm">paraphrase-multilingual-MiniLM-L12-v2</option>
-          </select>
+            {showLogs ? "Hide logs" : "Show logs"}
+          </button>
         )}
-      </div>
-      <button
-        onClick={handleRun}
-        disabled={isRunning}
-        className="inline-flex items-center gap-2 rounded-full bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-70"
-      >
-        {isRunning ? "Running Bias Analysis..." : "Run Bias Analysis"}
-      </button>
-      {message && (
-        <p
-          className={`text-xs ${message.type === "success" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+        <button
+          onClick={handleRun}
+          disabled={isRunning}
+          className="inline-flex items-center gap-2 rounded-full bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-70"
         >
-          {message.text}
-        </p>
+          {isRunning ? "Running Bias Analysis…" : "Run Bias Analysis"}
+        </button>
+      </div>
+
+      {showLogs && (
+        <div className="w-full max-w-2xl rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-950 overflow-hidden text-left">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+            <div className="flex items-center gap-2">
+              {isRunning && (
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              )}
+              <span className={`text-xs font-medium ${statusColor[status]}`}>
+                {statusLabel[status] || "Bias Analysis Log"}
+              </span>
+            </div>
+            <button
+              onClick={() => setShowLogs(false)}
+              className="text-gray-600 hover:text-gray-300 text-xs"
+            >
+              ✕
+            </button>
+          </div>
+          <div
+            ref={logRef}
+            className="h-56 overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed text-gray-300 space-y-0.5"
+          >
+            {logs.length === 0 ? (
+              <span className="text-gray-600">Waiting for output…</span>
+            ) : (
+              logs.map((line, i) => (
+                <div
+                  key={i}
+                  className={
+                    line.startsWith("Error")
+                      ? "text-red-400"
+                      : line === "Done."
+                      ? "text-emerald-400"
+                      : "text-gray-300"
+                  }
+                >
+                  <span className="text-gray-600 select-none mr-2">{String(i + 1).padStart(2, "0")}</span>
+                  {line}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
