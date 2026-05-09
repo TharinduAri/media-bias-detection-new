@@ -323,15 +323,8 @@ export async function deleteArticle(articleId: number): Promise<{ status: string
   return res.json();
 }
 
-export async function triggerBiasAnalysis(
-  embeddingProvider: "local" | "gemini" = "local",
-  localEmbeddingKey: string = "mpnet_v2"
-): Promise<BiasRunResponse> {
-  const params = new URLSearchParams({
-    embedding_provider: embeddingProvider,
-    local_embedding_key: localEmbeddingKey,
-  });
-  const res = await fetch(`${API_BASE_URL}/bias/run?${params.toString()}`, {
+export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run`, {
     method: "POST",
     cache: "no-store",
   });
@@ -345,20 +338,11 @@ export async function triggerBiasAnalysis(
 }
 
 export async function triggerBiasAnalysisWithClusters(
-  clusters: BiasTopicClusterInput[],
-  embeddingProvider: "local" | "gemini" = "local",
-  localEmbeddingKey: string = "mpnet_v2"
+  clusters: BiasTopicClusterInput[]
 ): Promise<BiasRunResponse> {
-  const params = new URLSearchParams({
-    embedding_provider: embeddingProvider,
-    local_embedding_key: localEmbeddingKey,
-  });
-
-  const res = await fetch(`${API_BASE_URL}/bias/run-with-clusters?${params.toString()}`, {
+  const res = await fetch(`${API_BASE_URL}/bias/run-with-clusters`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clusters }),
     cache: "no-store",
   });

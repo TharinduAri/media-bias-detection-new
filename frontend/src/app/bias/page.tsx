@@ -1,17 +1,14 @@
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import BiasCleanupButton from "@/components/BiasCleanupButton";
-import BiasResultsPanel from "@/components/BiasResultsPanel";
 import TopicValidationPanel from "@/components/TopicValidationPanel";
-import BiasTrendPanel from "@/components/BiasTrendPanel";
-import BiasOmissionsPanel from "@/components/BiasOmissionsPanel";
-import { fetchArticleOutlets, fetchBiasTopics } from "@/lib/api";
+import OutletProfilesPanel from "@/components/OutletProfilesPanel";
+import { fetchBiasTopics } from "@/lib/api";
 
 export const metadata = {
   title: "Bias Results | Media Bias Control Center",
 };
 
 export default async function BiasPage() {
-  const outlets = await fetchArticleOutlets().catch(() => [] as string[]);
   const topics = await fetchBiasTopics().catch(() => []);
   const topicCount = topics.length;
 
@@ -43,9 +40,7 @@ export default async function BiasPage() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-12">
         <TopicValidationPanel />
-        <BiasResultsPanel outlets={outlets} />
-        <BiasTrendPanel outlets={outlets} />
-        <BiasOmissionsPanel />
+        <OutletProfilesPanel />
       </main>
     </div>
   );

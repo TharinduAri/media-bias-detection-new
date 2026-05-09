@@ -17,20 +17,12 @@ SENTIMENT_CHUNK_OVERLAP = 32
 SENTIMENT_LEAD_WEIGHT = 2.0
 SENTIMENT_MODEL = os.getenv("BIAS_SENTIMENT_MODEL", "ProsusAI/finbert")
 
-LOCAL_EMBEDDING_MODELS: Dict[str, str] = {
-    "minilm_l6": "all-MiniLM-L6-v2",
-    "minilm_l12": "all-MiniLM-L12-v2",
-    "mpnet_v2": "all-mpnet-base-v2",
-    "multilingual_minilm": "paraphrase-multilingual-MiniLM-L12-v2",
-}
+LOCAL_EMBEDDING_MODEL_KEY = "mpnet_v2"
+LOCAL_EMBEDDING_MODEL_NAME = "all-mpnet-base-v2"
 
 
 def _resolve_local_embedding_model(local_embedding_key: str) -> str:
-    key = (local_embedding_key or "minilm_l6").strip().lower()
-    if key not in LOCAL_EMBEDDING_MODELS:
-        supported = ", ".join(sorted(LOCAL_EMBEDDING_MODELS.keys()))
-        raise ValueError(f"Unsupported local embedding key '{local_embedding_key}'. Supported: {supported}")
-    return LOCAL_EMBEDDING_MODELS[key]
+    return LOCAL_EMBEDDING_MODEL_NAME
 
 
 @dataclass(frozen=True)
@@ -250,10 +242,9 @@ class BiasModelManager:
 _MODEL_MANAGERS: Dict[str, BiasModelManager] = {}
 
 
-def get_models(local_embedding_key: str = "mpnet_v2") -> BiasModelManager:
-    model_name = _resolve_local_embedding_model(local_embedding_key)
-    manager = _MODEL_MANAGERS.get(model_name)
+def get_models(local_embedding_key: str = LOCAL_EMBEDDING_MODEL_KEY) -> BiasModelManager:
+    manager = _MODEL_MANAGERS.get(LOCAL_EMBEDDING_MODEL_NAME)
     if manager is None:
-        manager = BiasModelManager(model_name)
-        _MODEL_MANAGERS[model_name] = manager
+        manager = BiasModelManager(LOCAL_EMBEDDING_MODEL_NAME)
+        _MODEL_MANAGERS[LOCAL_EMBEDDING_MODEL_NAME] = manager
     return manager

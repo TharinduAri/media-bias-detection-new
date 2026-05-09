@@ -66,38 +66,24 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
     Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
 
 
-def run_bias_analysis(
-    db: Session,
-    embedding_provider: str = "local",
-    local_embedding_key: str = "mpnet_v2",
-) -> Dict[str, object]:
-    return _run_bias_analysis_impl(
-        db=db,
-        embedding_provider=embedding_provider,
-        local_embedding_key=local_embedding_key,
-        external_clusters=None,
-    )
+def run_bias_analysis(db: Session) -> Dict[str, object]:
+    return _run_bias_analysis_impl(db=db, external_clusters=None)
 
 
 def run_bias_analysis_with_clusters(
     db: Session,
     clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
-    embedding_provider: str = "local",
-    local_embedding_key: str = "mpnet_v2",
 ) -> Dict[str, object]:
     normalized_clusters = normalize_external_clusters(clusters)
-    return _run_bias_analysis_impl(
-        db=db,
-        embedding_provider=embedding_provider,
-        local_embedding_key=local_embedding_key,
-        external_clusters=normalized_clusters,
-    )
+    return _run_bias_analysis_impl(db=db, external_clusters=normalized_clusters)
+
+
+EMBEDDING_PROVIDER = "local"
+EMBEDDING_MODEL_KEY = "mpnet_v2"
 
 
 def _run_bias_analysis_impl(
     db: Session,
-    embedding_provider: str,
-    local_embedding_key: str,
     external_clusters: List[TopicClusterSpec] | None,
 ) -> Dict[str, object]:
     started_at = datetime.utcnow()
@@ -112,16 +98,15 @@ def _run_bias_analysis_impl(
         since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
         recent_articles = _load_recent_articles(db, since)
 
-        embedding_model = _resolve_embedding_model_name(embedding_provider, local_embedding_key)
+        embedding_model = _resolve_embedding_model_name(EMBEDDING_PROVIDER, EMBEDDING_MODEL_KEY)
         run_logs.append(f"Cluster source: {cluster_source}")
-        run_logs.append(f"Embedding provider: {embedding_provider}")
         run_logs.append(f"Embedding model: {embedding_model}")
         run_logs.append(f"Recent articles found: {len(recent_articles)}")
 
         if not recent_articles:
             run_logs.append("No recent articles with enough text in the last 28 days.")
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(0, embedding_provider, embedding_model, cluster_source, external_clusters)
+            return _empty_result(0, embedding_model, cluster_source, external_clusters)
 
         outlets = [
             row[0]
@@ -130,13 +115,13 @@ def _run_bias_analysis_impl(
         run_logs.append(f"Outlets in window: {len(outlets)}")
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
-        model_manager = get_models(local_embedding_key)
+        model_manager = get_models()
         embeddings_saved = prepare_embeddings(
             db=db,
             recent_articles=recent_articles,
             outlet_blocklist=outlet_blocklist,
-            embedding_provider=embedding_provider,
-            local_embedding_key=local_embedding_key,
+            embedding_provider=EMBEDDING_PROVIDER,
+            local_embedding_key=EMBEDDING_MODEL_KEY,
             embedding_model=embedding_model,
             model_manager=model_manager,
             run_logs=run_logs,
@@ -145,7 +130,7 @@ def _run_bias_analysis_impl(
             db=db,
             recent_articles=recent_articles,
             outlet_blocklist=outlet_blocklist,
-            embedding_provider=embedding_provider,
+            embedding_provider=EMBEDDING_PROVIDER,
             embedding_model=embedding_model,
         )
         run_logs.append(f"Embeddings available for analysis: {len(analysis_rows)}")
@@ -153,7 +138,7 @@ def _run_bias_analysis_impl(
         if len(analysis_rows) < 2:
             run_logs.append("Not enough articles to form topic groups.")
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(embeddings_saved, embedding_provider, embedding_model, cluster_source, external_clusters)
+            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
 
         analysis_articles = [row["article"] for row in analysis_rows]
         if external_clusters is None:
@@ -173,7 +158,7 @@ def _run_bias_analysis_impl(
         if not clusters:
             run_logs.append("No valid topic groups available for scoring.")
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(embeddings_saved, embedding_provider, embedding_model, cluster_source, external_clusters)
+            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
 
         texts = [row["text"] for row in analysis_rows]
         sentiment_results = model_manager.analyze_sentiment(texts)
@@ -336,7 +321,7 @@ def _run_bias_analysis_impl(
             "topics_processed": topics_processed,
             "profiles_updated": profiles_updated,
             "embeddings_saved": embeddings_saved,
-            "embedding_provider": embedding_provider,
+            "embedding_provider": EMBEDDING_PROVIDER,
             "embedding_model": embedding_model,
             "cluster_source": cluster_source,
             "clusters_received": len(external_clusters) if external_clusters is not None else None,
@@ -389,7 +374,6 @@ def _persist_run_log(
 
 def _empty_result(
     embeddings_saved: int,
-    embedding_provider: str,
     embedding_model: str,
     cluster_source: str,
     external_clusters: List[TopicClusterSpec] | None,
@@ -401,7 +385,7 @@ def _empty_result(
         "topics_processed": 0,
         "profiles_updated": 0,
         "embeddings_saved": embeddings_saved,
-        "embedding_provider": embedding_provider,
+        "embedding_provider": EMBEDDING_PROVIDER,
         "embedding_model": embedding_model,
         "cluster_source": cluster_source,
         "clusters_received": len(external_clusters) if external_clusters is not None else None,

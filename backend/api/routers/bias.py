@@ -1,6 +1,5 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
@@ -44,20 +43,9 @@ def bias_health():
 
 
 @router.post("/run", response_model=schemas.BiasRunResponse)
-def run_bias(
-    embedding_provider: Literal["local", "gemini"] = Query("local"),
-    local_embedding_key: str = Query(
-        "mpnet_v2",
-        description="Local model key when embedding_provider=local",
-    ),
-    db: Session = Depends(get_db),
-):
+def run_bias(db: Session = Depends(get_db)):
     try:
-        return run_bias_analysis(
-            db,
-            embedding_provider=embedding_provider,
-            local_embedding_key=local_embedding_key,
-        )
+        return run_bias_analysis(db)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -65,20 +53,10 @@ def run_bias(
 @router.post("/run-with-clusters", response_model=schemas.BiasRunResponse)
 def run_bias_with_clusters(
     payload: schemas.BiasRunWithClustersRequest,
-    embedding_provider: Literal["local", "gemini"] = Query("local"),
-    local_embedding_key: str = Query(
-        "mpnet_v2",
-        description="Local model key when embedding_provider=local",
-    ),
     db: Session = Depends(get_db),
 ):
     try:
-        return run_bias_analysis_with_clusters(
-            db=db,
-            clusters=payload.clusters,
-            embedding_provider=embedding_provider,
-            local_embedding_key=local_embedding_key,
-        )
+        return run_bias_analysis_with_clusters(db=db, clusters=payload.clusters)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
