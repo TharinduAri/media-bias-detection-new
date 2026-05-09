@@ -114,16 +114,17 @@ def compare_outlets(payload: schemas.OutletCompareRequest, db: Session = Depends
     return profiles
 
 
-@router.get("/articles/{article_id}", response_model=schemas.ArticleBiasScoreResponse)
+@router.get("/articles/{article_id}", response_model=list[schemas.ArticleBiasScoreResponse])
 def get_article_bias(article_id: int, db: Session = Depends(get_db)):
-    score = (
+    """Return all bias scores for an article (one per topic it was assigned to)."""
+    scores = (
         db.query(models.ArticleBiasScore)
         .filter(models.ArticleBiasScore.article_id == article_id)
-        .first()
+        .all()
     )
-    if not score:
+    if not scores:
         raise HTTPException(status_code=404, detail="Bias score not found for article")
-    return score
+    return scores
 
 
 @router.get("/topics", response_model=list[schemas.TopicSummaryResponse])

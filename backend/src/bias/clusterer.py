@@ -1,3 +1,36 @@
+"""
+Agglomerative clustering for article topic grouping.
+
+Threshold Reference (tuning notes):
+  CLUSTER_DISTANCE_THRESHOLD = 0.52 (cosine)
+    Adaptive mode (default) uses the 25th-percentile of pairwise distances, clamped to
+    [0.38, 0.62]. Lower = tighter clusters / more topics; higher = looser / fewer topics.
+    Override with env BIAS_CLUSTER_DISTANCE_THRESHOLD.
+
+  MAX_CLUSTER_SIZE = 18
+    Hard cap on articles per cluster before recursive splitting.
+    Range: [10, 30]. Larger allows broader topics; smaller keeps themes sharp.
+
+  MIN_CLUSTER_CENTROID_SIMILARITY = 0.42
+    Mean cosine similarity to centroid below which a cluster is split.
+    Range: [0.30, 0.60]. Lower = accept looser topic groups.
+
+  MAX_SPLIT_DEPTH = 3
+    Maximum recursion depth for coherence-based splitting.
+    Range: [2, 5]. Deeper = finer topics; shallower = fewer, broader topics.
+
+  MIN_TOPIC_OUTLETS = 3 (env: BIAS_MIN_TOPIC_OUTLETS, often overridden to 2)
+    Minimum distinct outlets for a cluster to be scored.
+    Range: [2, 5]. Higher = more robust bias signal; lower = more topics scored.
+
+  MAX_DOMINANT_OUTLET_SHARE = 0.6
+    Fraction above which one outlet "dominates" a cluster.
+    Range: [0.50, 0.75]. Lower = more aggressive splitting of dominated clusters.
+
+  MERGE_SIMILARITY_THRESHOLD = 0.5
+    Centroid similarity for merging single-outlet clusters into multi-outlet ones.
+    Range: [0.35, 0.65]. Lower = more aggressive merging.
+"""
 from __future__ import annotations
 
 import hashlib

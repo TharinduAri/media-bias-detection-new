@@ -45,9 +45,13 @@ class ArticleBiasScore(Base):
     coverage_majority = Column(Boolean, nullable=False, default=False)
     coverage_present = Column(Boolean, nullable=False, default=True)
     emphasis_bias = Column(Float, nullable=True)
+    dominant_outlet = Column(Boolean, nullable=False, default=False)
+    emphasis_length_bias = Column(Float, nullable=True)
+    emphasis_sentence_bias = Column(Float, nullable=True)
+    emphasis_entity_bias = Column(Float, nullable=True)
     created_at = Column(DateTime, nullable=False)
 
-    __table_args__ = (UniqueConstraint("article_id", name="uq_article_bias_article_id"),)
+    __table_args__ = (UniqueConstraint("article_id", "topic_key", name="uq_article_bias_article_topic"),)
 
 
 class ArticleEmbedding(Base):
@@ -89,6 +93,10 @@ class OutletBiasProfile(Base):
     missed_topics = Column(JSON, nullable=True)
     emphasis_bias_avg = Column(Float, nullable=True)
     bsi_score = Column(Float, nullable=True)
+    bsi_confidence_low = Column(Float, nullable=True)
+    bsi_confidence_high = Column(Float, nullable=True)
+    article_count_per_topic_avg = Column(Float, nullable=True)
+    coverage_bias_rate_soft = Column(Float, nullable=True)
     updated_at = Column(DateTime, nullable=False)
 
 
@@ -109,6 +117,10 @@ class OutletBiasSnapshot(Base):
     missed_topics = Column(JSON, nullable=True)
     emphasis_bias_avg = Column(Float, nullable=True)
     bsi_score = Column(Float, nullable=True)
+    bsi_confidence_low = Column(Float, nullable=True)
+    bsi_confidence_high = Column(Float, nullable=True)
+    article_count_per_topic_avg = Column(Float, nullable=True)
+    coverage_bias_rate_soft = Column(Float, nullable=True)
     omission_score = Column(Float, nullable=True)
     systematic_omission = Column(Boolean, nullable=True)
     baseline_used_runs = Column(Integer, nullable=True)
@@ -127,6 +139,7 @@ class OutletTopicBSI(Base):
     coverage_present = Column(Boolean, nullable=False, default=True)
     article_count = Column(Integer, nullable=False)
     bsi_score = Column(Float, nullable=False)
+    label_source = Column(String(32), nullable=True)
     snapshot_date = Column(DateTime, nullable=False)
 
     __table_args__ = (

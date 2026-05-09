@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Set
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
-from sqlalchemy import distinct, func
+from sqlalchemy import distinct, func, text
 from sqlalchemy.orm import Session
 
 from api import models
@@ -32,6 +35,7 @@ from .scorer import (
     COVERAGE_MAJORITY_THRESHOLD,
     build_profiles,
     compute_emphasis_bias,
+    compute_soft_coverage_score,
     init_outlet_stats,
     insert_snapshots_with_omission,
     insert_topic_bsi_rows,
@@ -75,6 +79,49 @@ def get_run_state() -> Dict[str, Any]:
         }
 
 
+def _run_schema_migrations() -> None:
+    """Idempotent ADD COLUMN migrations executed on every startup."""
+    migrations = [
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS dominant_outlet BOOLEAN DEFAULT FALSE',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_length_bias FLOAT',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_sentence_bias FLOAT',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_entity_bias FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS article_count_per_topic_avg FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS coverage_bias_rate_soft FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS article_count_per_topic_avg FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS coverage_bias_rate_soft FLOAT',
+        'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS label_source VARCHAR(32)',
+    ]
+    with db_manager.engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+    _migrate_article_bias_unique_constraint()
+
+
+def _migrate_article_bias_unique_constraint() -> None:
+    """Replace single-column unique constraint with composite (article_id, topic_key)."""
+    with db_manager.engine.connect() as conn:
+        try:
+            conn.execute(text(
+                'ALTER TABLE "ArticleBiasScore" DROP CONSTRAINT IF EXISTS uq_article_bias_article_id'
+            ))
+            conn.execute(text(
+                'ALTER TABLE "ArticleBiasScore" ADD CONSTRAINT uq_article_bias_article_topic '
+                'UNIQUE (article_id, topic_key)'
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+
 def ensure_bias_tables(drop_first: bool = False) -> None:
     target_tables = [
         models.ArticleBiasScore.__table__,
@@ -86,6 +133,7 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
     ]
     if drop_first:
         Base.metadata.drop_all(bind=db_manager.engine, tables=target_tables)
+    _run_schema_migrations()
     Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
 
 
@@ -212,6 +260,12 @@ def _run_bias_analysis_impl(
         article_scores: List[models.ArticleBiasScore] = []
         outlet_stats = init_outlet_stats(outlets)
         outlet_topic_stats: Dict[str, Dict[str, Dict[str, Any]]] = {o: {} for o in outlets}
+        outlet_score_arrays: Dict[str, Dict[str, List[float]]] = {
+            o: {"sentiment_bias": [], "emphasis_bias": []} for o in outlets
+        }
+        # Collect per-cluster outlet sets and mainstream weights for soft coverage computation
+        scored_cluster_outlet_sets: List[Set[str]] = []
+        scored_cluster_mainstream_weights: List[float] = []
         topics_processed = 0
         skipped_single_outlet = 0
         skipped_low_diversity = 0
@@ -249,17 +303,29 @@ def _run_bias_analysis_impl(
 
             dom_share = dominant_outlet_share(indices, analysis_articles)
             is_dominated = dom_share > MAX_DOMINANT_OUTLET_SHARE
+            dominant_outlet_name: str | None = (
+                get_dominant_outlet(indices, analysis_articles) if is_dominated else None
+            )
+
+            # Skip clusters that are wholly single-outlet after dominance check
+            if is_dominated and dominant_outlet_name:
+                minority_idxs = [i for i in indices if analysis_articles[i].outlet != dominant_outlet_name]
+                if not minority_idxs:
+                    skipped_outlet_dominance += len(indices)
+                    continue
 
             cluster_vecs = embeddings[np.array(indices)]
             topic_override = topic_overrides.get(label, {})
-            topic_label: str | None = topic_override.get("topic_label")
+            topic_label: str = topic_override.get("topic_label") or ""
+            label_source: str = "override"
             topic_key: str | None = topic_override.get("topic_key")
             topic_titles = [analysis_articles[idx].title for idx in indices]
             if not topic_label:
                 gemini_label = gemini_label_map.get(label)
-                topic_label = model_manager.generate_topic_label(
+                topic_label, label_source = model_manager.generate_topic_label(
                     topic_titles, outlet_blocklist, cluster_vecs, gemini_label=gemini_label
                 )
+                logger.info("Topic '%s' label_source=%s", topic_label, label_source)
             if not topic_key:
                 topic_key = stable_topic_key(cluster_vecs, analysis_articles, indices)
 
@@ -267,10 +333,19 @@ def _run_bias_analysis_impl(
             coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
             emphasis_biases = compute_emphasis_bias(indices, analysis_articles)
 
-            def _record(idx: int, bias_score: float, ref_mean: float) -> None:
+            # Always use group mean as reference for all outlets (Fix 2 — symmetric baseline)
+            group_mean = float(np.mean([sentiment_results[idx].score for idx in indices]))
+            topics_processed += 1
+
+            def _record(idx: int, is_dominant_outlet: bool = False) -> None:
                 article = analysis_articles[idx]
                 sentiment = sentiment_results[idx]
-                emph = emphasis_biases.get(idx, 0.0)
+                emph_dict = emphasis_biases.get(idx, {
+                    "emphasis_bias": 0.0, "length_bias": 0.0,
+                    "sentence_bias": 0.0, "entity_bias": 0.0,
+                })
+                bias_score = float(sentiment.score - group_mean)
+                emph = float(emph_dict["emphasis_bias"])
                 article_scores.append(
                     models.ArticleBiasScore(
                         article_id=article.id,
@@ -280,11 +355,15 @@ def _run_bias_analysis_impl(
                         sentiment_label=sentiment.label,
                         sentiment_score=float(sentiment.score),
                         sentiment_confidence=float(sentiment.confidence),
-                        sentiment_bias=float(bias_score),
-                        group_sentiment_mean=float(ref_mean),
+                        sentiment_bias=bias_score,
+                        group_sentiment_mean=group_mean,
                         coverage_majority=coverage_majority,
                         coverage_present=True,
-                        emphasis_bias=float(emph),
+                        emphasis_bias=emph,
+                        dominant_outlet=is_dominant_outlet,
+                        emphasis_length_bias=float(emph_dict["length_bias"]),
+                        emphasis_sentence_bias=float(emph_dict["sentence_bias"]),
+                        emphasis_entity_bias=float(emph_dict["entity_bias"]),
                         created_at=now,
                     )
                 )
@@ -293,43 +372,31 @@ def _run_bias_analysis_impl(
                 stats["sentiment_score_sum"] += sentiment.score
                 stats["emphasis_bias_sum"] += emph
                 stats["articles_scored"] += 1
+                outlet_score_arrays[article.outlet]["sentiment_bias"].append(bias_score)
+                outlet_score_arrays[article.outlet]["emphasis_bias"].append(emph)
                 t = outlet_topic_stats[article.outlet].setdefault(topic_key, {
                     "sentiment_bias_sum": 0.0,
                     "emphasis_bias_sum": 0.0,
                     "article_count": 0,
                     "topic_label": topic_label,
+                    "label_source": label_source,
                     "coverage_present": True,
                 })
                 t["sentiment_bias_sum"] += bias_score
                 t["emphasis_bias_sum"] += emph
                 t["article_count"] += 1
 
-            if is_dominated:
-                dominant_outlet = get_dominant_outlet(indices, analysis_articles)
-                dominant_idxs = [i for i in indices if analysis_articles[i].outlet == dominant_outlet]
-                minority_idxs = [i for i in indices if analysis_articles[i].outlet != dominant_outlet]
-
-                if not minority_idxs:
-                    skipped_outlet_dominance += len(indices)
-                    continue
-
-                dominant_mean = float(np.mean([sentiment_results[i].score for i in dominant_idxs]))
-                all_mean = float(np.mean([sentiment_results[i].score for i in indices]))
-
-                topics_processed += 1
-                for idx in minority_idxs:
-                    _record(idx, sentiment_results[idx].score - dominant_mean, dominant_mean)
-                for idx in dominant_idxs:
-                    _record(idx, sentiment_results[idx].score - all_mean, all_mean)
-            else:
-                topics_processed += 1
-                group_scores = [sentiment_results[idx].score for idx in indices]
-                group_mean = float(np.mean(group_scores)) if group_scores else 0.0
-                for idx in indices:
-                    _record(idx, sentiment_results[idx].score - group_mean, group_mean)
+            for idx in indices:
+                is_dom = (dominant_outlet_name is not None and
+                          analysis_articles[idx].outlet == dominant_outlet_name)
+                _record(idx, is_dominant_outlet=is_dom)
 
             for outlet in cluster_outlets:
                 outlet_stats[outlet]["topics_covered"] += 1
+
+            # Track cluster for soft coverage score computation
+            scored_cluster_outlet_sets.append(cluster_outlets)
+            scored_cluster_mainstream_weights.append(coverage_ratio)
 
             if coverage_majority:
                 for outlet in outlets:
@@ -343,8 +410,17 @@ def _run_bias_analysis_impl(
                             "emphasis_bias_sum": 0.0,
                             "article_count": 0,
                             "topic_label": topic_label,
+                            "label_source": label_source,
                             "coverage_present": False,
                         })["coverage_present"] = False
+
+        # Compute soft coverage score per outlet
+        outlet_soft_coverage: Dict[str, float] = {
+            outlet: compute_soft_coverage_score(
+                outlet, outlets, scored_cluster_outlet_sets, scored_cluster_mainstream_weights
+            )
+            for outlet in outlets
+        }
 
         if article_scores:
             article_scores_saved = upsert_article_bias_scores(db, article_scores)
@@ -367,11 +443,19 @@ def _run_bias_analysis_impl(
         )
         run_id = log_row.id
 
-        profiles, topic_bsi_rows = build_profiles(outlet_stats, outlet_topic_stats, now, run_id)
+        profiles, topic_bsi_rows = build_profiles(
+            outlet_stats, outlet_topic_stats, now, run_id,
+            outlet_score_arrays=outlet_score_arrays,
+            outlet_soft_coverage=outlet_soft_coverage,
+        )
         profiles_updated = upsert_profiles(db, profiles)
         run_logs.append(f"Outlet profiles updated: {profiles_updated}")
 
-        insert_snapshots_with_omission(db, profiles, run_id, now)
+        cross_outlet_mean = (
+            float(np.mean([p.coverage_bias_rate for p in profiles])) if profiles else 0.0
+        )
+        insert_snapshots_with_omission(db, profiles, run_id, now,
+                                       cross_outlet_coverage_mean=cross_outlet_mean)
         insert_topic_bsi_rows(db, topic_bsi_rows)
         db.commit()
 
