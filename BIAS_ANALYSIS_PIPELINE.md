@@ -219,7 +219,8 @@ After article scoring:
 2. coverage gap is computed:
    - `coverage_bias_rate = coverage_missing_majority / topics_considered`
 3. composite BSI is computed from sentiment, coverage, and emphasis components.
-4. outlet profile rows are upserted into `OutletBiasProfile`.
+4. source trust and misinformation-risk scores are derived from BSI, model confidence, evidence volume, and coverage quality.
+5. outlet profile rows are upserted into `OutletBiasProfile`.
 
 ## 21. Topic-Level Outlet BSI Rows
 
@@ -236,7 +237,8 @@ A snapshot is inserted per outlet into `OutletBiasSnapshot` for the run:
 
 1. includes profile metrics and BSI
 2. links to run ID and snapshot timestamp
-3. provides a historical series for trend analysis
+3. includes source trust and misinformation-risk scores
+4. provides a historical series for trend analysis
 
 ## 23. Omission Intelligence Layer
 

@@ -121,6 +121,8 @@ class OutletBiasProfileResponse(BaseModel):
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
     bsi_score: Optional[float] = None
+    source_trust_score: Optional[float] = None
+    misinformation_risk_score: Optional[float] = None
     bsi_confidence_low: Optional[float] = None
     bsi_confidence_high: Optional[float] = None
     article_count_per_topic_avg: Optional[float] = None
@@ -168,6 +170,8 @@ class OutletBiasSnapshotResponse(BaseModel):
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
     bsi_score: Optional[float] = None
+    source_trust_score: Optional[float] = None
+    misinformation_risk_score: Optional[float] = None
     bsi_confidence_low: Optional[float] = None
     bsi_confidence_high: Optional[float] = None
     article_count_per_topic_avg: Optional[float] = None

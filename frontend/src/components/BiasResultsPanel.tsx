@@ -45,6 +45,20 @@ function emphasisColor(v: number): string {
   return v > 0 ? "text-blue-600 dark:text-blue-400" : "text-orange-500 dark:text-orange-400";
 }
 
+function trustColor(score: number | null | undefined): string {
+  if (score == null) return "text-slate-400";
+  if (score >= 0.75) return "text-emerald-600 dark:text-emerald-400";
+  if (score >= 0.55) return "text-amber-600 dark:text-amber-400";
+  return "text-rose-600 dark:text-rose-400";
+}
+
+function trustBarColor(score: number | null | undefined): string {
+  if (score == null) return "bg-slate-300";
+  if (score >= 0.75) return "bg-emerald-400";
+  if (score >= 0.55) return "bg-amber-400";
+  return "bg-rose-400";
+}
+
 // Centered bar: left half = negative (rose), right half = positive (emerald)
 function BiasBar({ value, maxAbs = 1 }: { value: number; maxAbs?: number }) {
   const half = 50;
@@ -153,6 +167,28 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
+          {/* Source trust */}
+          {profile.source_trust_score != null && (
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Source Trust</p>
+                <p className={`text-lg font-bold mt-0.5 ${trustColor(profile.source_trust_score)}`}>
+                  {Math.round(profile.source_trust_score * 100)}
+                  <span className="text-sm font-semibold">/100</span>
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Risk: {Math.round((profile.misinformation_risk_score ?? 1 - profile.source_trust_score) * 100)}/100
+                </p>
+              </div>
+              <div className="w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${trustBarColor(profile.source_trust_score)}`}
+                  style={{ width: `${Math.min(profile.source_trust_score * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* BSI Score */}
           {profile.bsi_score != null && (
             <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
@@ -244,6 +280,7 @@ function CompareCard({ outlets }: { outlets: string[] }) {
   const maxCovBias = results.length ? Math.max(...results.map((r) => r.coverage_bias_rate), 0.01) : 1;
   const hasEmphasis = results.some((r) => r.emphasis_bias_avg != null);
   const maxEmph = hasEmphasis ? Math.max(...results.map((r) => Math.abs(r.emphasis_bias_avg ?? 0)), 0.01) : 1;
+  const hasTrust = results.some((r) => r.source_trust_score != null);
 
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-4">
@@ -327,6 +364,27 @@ function CompareCard({ outlets }: { outlets: string[] }) {
                     </div>
                     <span className={`text-xs font-bold w-12 text-right ${emphasisColor(v)}`}>
                       {v > 0 ? "+" : ""}{Math.round(v * 100)}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Source trust */}
+          {hasTrust && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Source Trust (higher is better)</p>
+              {results.map((r) => {
+                const v = r.source_trust_score ?? 0;
+                return (
+                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
+                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
+                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${trustBarColor(v)}`} style={{ width: `${v * 100}%` }} />
+                    </div>
+                    <span className={`text-xs font-bold w-12 text-right ${trustColor(v)}`}>
+                      {Math.round(v * 100)}
                     </span>
                   </div>
                 );

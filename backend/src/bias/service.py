@@ -88,10 +88,14 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_entity_bias FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS source_trust_score FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS misinformation_risk_score FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS article_count_per_topic_avg FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS coverage_bias_rate_soft FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS source_trust_score FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS misinformation_risk_score FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS article_count_per_topic_avg FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS coverage_bias_rate_soft FLOAT',
         'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS label_source VARCHAR(32)',
@@ -370,6 +374,7 @@ def _run_bias_analysis_impl(
                 stats = outlet_stats[article.outlet]
                 stats["sentiment_bias_sum"] += bias_score
                 stats["sentiment_score_sum"] += sentiment.score
+                stats["sentiment_confidence_sum"] += sentiment.confidence
                 stats["emphasis_bias_sum"] += emph
                 stats["articles_scored"] += 1
                 outlet_score_arrays[article.outlet]["sentiment_bias"].append(bias_score)
