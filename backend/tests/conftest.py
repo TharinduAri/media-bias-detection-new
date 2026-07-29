@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.database import Base
 from api import models
+from src.bias.entity_extraction import EntityPreparationStats
 from src.bias.models_manager import SentimentResult
 
 
@@ -75,6 +76,13 @@ def mock_model_manager():
 
     manager.analyze_sentiment.side_effect = fixed_sentiment
     manager.embed.side_effect = fixed_embed
+    manager.prepare_article_targets.return_value = EntityPreparationStats(
+        articles_scanned=30,
+        articles_with_sentences_added=0,
+        articles_with_entities_added=0,
+        sentences_scanned=0,
+        entities_extracted=0,
+    )
     manager.generate_topic_label.return_value = ("Test Topic", "gemini")
     manager.kw_model = MagicMock()
     return manager

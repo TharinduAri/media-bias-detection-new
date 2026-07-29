@@ -28,6 +28,17 @@ This document describes the complete internal bias-analysis pipeline from the mo
 
 ## 4. Analysis Text Construction
 
+Before embeddings or sentiment inference, missing article preprocessing data is
+backfilled:
+
+1. Missing `Article.sentences` values are derived from `clean_text` or `text`.
+2. Articles without `Article.entities` are scanned by the English
+   `dslim/bert-base-NER` token-classification model.
+3. `PER`, `ORG`, `LOC`, and `MISC` predictions are normalized to `PERSON`,
+   `ORG`, `GPE`, and `NORP`, deduplicated, and persisted.
+4. Existing sentence and entity data is reused, so NER is normally a one-time
+   cost per article.
+
 For each selected article, the pipeline builds a model-ready analysis string:
 
 1. Start from title, sentence snippets, entities, and body text.
@@ -132,19 +143,25 @@ This supports cross-run comparability.
    - configuration key: `SENTIMENT_MODEL`
    - default path: `backend/models/deberta-v3-newsmtsc`
    - training entry point: `backend/train_newsmtsc.py`
-2. Each article is converted into target-sentence pairs:
+2. Missing targets are extracted by the English NER model:
+   - model: `NER_MODEL` (default `dslim/bert-base-NER`)
+   - inference batch size: `NER_BATCH_SIZE` (default `32`)
+   - body sentence limit: `NER_SENTENCE_LIMIT` (default `48`)
+   - confidence threshold: `NER_MIN_SCORE` (default `0.65`)
+   - long-text overlap: `NER_STRIDE` (default `32`)
+3. Each article is converted into target-sentence pairs:
    - targets come from `Article.entities`
    - supported entity types are `PERSON`, `ORG`, `GPE`, and `NORP`
    - targets are matched conservatively against the title and stored sentences
-3. DeBERTa receives the target and sentence as a text pair and returns negative,
+4. DeBERTa receives the target and sentence as a text pair and returns negative,
    neutral, and positive probabilities.
-4. Target occurrences are aggregated by entity and saved to
+5. Target occurrences are aggregated by entity and saved to
    `Article.entity_sentiments`.
-5. Entity outputs are aggregated into the existing article-level fields:
+6. Entity outputs are aggregated into the existing article-level fields:
    - final label (`positive`, `neutral`, `negative`)
    - confidence
    - scalar sentiment score in `[-1, 1]`
-6. Articles without a matched target are recorded as neutral with zero
+7. Articles without a matched target are recorded as neutral with zero
    confidence, explicitly indicating that no target evidence was available.
 
 Train the local checkpoint from the backend directory:

@@ -16,12 +16,15 @@ def _make_mock_manager() -> BiasModelManager:
         patch("src.bias.models_manager.SentenceTransformer"),
         patch("src.bias.models_manager.AutoTokenizer"),
         patch("src.bias.models_manager.AutoModelForSequenceClassification") as model_cls,
+        patch("src.bias.models_manager.AutoModelForTokenClassification"),
+        patch("src.bias.models_manager.pipeline") as pipeline_mock,
         patch("src.bias.models_manager.KeyBERT"),
         patch("src.bias.models_manager.SENTIMENT_MODEL", "test-target-model"),
     ):
         model = MagicMock()
         model.config.id2label = {0: "negative", 1: "neutral", 2: "positive"}
         model_cls.from_pretrained.return_value = model
+        pipeline_mock.return_value = MagicMock(return_value=[])
         manager = BiasModelManager("all-mpnet-base-v2")
 
     manager.id2label = {0: "negative", 1: "neutral", 2: "positive"}
@@ -113,3 +116,75 @@ def test_generate_topic_label_keybert_fallback():
     )
     assert source in ("keybert", "first_title", "centroid_title", "fallback")
     assert isinstance(label, str)
+
+
+def test_prepare_article_targets_extracts_missing_entities_and_sentences():
+    manager = _make_mock_manager()
+    article = MagicMock()
+    article.title = "President Silva met Acme officials."
+    article.clean_text = "President Silva praised Acme. Markets responded."
+    article.text = ""
+    article.sentences = None
+    article.entities = None
+    manager.ner_pipeline.return_value = [
+        [
+            {
+                "entity_group": "PER",
+                "score": 0.99,
+                "start": 10,
+                "end": 15,
+            },
+            {
+                "entity_group": "ORG",
+                "score": 0.98,
+                "start": 20,
+                "end": 24,
+            },
+        ],
+        [
+            {
+                "entity_group": "PER",
+                "score": 0.97,
+                "start": 10,
+                "end": 15,
+            },
+            {
+                "entity_group": "ORG",
+                "score": 0.96,
+                "start": 24,
+                "end": 28,
+            },
+        ],
+        [],
+    ]
+
+    stats = manager.prepare_article_targets([article])
+
+    assert article.sentences == [
+        "President Silva praised Acme.",
+        "Markets responded.",
+    ]
+    assert {(item["text"], item["label"]) for item in article.entities} == {
+        ("Silva", "PERSON"),
+        ("Acme", "ORG"),
+    }
+    assert stats.articles_with_sentences_added == 1
+    assert stats.articles_with_entities_added == 1
+    assert stats.sentences_scanned == 3
+    assert stats.entities_extracted == 2
+
+
+def test_prepare_article_targets_reuses_existing_entities():
+    manager = _make_mock_manager()
+    article = MagicMock()
+    article.title = "Acme reports earnings"
+    article.clean_text = "Acme reported higher earnings."
+    article.text = ""
+    article.sentences = ["Acme reported higher earnings."]
+    article.entities = [{"text": "Acme", "label": "ORG"}]
+
+    stats = manager.prepare_article_targets([article])
+
+    manager.ner_pipeline.assert_not_called()
+    assert stats.sentences_scanned == 0
+    assert stats.articles_with_entities_added == 0

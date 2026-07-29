@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
+from .entity_extraction import split_article_sentences
+
 
 TARGET_ENTITY_LABELS = {"PERSON", "ORG", "GPE", "NORP"}
 MAX_SENTENCES_PER_ARTICLE = 80
@@ -36,24 +38,7 @@ def _article_sentences(article: Any) -> List[tuple[str, bool]]:
     if title:
         result.append((title, True))
 
-    stored = getattr(article, "sentences", None)
-    if isinstance(stored, list):
-        body_sentences = [
-            value.strip()
-            for value in stored
-            if isinstance(value, str) and value.strip()
-        ]
-    else:
-        source = str(
-            getattr(article, "clean_text", "")
-            or getattr(article, "text", "")
-            or ""
-        ).strip()
-        body_sentences = [
-            value.strip()
-            for value in re.split(r"(?<=[.!?])\s+", source)
-            if value.strip()
-        ]
+    body_sentences = split_article_sentences(article, MAX_SENTENCES_PER_ARTICLE)
 
     seen = {title.casefold()} if title else set()
     for sentence in body_sentences[:MAX_SENTENCES_PER_ARTICLE]:

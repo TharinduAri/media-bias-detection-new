@@ -34,12 +34,14 @@ def bias_health():
             "status": "ok",
             "default_local_embedding_model": manager.embedding_model_name,
             "sentiment_model": manager.sentiment_model_name,
+            "ner_model": manager.ner_model_name,
         }
     except Exception as exc:
         return {
             "status": "error",
             "default_local_embedding_model": None,
             "sentiment_model": None,
+            "ner_model": None,
             "error": str(exc),
         }
 

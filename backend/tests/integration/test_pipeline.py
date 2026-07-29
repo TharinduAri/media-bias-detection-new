@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 from api import models
 from api.database import Base
+from src.bias.entity_extraction import EntityPreparationStats
 from src.bias.models_manager import SentimentResult
 
 
@@ -115,6 +116,13 @@ def test_full_pipeline_end_to_end(db_session, seeded_articles):
     mock_manager = MagicMock()
     mock_manager.embedding_model_name = "all-mpnet-base-v2"
     mock_manager.sentiment_model_name = "models/deberta-v3-newsmtsc"
+    mock_manager.prepare_article_targets.return_value = EntityPreparationStats(
+        articles_scanned=n,
+        articles_with_sentences_added=0,
+        articles_with_entities_added=0,
+        sentences_scanned=0,
+        entities_extracted=0,
+    )
     mock_manager.analyze_sentiment.return_value = [
         SentimentResult(
             label="neutral",
@@ -179,6 +187,13 @@ def test_bsi_scores_in_valid_range(db_session, seeded_articles):
     mock_manager = MagicMock()
     mock_manager.embedding_model_name = "all-mpnet-base-v2"
     mock_manager.sentiment_model_name = "models/deberta-v3-newsmtsc"
+    mock_manager.prepare_article_targets.return_value = EntityPreparationStats(
+        articles_scanned=n,
+        articles_with_sentences_added=0,
+        articles_with_entities_added=0,
+        sentences_scanned=0,
+        entities_extracted=0,
+    )
     mock_manager.analyze_sentiment.return_value = [
         SentimentResult(label="neutral", confidence=0.8, score=0.1) for _ in range(n)
     ]

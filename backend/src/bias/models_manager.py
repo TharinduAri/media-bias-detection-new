@@ -15,8 +15,19 @@ import numpy as np
 import torch
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoModelForTokenClassification,
+    AutoTokenizer,
+    pipeline,
+)
 
+from .entity_extraction import (
+    EntityPreparationStats,
+    merge_article_entities,
+    normalize_ner_predictions,
+    split_article_sentences,
+)
 from .target_sentiment import (
     SentimentResult,
     TargetPair,
@@ -30,6 +41,11 @@ DEFAULT_SENTIMENT_MODEL = BACKEND_ROOT / "models" / "deberta-v3-newsmtsc"
 SENTIMENT_MODEL = os.getenv("SENTIMENT_MODEL", str(DEFAULT_SENTIMENT_MODEL))
 SENTIMENT_BATCH_SIZE = max(1, int(os.getenv("SENTIMENT_BATCH_SIZE", "16")))
 SENTIMENT_MAX_LENGTH = max(64, int(os.getenv("SENTIMENT_MAX_LENGTH", "256")))
+NER_MODEL = os.getenv("NER_MODEL", "dslim/bert-base-NER")
+NER_BATCH_SIZE = max(1, int(os.getenv("NER_BATCH_SIZE", "32")))
+NER_SENTENCE_LIMIT = max(1, int(os.getenv("NER_SENTENCE_LIMIT", "48")))
+NER_MIN_SCORE = min(max(float(os.getenv("NER_MIN_SCORE", "0.65")), 0.0), 1.0)
+NER_STRIDE = max(0, int(os.getenv("NER_STRIDE", "32")))
 
 LOCAL_EMBEDDING_MODEL_KEY = "mpnet_v2"
 GEMINI_TOPIC_MODEL = os.getenv("GEMINI_TOPIC_MODEL", "gemini-2.0-flash")
@@ -155,6 +171,18 @@ class BiasModelManager:
             )
         self.sentiment_model.to(self.sentiment_device)
         self.sentiment_model.eval()
+        self.ner_model_name = NER_MODEL
+        self.ner_tokenizer = AutoTokenizer.from_pretrained(self.ner_model_name)
+        self.ner_model = AutoModelForTokenClassification.from_pretrained(
+            self.ner_model_name
+        )
+        self.ner_pipeline = pipeline(
+            "ner",
+            model=self.ner_model,
+            tokenizer=self.ner_tokenizer,
+            aggregation_strategy="simple",
+            device=self.sentiment_device,
+        )
         self.kw_model = KeyBERT(model=self.embedding_model)
 
     def embed(self, texts: List[str]) -> np.ndarray:
@@ -171,6 +199,71 @@ class BiasModelManager:
 
         distributions = self._predict_target_pairs(pairs)
         return aggregate_target_sentiment(len(articles), pairs, distributions)
+
+    def prepare_article_targets(
+        self,
+        articles: List[Any],
+    ) -> EntityPreparationStats:
+        sentence_updates = 0
+        work_items: List[tuple[int, str]] = []
+        extracted_by_article: Dict[int, List[List[Dict[str, Any]]]] = {}
+
+        for article_index, article in enumerate(articles):
+            sentences = split_article_sentences(article, limit=80)
+            stored_sentences = getattr(article, "sentences", None)
+            if not isinstance(stored_sentences, list) or not stored_sentences:
+                article.sentences = sentences
+                if sentences:
+                    sentence_updates += 1
+
+            stored_entities = getattr(article, "entities", None)
+            if isinstance(stored_entities, list) and stored_entities:
+                continue
+
+            candidate_texts: List[str] = []
+            title = str(getattr(article, "title", "") or "").strip()
+            if title:
+                candidate_texts.append(title)
+            candidate_texts.extend(sentences[:NER_SENTENCE_LIMIT])
+            for text in candidate_texts:
+                work_items.append((article_index, text))
+
+        for start in range(0, len(work_items), NER_BATCH_SIZE):
+            batch = work_items[start : start + NER_BATCH_SIZE]
+            texts = [text for _, text in batch]
+            raw_batch = self.ner_pipeline(
+                texts,
+                batch_size=NER_BATCH_SIZE,
+                stride=NER_STRIDE,
+            )
+            if len(batch) == 1 and raw_batch and isinstance(raw_batch[0], dict):
+                raw_batch = [raw_batch]
+
+            for (article_index, text), predictions in zip(batch, raw_batch):
+                normalized = normalize_ner_predictions(
+                    text,
+                    predictions if isinstance(predictions, list) else [],
+                    NER_MIN_SCORE,
+                )
+                extracted_by_article.setdefault(article_index, []).append(normalized)
+
+        entity_updates = 0
+        total_entities = 0
+        for article_index, groups in extracted_by_article.items():
+            article = articles[article_index]
+            merged = merge_article_entities(getattr(article, "entities", None), groups)
+            article.entities = merged
+            if merged:
+                entity_updates += 1
+                total_entities += len(merged)
+
+        return EntityPreparationStats(
+            articles_scanned=len(articles),
+            articles_with_sentences_added=sentence_updates,
+            articles_with_entities_added=entity_updates,
+            sentences_scanned=len(work_items),
+            entities_extracted=total_entities,
+        )
 
     def _predict_target_pairs(
         self,

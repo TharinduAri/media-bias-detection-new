@@ -201,6 +201,16 @@ def _run_bias_analysis_impl(
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
         model_manager = get_models()
+        target_prep = model_manager.prepare_article_targets(recent_articles)
+        db.commit()
+        run_logs.append(
+            "Target preparation: "
+            f"articles={target_prep.articles_scanned}, "
+            f"sentences_added={target_prep.articles_with_sentences_added}, "
+            f"entity_articles={target_prep.articles_with_entities_added}, "
+            f"sentences_scanned={target_prep.sentences_scanned}, "
+            f"entities={target_prep.entities_extracted}"
+        )
         if skip_embedding:
             run_logs.append("Skipping embedding step — using saved embeddings.")
             embeddings_saved = 0
