@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+import math
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import numpy as np
@@ -54,6 +55,40 @@ def compute_bsi(
     c = min(max(c_raw, 0.0), 1.0)
     e = min(abs(emphasis_bias_avg), 1.0)
     return round(0.4 * s + 0.4 * c + 0.2 * e, 6)
+
+
+def compute_source_trust_score(
+    bsi_score: float | None,
+    sentiment_confidence_avg: float,
+    articles_scored: int,
+    coverage_bias_rate: float,
+    coverage_bias_rate_soft: float | None = None,
+) -> float:
+    """Source trust score [0-1]. Higher = more trustworthy.
+
+    This is a source-level reliability heuristic, not a factuality verdict. It
+    rewards low bias, consistent model confidence, enough scored evidence, and
+    broad topic coverage.
+    """
+    bsi = min(max(float(bsi_score or 0.0), 0.0), 1.0)
+    confidence = min(max(float(sentiment_confidence_avg), 0.0), 1.0)
+    coverage_raw = coverage_bias_rate_soft if coverage_bias_rate_soft is not None else coverage_bias_rate
+    coverage_quality = 1.0 - min(max(float(coverage_raw), 0.0), 1.0)
+    evidence_quality = math.sqrt(min(max(float(articles_scored), 0.0) / 20.0, 1.0))
+
+    score = (
+        0.45 * (1.0 - bsi)
+        + 0.20 * confidence
+        + 0.20 * coverage_quality
+        + 0.15 * evidence_quality
+    )
+    return round(float(min(max(score, 0.0), 1.0)), 6)
+
+
+def compute_misinformation_risk_score(source_trust_score: float | None) -> float:
+    """Inverse of source trust [0-1]. Higher = more misinformation risk."""
+    trust = min(max(float(source_trust_score or 0.0), 0.0), 1.0)
+    return round(1.0 - trust, 6)
 
 
 def compute_bsi_confidence_interval(
@@ -136,6 +171,7 @@ def init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, Any]]:
         outlet: {
             "sentiment_bias_sum": 0.0,
             "sentiment_score_sum": 0.0,
+            "sentiment_confidence_sum": 0.0,
             "emphasis_bias_sum": 0.0,
             "articles_scored": 0.0,
             "topics_covered": 0.0,
@@ -226,11 +262,22 @@ def build_profiles(
         topics_considered = int(stats["topics_considered"])
         sentiment_bias_avg = stats["sentiment_bias_sum"] / articles_scored if articles_scored else 0.0
         sentiment_score_avg = stats["sentiment_score_sum"] / articles_scored if articles_scored else 0.0
+        sentiment_confidence_avg = (
+            stats["sentiment_confidence_sum"] / articles_scored if articles_scored else 0.0
+        )
         emphasis_bias_avg = stats["emphasis_bias_sum"] / articles_scored if articles_scored else 0.0
         coverage_missing = int(stats["coverage_missing_majority"])
         coverage_bias_rate = coverage_missing / topics_considered if topics_considered else 0.0
         coverage_soft = outlet_soft_coverage.get(outlet) if outlet_soft_coverage else None
         bsi = compute_bsi(sentiment_bias_avg, coverage_bias_rate, emphasis_bias_avg, coverage_soft)
+        source_trust = compute_source_trust_score(
+            bsi,
+            sentiment_confidence_avg,
+            articles_scored,
+            coverage_bias_rate,
+            coverage_soft,
+        )
+        misinformation_risk = compute_misinformation_risk_score(source_trust)
 
         arrays = (outlet_score_arrays or {}).get(outlet, {})
         sent_list = arrays.get("sentiment_bias", [])
@@ -259,6 +306,8 @@ def build_profiles(
                 coverage_bias_rate_soft=float(coverage_soft) if coverage_soft is not None else None,
                 missed_topics=stats["missed_topics"],
                 bsi_score=float(bsi),
+                source_trust_score=float(source_trust),
+                misinformation_risk_score=float(misinformation_risk),
                 bsi_confidence_low=ci_low,
                 bsi_confidence_high=ci_high,
                 article_count_per_topic_avg=float(art_per_topic_avg),
@@ -310,6 +359,8 @@ def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -
             existing.missed_topics = profile.missed_topics
             existing.emphasis_bias_avg = profile.emphasis_bias_avg
             existing.bsi_score = profile.bsi_score
+            existing.source_trust_score = profile.source_trust_score
+            existing.misinformation_risk_score = profile.misinformation_risk_score
             existing.bsi_confidence_low = profile.bsi_confidence_low
             existing.bsi_confidence_high = profile.bsi_confidence_high
             existing.article_count_per_topic_avg = profile.article_count_per_topic_avg
@@ -437,6 +488,8 @@ def insert_snapshots_with_omission(
                 missed_topics=profile.missed_topics,
                 emphasis_bias_avg=profile.emphasis_bias_avg,
                 bsi_score=profile.bsi_score,
+                source_trust_score=profile.source_trust_score,
+                misinformation_risk_score=profile.misinformation_risk_score,
                 bsi_confidence_low=profile.bsi_confidence_low,
                 bsi_confidence_high=profile.bsi_confidence_high,
                 article_count_per_topic_avg=profile.article_count_per_topic_avg,

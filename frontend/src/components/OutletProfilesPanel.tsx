@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchAllProfiles, fetchBiasScores, OutletBiasProfileData, OutletTopicBSIData } from "@/lib/api";
+import { fetchAllProfiles, fetchBiasScores, OutletBiasProfileData } from "@/lib/api";
 
 interface OutletCard {
   profile: OutletBiasProfileData;
@@ -12,6 +12,13 @@ function sentimentMeta(score: number): { label: string; className: string } {
   if (score > 0.05) return { label: "Positive", className: "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" };
   if (score < -0.05) return { label: "Negative", className: "bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300" };
   return { label: "Neutral", className: "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400" };
+}
+
+function trustMeta(score: number | null | undefined): { label: string; className: string } {
+  if (score == null) return { label: "No trust score", className: "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400" };
+  if (score >= 0.75) return { label: `Trust ${Math.round(score * 100)}`, className: "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" };
+  if (score >= 0.55) return { label: `Trust ${Math.round(score * 100)}`, className: "bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" };
+  return { label: `Trust ${Math.round(score * 100)}`, className: "bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300" };
 }
 
 export default function OutletProfilesPanel() {
@@ -94,6 +101,7 @@ export default function OutletProfilesPanel() {
       <div className="divide-y divide-gray-100 dark:divide-gray-800">
         {cards.map(({ profile, coveredTopics }) => {
           const sentiment = sentimentMeta(profile.sentiment_score_avg);
+          const trust = trustMeta(profile.source_trust_score);
           return (
             <div key={profile.outlet} className="px-6 py-4 flex flex-col gap-2">
               <div className="flex items-center gap-3">
@@ -102,6 +110,9 @@ export default function OutletProfilesPanel() {
                 </span>
                 <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${sentiment.className}`}>
                   {sentiment.label}
+                </span>
+                <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${trust.className}`}>
+                  {trust.label}
                 </span>
                 <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">
                   {coveredTopics.length} topic{coveredTopics.length !== 1 ? "s" : ""}

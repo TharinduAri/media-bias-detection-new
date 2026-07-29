@@ -110,6 +110,12 @@ export interface OutletBiasProfileData {
   missed_topics: string[] | null;
   emphasis_bias_avg?: number | null;
   bsi_score?: number | null;
+  source_trust_score?: number | null;
+  misinformation_risk_score?: number | null;
+  bsi_confidence_low?: number | null;
+  bsi_confidence_high?: number | null;
+  article_count_per_topic_avg?: number | null;
+  coverage_bias_rate_soft?: number | null;
   updated_at: string;
 }
 
@@ -128,6 +134,12 @@ export interface OutletBiasSnapshotData {
   missed_topics: string[] | null;
   emphasis_bias_avg?: number | null;
   bsi_score?: number | null;
+  source_trust_score?: number | null;
+  misinformation_risk_score?: number | null;
+  bsi_confidence_low?: number | null;
+  bsi_confidence_high?: number | null;
+  article_count_per_topic_avg?: number | null;
+  coverage_bias_rate_soft?: number | null;
   omission_score?: number | null;
   systematic_omission?: boolean | null;
   baseline_used_runs?: number | null;
