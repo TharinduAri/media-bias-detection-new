@@ -5,26 +5,31 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 import httpx
 import numpy as np
+import torch
 from keybert import KeyBERT
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from .target_sentiment import (
+    SentimentResult,
+    TargetPair,
+    aggregate_target_sentiment,
+    build_target_pairs,
+)
 from .text_utils import _sanitize_topic_label, _strip_outlet_markers
 
-SENTIMENT_CHUNK_SIZE = 256
-SENTIMENT_CHUNK_OVERLAP = 32
-SENTIMENT_LEAD_WEIGHT = 2.0
-SENTIMENT_MODEL = os.getenv(
-    "SENTIMENT_MODEL",
-    os.getenv("BIAS_SENTIMENT_MODEL", "cardiffnlp/twitter-roberta-base-sentiment-latest"),
-)
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SENTIMENT_MODEL = BACKEND_ROOT / "models" / "deberta-v3-newsmtsc"
+SENTIMENT_MODEL = os.getenv("SENTIMENT_MODEL", str(DEFAULT_SENTIMENT_MODEL))
+SENTIMENT_BATCH_SIZE = max(1, int(os.getenv("SENTIMENT_BATCH_SIZE", "16")))
+SENTIMENT_MAX_LENGTH = max(64, int(os.getenv("SENTIMENT_MAX_LENGTH", "256")))
 
 LOCAL_EMBEDDING_MODEL_KEY = "mpnet_v2"
 GEMINI_TOPIC_MODEL = os.getenv("GEMINI_TOPIC_MODEL", "gemini-2.0-flash")
@@ -113,21 +118,16 @@ def _resolve_local_embedding_model(local_embedding_key: str) -> str:
     return LOCAL_EMBEDDING_MODEL_NAME
 
 
-@dataclass(frozen=True)
-class SentimentResult:
-    label: str
-    confidence: float
-    score: float
-
-
 class BiasModelManager:
     def __init__(self, embedding_model_name: str) -> None:
         self.embedding_model_name = embedding_model_name
-        self.sentiment_model_name = SENTIMENT_MODEL
+        self.sentiment_model_name = self._resolve_sentiment_model(SENTIMENT_MODEL)
         self.embedding_model = SentenceTransformer(self.embedding_model_name)
-        tokenizer = AutoTokenizer.from_pretrained(self.sentiment_model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(self.sentiment_model_name)
-        raw_id2label = getattr(model.config, "id2label", {}) or {}
+        self.sentiment_tokenizer = AutoTokenizer.from_pretrained(self.sentiment_model_name)
+        self.sentiment_model = AutoModelForSequenceClassification.from_pretrained(
+            self.sentiment_model_name
+        )
+        raw_id2label = getattr(self.sentiment_model.config, "id2label", {}) or {}
         self.id2label: Dict[int, str] = {}
         for key, value in raw_id2label.items():
             try:
@@ -135,86 +135,101 @@ class BiasModelManager:
             except (TypeError, ValueError):
                 continue
             self.id2label[idx] = str(value).strip().lower()
-        self.sentiment_pipeline = pipeline(
-            "sentiment-analysis",
-            model=model,
-            tokenizer=tokenizer,
-            device=-1,
-        )
+        canonical_labels = {
+            self._canonical_sentiment_label(value)
+            for value in self.id2label.values()
+        }
+        required_labels = {"negative", "neutral", "positive"}
+        if not required_labels.issubset(canonical_labels):
+            raise ValueError(
+                "The sentiment model must be a NewsMTSC three-class checkpoint with "
+                "negative, neutral, and positive labels. Run train_newsmtsc.py first."
+            )
+
+        requested_device = os.getenv("SENTIMENT_DEVICE", "").strip().lower()
+        if requested_device:
+            self.sentiment_device = torch.device(requested_device)
+        else:
+            self.sentiment_device = torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+        self.sentiment_model.to(self.sentiment_device)
+        self.sentiment_model.eval()
         self.kw_model = KeyBERT(model=self.embedding_model)
 
     def embed(self, texts: List[str]) -> np.ndarray:
         return np.asarray(self.embedding_model.encode(texts, normalize_embeddings=True))
 
-    def analyze_sentiment(self, texts: List[str]) -> List[SentimentResult]:
-        """Multi-chunk sliding-window sentiment with position-weighted aggregation.
+    def analyze_sentiment(self, articles: List[Any]) -> List[SentimentResult]:
+        """Classify sentiment toward named targets, then aggregate per article."""
+        pairs = build_target_pairs(articles)
+        if not pairs:
+            return [
+                SentimentResult(label="neutral", confidence=0.0, score=0.0)
+                for _ in articles
+            ]
 
-        Chunk 0 gets SENTIMENT_LEAD_WEIGHT because news front-loads key claims.
-        """
-        all_chunks: List[str] = []
-        article_chunk_spans: List[Tuple[int, int]] = []
-        for text in texts:
-            chunks = self._tokenize_into_chunks(text)
-            start = len(all_chunks)
-            all_chunks.extend(chunks)
-            article_chunk_spans.append((start, len(all_chunks)))
+        distributions = self._predict_target_pairs(pairs)
+        return aggregate_target_sentiment(len(articles), pairs, distributions)
 
-        if not all_chunks:
-            return [SentimentResult(label="neutral", confidence=0.0, score=0.0)] * len(texts)
-
-        try:
-            raw_results = self.sentiment_pipeline(
-                all_chunks,
+    def _predict_target_pairs(
+        self,
+        pairs: List[TargetPair],
+    ) -> List[Dict[str, float]]:
+        distributions: List[Dict[str, float]] = []
+        for start in range(0, len(pairs), SENTIMENT_BATCH_SIZE):
+            batch = pairs[start : start + SENTIMENT_BATCH_SIZE]
+            encoded = self.sentiment_tokenizer(
+                [pair.target for pair in batch],
+                [pair.sentence for pair in batch],
+                padding=True,
                 truncation=True,
-                max_length=512,
-                top_k=None,
+                max_length=SENTIMENT_MAX_LENGTH,
+                return_tensors="pt",
             )
-        except TypeError:
-            raw_results = self.sentiment_pipeline(
-                all_chunks,
-                truncation=True,
-                max_length=512,
-                return_all_scores=True,
+            encoded = {
+                key: value.to(self.sentiment_device)
+                for key, value in encoded.items()
+            }
+            with torch.inference_mode():
+                logits = self.sentiment_model(**encoded).logits
+                probabilities = torch.softmax(logits, dim=-1).detach().cpu().numpy()
+
+            for row in probabilities:
+                distribution = {
+                    "negative": 0.0,
+                    "neutral": 0.0,
+                    "positive": 0.0,
+                }
+                for label_id, value in enumerate(row):
+                    label = self._canonical_sentiment_label(
+                        self.id2label.get(label_id, f"label_{label_id}")
+                    )
+                    if label in distribution:
+                        distribution[label] += float(value)
+                distributions.append(distribution)
+        return distributions
+
+    @staticmethod
+    def _resolve_sentiment_model(configured_model: str) -> str:
+        candidate = Path(configured_model)
+        if candidate.is_absolute():
+            if not candidate.exists():
+                raise FileNotFoundError(
+                    f"Target sentiment model not found at {candidate}. "
+                    "Run backend/train_newsmtsc.py to create it."
+                )
+            return str(candidate)
+
+        local_candidate = BACKEND_ROOT / candidate
+        if local_candidate.exists():
+            return str(local_candidate)
+        if configured_model == "models/deberta-v3-newsmtsc":
+            raise FileNotFoundError(
+                f"Target sentiment model not found at {local_candidate}. "
+                "Run backend/train_newsmtsc.py to create it."
             )
-
-        def _parse_predictions(item: Any) -> List[Dict[str, Any]]:
-            if isinstance(item, list):
-                return [r for r in item if isinstance(r, dict)]
-            if isinstance(item, dict):
-                return [item]
-            return []
-
-        mapped: List[SentimentResult] = []
-        for span_start, span_end in article_chunk_spans:
-            chunk_preds = [_parse_predictions(raw_results[i]) for i in range(span_start, span_end)]
-            n = len(chunk_preds)
-            if n == 0 or all(len(p) == 0 for p in chunk_preds):
-                mapped.append(SentimentResult(label="neutral", confidence=0.0, score=0.0))
-                continue
-
-            weights = [1.0 / ((i + 1) ** 0.5) for i in range(n)]
-            weights[0] *= SENTIMENT_LEAD_WEIGHT
-            total_weight = sum(weights)
-
-            agg_score = 0.0
-            best_label = "neutral"
-            best_conf = 0.0
-
-            for preds, w in zip(chunk_preds, weights):
-                if not preds:
-                    continue
-                best_chunk = max(preds, key=lambda r: float(r.get("score", 0.0)))
-                lbl = self._canonical_sentiment_label(str(best_chunk.get("label", "neutral")))
-                conf = float(best_chunk.get("score", 0.0))
-                if conf > best_conf:
-                    best_conf = conf
-                    best_label = lbl
-                agg_score += self._distribution_to_score(preds) * w
-
-            final_score = float(max(-1.0, min(1.0, agg_score / total_weight)))
-            mapped.append(SentimentResult(label=best_label, confidence=best_conf, score=final_score))
-
-        return mapped
+        return configured_model
 
     def generate_topic_label(
         self,
@@ -270,25 +285,6 @@ class BiasModelManager:
             fallback_src = titles[0] if titles else ""
             fallback = _sanitize_topic_label(fallback_src[:60].strip(), outlet_blocklist)
             return (fallback or "General News").title(), "fallback"
-
-    def _tokenize_into_chunks(self, text: str) -> List[str]:
-        try:
-            tokenizer = self.sentiment_pipeline.tokenizer
-            # truncation=False + no max_length suppresses the "> model_max_length" warning;
-            # we want all tokens here so we can slice them into chunks ourselves.
-            token_ids = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=None)
-            step = SENTIMENT_CHUNK_SIZE - SENTIMENT_CHUNK_OVERLAP
-            chunks: List[str] = []
-            for start in range(0, max(1, len(token_ids)), step):
-                chunk_ids = token_ids[start: start + SENTIMENT_CHUNK_SIZE]
-                if not chunk_ids:
-                    break
-                chunks.append(tokenizer.decode(chunk_ids, skip_special_tokens=True))
-                if start + SENTIMENT_CHUNK_SIZE >= len(token_ids):
-                    break
-            return chunks if chunks else [text[:400]]
-        except Exception:
-            return [text[:400]]
 
     def _find_most_central_article_title(
         self,

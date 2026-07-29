@@ -94,6 +94,7 @@ class ArticleBiasWithArticleResponse(BaseModel):
     sentiment_label: str
     sentiment_score: float
     sentiment_confidence: float
+    entity_sentiments: Optional[List[dict]] = None
     sentiment_bias: float
     group_sentiment_mean: float
     coverage_majority: bool

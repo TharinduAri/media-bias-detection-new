@@ -55,7 +55,7 @@ def test_compute_bsi_uses_soft_coverage_when_provided():
 
 # --- source trust / misinformation risk ---
 
-def test_source_trust_score_rewards_low_bias_confidence_and_evidence():
+def test_source_trust_score_rewards_low_bias_coverage_and_evidence():
     strong = compute_source_trust_score(
         bsi_score=0.1,
         sentiment_confidence_avg=0.9,
@@ -69,6 +69,22 @@ def test_source_trust_score_rewards_low_bias_confidence_and_evidence():
         coverage_bias_rate=0.7,
     )
     assert 0.0 <= weak < strong <= 1.0
+
+
+def test_source_trust_score_ignores_sentiment_classifier_confidence():
+    low_confidence = compute_source_trust_score(
+        bsi_score=0.2,
+        sentiment_confidence_avg=0.1,
+        articles_scored=10,
+        coverage_bias_rate=0.2,
+    )
+    high_confidence = compute_source_trust_score(
+        bsi_score=0.2,
+        sentiment_confidence_avg=0.99,
+        articles_scored=10,
+        coverage_bias_rate=0.2,
+    )
+    assert low_confidence == high_confidence
 
 
 def test_source_trust_score_uses_soft_coverage_when_available():

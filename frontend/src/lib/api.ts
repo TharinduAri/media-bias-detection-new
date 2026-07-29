@@ -89,12 +89,26 @@ export interface ArticleBiasWithArticleData {
   sentiment_label: string;
   sentiment_score: number;
   sentiment_confidence: number;
+  entity_sentiments?: EntitySentimentData[] | null;
   sentiment_bias: number;
   group_sentiment_mean: number;
   coverage_majority: boolean;
   coverage_present: boolean;
   emphasis_bias?: number | null;
   created_at: string;
+}
+
+export interface EntitySentimentData {
+  target: string;
+  entity_label?: string | null;
+  label: "negative" | "neutral" | "positive" | string;
+  score: number;
+  confidence: number;
+  negative: number;
+  neutral: number;
+  positive: number;
+  mentions: number;
+  title_mention: boolean;
 }
 
 export interface OutletBiasProfileData {

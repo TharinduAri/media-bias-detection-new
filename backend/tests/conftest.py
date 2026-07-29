@@ -62,10 +62,10 @@ def mock_model_manager():
     """BiasModelManager returning deterministic fixed results without loading real models."""
     manager = MagicMock()
     manager.embedding_model_name = "all-mpnet-base-v2"
-    manager.sentiment_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+    manager.sentiment_model_name = "models/deberta-v3-newsmtsc"
 
-    def fixed_sentiment(texts):
-        return [SentimentResult(label="neutral", confidence=0.8, score=0.1)] * len(texts)
+    def fixed_sentiment(articles):
+        return [SentimentResult(label="neutral", confidence=0.8, score=0.1)] * len(articles)
 
     def fixed_embed(texts):
         rng = np.random.default_rng(42)

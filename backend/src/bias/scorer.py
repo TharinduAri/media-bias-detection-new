@@ -67,20 +67,20 @@ def compute_source_trust_score(
     """Source trust score [0-1]. Higher = more trustworthy.
 
     This is a source-level reliability heuristic, not a factuality verdict. It
-    rewards low bias, consistent model confidence, enough scored evidence, and
-    broad topic coverage.
+    rewards low measured bias, enough scored evidence, and broad topic
+    coverage. Sentiment confidence is accepted for API compatibility but is
+    deliberately excluded: classifier certainty is not evidence of factuality.
     """
     bsi = min(max(float(bsi_score or 0.0), 0.0), 1.0)
-    confidence = min(max(float(sentiment_confidence_avg), 0.0), 1.0)
+    _ = sentiment_confidence_avg
     coverage_raw = coverage_bias_rate_soft if coverage_bias_rate_soft is not None else coverage_bias_rate
     coverage_quality = 1.0 - min(max(float(coverage_raw), 0.0), 1.0)
     evidence_quality = math.sqrt(min(max(float(articles_scored), 0.0) / 20.0, 1.0))
 
     score = (
-        0.45 * (1.0 - bsi)
-        + 0.20 * confidence
-        + 0.20 * coverage_quality
-        + 0.15 * evidence_quality
+        0.55 * (1.0 - bsi)
+        + 0.25 * coverage_quality
+        + 0.20 * evidence_quality
     )
     return round(float(min(max(score, 0.0), 1.0)), 6)
 

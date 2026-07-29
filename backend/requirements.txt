@@ -11,6 +11,9 @@ lxml_html_clean
 beautifulsoup4
 sentence-transformers
 transformers
+datasets
+accelerate
+sentencepiece
 scikit-learn
 torch
 numpy

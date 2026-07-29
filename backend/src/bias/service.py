@@ -249,15 +249,17 @@ def _run_bias_analysis_impl(
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
             return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
 
-        texts = [row["text"] for row in analysis_rows]
-        sentiment_results = model_manager.analyze_sentiment(texts)
-        run_logs.append("Computed sentiment scores.")
+        sentiment_results = model_manager.analyze_sentiment(analysis_articles)
+        for article, sentiment in zip(analysis_articles, sentiment_results):
+            article.entity_sentiments = sentiment.entity_sentiments
+        run_logs.append("Computed target-dependent sentiment scores.")
         run_logs.append(
-            "Sentiment mix: "
+            "Target sentiment mix: "
             f"positive={sum(1 for r in sentiment_results if r.label == 'positive')}, "
             f"neutral={sum(1 for r in sentiment_results if r.label == 'neutral')}, "
             f"negative={sum(1 for r in sentiment_results if r.label == 'negative')}, "
-            f"near_zero_score={sum(1 for r in sentiment_results if abs(r.score) < 1e-6)}"
+            f"without_target_evidence={sum(1 for r in sentiment_results if r.target_pair_count == 0)}, "
+            f"target_pairs={sum(r.target_pair_count for r in sentiment_results)}"
         )
 
         now = datetime.utcnow()

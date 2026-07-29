@@ -179,6 +179,7 @@ def list_article_bias_scores(
                 sentiment_label=score.sentiment_label,
                 sentiment_score=score.sentiment_score,
                 sentiment_confidence=score.sentiment_confidence,
+                entity_sentiments=article.entity_sentiments,
                 sentiment_bias=score.sentiment_bias,
                 group_sentiment_mean=score.group_sentiment_mean,
                 coverage_majority=score.coverage_majority,
