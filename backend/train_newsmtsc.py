@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Dict
 
@@ -52,10 +53,16 @@ def parse_args() -> argparse.Namespace:
         default=backend_root / "models" / "deberta-v3-newsmtsc",
     )
     parser.add_argument("--epochs", type=int, default=4)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--max-length", type=int, default=256)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=-1,
+        help="Override total training steps; use 1 for a quick smoke test.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -85,6 +92,14 @@ def main() -> None:
     args = parse_args()
     set_seed(args.seed)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    cuda_available = torch.cuda.is_available()
+    if cuda_available:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        device_name = torch.cuda.get_device_name(0)
+        memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        print(f"Training device: CUDA - {device_name} ({memory_gb:.1f} GB)")
+    else:
+        print("Training device: CPU (CUDA-enabled PyTorch was not detected)")
 
     dataset: DatasetDict = load_dataset("json", data_files=RW_FILES)
     mt_test = load_dataset("json", data_files={"test": MT_TEST_FILE})["test"]
@@ -119,8 +134,18 @@ def main() -> None:
         num_labels=3,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
+        dtype=torch.float32,
     )
 
+    updates_per_epoch = math.ceil(
+        len(tokenized["train"])
+        / (args.batch_size * args.gradient_accumulation_steps)
+    )
+    planned_steps = (
+        args.max_steps
+        if args.max_steps > 0
+        else math.ceil(updates_per_epoch * args.epochs)
+    )
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
         learning_rate=args.learning_rate,
@@ -128,8 +153,9 @@ def main() -> None:
         per_device_eval_batch_size=max(args.batch_size, 16),
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_train_epochs=args.epochs,
+        max_steps=args.max_steps,
         weight_decay=0.01,
-        warmup_ratio=0.1,
+        warmup_steps=max(1, round(planned_steps * 0.1)),
         eval_strategy="epoch",
         save_strategy="epoch",
         logging_strategy="steps",
@@ -138,7 +164,10 @@ def main() -> None:
         metric_for_best_model="macro_f1",
         greater_is_better=True,
         save_total_limit=2,
-        fp16=torch.cuda.is_available(),
+        fp16=cuda_available,
+        tf32=cuda_available,
+        gradient_checkpointing=True,
+        optim="adamw_torch_fused" if cuda_available else "adamw_torch",
         seed=args.seed,
         data_seed=args.seed,
         report_to="none",
@@ -156,6 +185,7 @@ def main() -> None:
     )
 
     trainer.train()
+    trainer.remove_callback(EarlyStoppingCallback)
     metrics = {
         "rw_test": trainer.evaluate(tokenized["test"], metric_key_prefix="rw_test"),
         "mt_test": trainer.evaluate(
