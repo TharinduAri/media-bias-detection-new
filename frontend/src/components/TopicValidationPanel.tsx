@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { 
   fetchBiasTopics, 
   fetchBiasArticles, 
+  fetchArticleBiasEvidence,
   TopicSummaryData, 
-  ArticleBiasWithArticleData 
+  ArticleBiasWithArticleData,
+  ArticleBiasEvidenceData,
 } from "@/lib/api";
 import { 
   ChevronDown, 
@@ -16,7 +18,10 @@ import {
   Minus,
   CheckCircle2,
   RefreshCw,
-  Search
+  Search,
+  Target,
+  Quote,
+  Eye
 } from "lucide-react";
 
 export default function TopicValidationPanel() {
@@ -27,6 +32,10 @@ export default function TopicValidationPanel() {
   const [loadingArticles, setLoadingArticles] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [expandedArticleId, setExpandedArticleId] = useState<number | null>(null);
+  const [evidenceByArticle, setEvidenceByArticle] = useState<Record<number, ArticleBiasEvidenceData[]>>({});
+  const [loadingEvidenceId, setLoadingEvidenceId] = useState<number | null>(null);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
 
   const loadTopics = useCallback(async () => {
     setLoadingTopics(true);
@@ -140,6 +149,28 @@ export default function TopicValidationPanel() {
     [articles]
   );
 
+  const toggleEvidence = useCallback(async (article: ArticleBiasWithArticleData) => {
+    const articleId = article.article_id;
+    if (expandedArticleId === articleId) {
+      setExpandedArticleId(null);
+      return;
+    }
+
+    setExpandedArticleId(articleId);
+    setEvidenceError(null);
+    if (evidenceByArticle[articleId]) return;
+
+    setLoadingEvidenceId(articleId);
+    try {
+      const rows = await fetchArticleBiasEvidence(articleId, article.topic_key);
+      setEvidenceByArticle((prev) => ({ ...prev, [articleId]: rows }));
+    } catch (err) {
+      setEvidenceError(err instanceof Error ? err.message : "Failed to load evidence.");
+    } finally {
+      setLoadingEvidenceId(null);
+    }
+  }, [evidenceByArticle, expandedArticleId]);
+
   const getSentimentIcon = (score: number) => {
     if (score > 0.2) return <TrendingUp className="w-4 h-4 text-emerald-500" />;
     if (score < -0.2) return <TrendingDown className="w-4 h-4 text-rose-500" />;
@@ -152,6 +183,178 @@ export default function TopicValidationPanel() {
     if (absBias > 0.2) return "text-orange-600 dark:text-orange-400 font-semibold";
     return "text-emerald-600 dark:text-emerald-400";
   };
+
+  const getEvidenceColor = (label: string) => {
+    const normalized = label.toLowerCase();
+    if (normalized.includes("positive")) return "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900";
+    if (normalized.includes("negative")) return "text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900";
+    return "text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700";
+  };
+
+  const evidenceSummary = (rows: ArticleBiasEvidenceData[]) => {
+    const counts = { positive: 0, neutral: 0, negative: 0 };
+    let strongest = rows[0] ?? null;
+    for (const row of rows) {
+      const label = row.sentiment_label.toLowerCase();
+      if (label.includes("positive")) counts.positive += 1;
+      else if (label.includes("negative")) counts.negative += 1;
+      else counts.neutral += 1;
+      if (!strongest || row.sentiment_confidence > strongest.sentiment_confidence) strongest = row;
+    }
+    return { counts, strongest };
+  };
+
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  function HighlightedSentence({ sentence, target }: { sentence: string; target: string }) {
+    if (!target.trim()) return <>{sentence}</>;
+    const parts = sentence.split(new RegExp(`(${escapeRegExp(target)})`, "ig"));
+    return (
+      <>
+        {parts.map((part, index) =>
+          part.toLowerCase() === target.toLowerCase() ? (
+            <mark
+              key={`${part}-${index}`}
+              className="rounded bg-yellow-200/80 dark:bg-yellow-500/30 px-0.5 text-gray-950 dark:text-yellow-100"
+            >
+              {part}
+            </mark>
+          ) : (
+            <span key={`${part}-${index}`}>{part}</span>
+          )
+        )}
+      </>
+    );
+  }
+
+  function ProbabilityBar({ label, value, className }: { label: string; value: number; className: string }) {
+    return (
+      <div>
+        <div className="flex items-center justify-between text-[10px] text-gray-500 dark:text-gray-400">
+          <span>{label}</span>
+          <span>{Math.round(value * 100)}%</span>
+        </div>
+        <div className="mt-1 h-1.5 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+          <div className={`h-full rounded-full ${className}`} style={{ width: `${Math.min(value * 100, 100)}%` }} />
+        </div>
+      </div>
+    );
+  }
+
+  function EvidencePanel({ article }: { article: ArticleBiasWithArticleData }) {
+    const rows = evidenceByArticle[article.article_id] ?? [];
+    const loading = loadingEvidenceId === article.article_id;
+    const summary = evidenceSummary(rows);
+    const visibleRows = [...rows]
+      .sort((a, b) => {
+        if (a.is_title !== b.is_title) return a.is_title ? -1 : 1;
+        return Math.abs(b.sentiment_score) - Math.abs(a.sentiment_score);
+      })
+      .slice(0, 12);
+
+    return (
+      <div className="px-4 pb-5">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950/40 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-[11px] font-bold tracking-[0.14em] uppercase text-indigo-600 dark:text-indigo-300">
+                DeBERTa Target Evidence
+              </p>
+              <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">
+                {article.sentiment_score > 0 ? "+" : ""}{article.sentiment_score.toFixed(3)} article sentiment
+                <span className="mx-2 text-gray-300 dark:text-gray-700">|</span>
+                {article.group_sentiment_mean > 0 ? "+" : ""}{article.group_sentiment_mean.toFixed(3)} topic mean
+                <span className="mx-2 text-gray-300 dark:text-gray-700">|</span>
+                {article.sentiment_bias > 0 ? "+" : ""}{article.sentiment_bias.toFixed(3)} bias
+              </p>
+            </div>
+            {rows.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-white dark:bg-gray-900 px-3 py-2">
+                  <p className="text-[10px] uppercase text-gray-400">Positive</p>
+                  <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{summary.counts.positive}</p>
+                </div>
+                <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 py-2">
+                  <p className="text-[10px] uppercase text-gray-400">Neutral</p>
+                  <p className="text-sm font-bold text-gray-600 dark:text-gray-300">{summary.counts.neutral}</p>
+                </div>
+                <div className="rounded-lg border border-rose-200 dark:border-rose-900 bg-white dark:bg-gray-900 px-3 py-2">
+                  <p className="text-[10px] uppercase text-gray-400">Negative</p>
+                  <p className="text-sm font-bold text-rose-600 dark:text-rose-400">{summary.counts.negative}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="mt-5 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+              <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
+              Loading evidence...
+            </div>
+          ) : evidenceError && expandedArticleId === article.article_id ? (
+            <div className="mt-5 flex items-center gap-2 text-sm text-rose-600 dark:text-rose-400">
+              <AlertCircle className="w-4 h-4" />
+              {evidenceError}
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="mt-5 text-sm text-gray-500 dark:text-gray-400">
+              No stored sentence evidence for this article-topic score.
+            </div>
+          ) : (
+            <div className="mt-5 space-y-3">
+              {visibleRows.map((row) => (
+                <div
+                  key={row.id}
+                  className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-3"
+                >
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1 rounded-md border border-indigo-200 dark:border-indigo-900 bg-indigo-50 dark:bg-indigo-950/30 px-2 py-1 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                        <Target className="w-3 h-3" />
+                        {row.target_entity}
+                      </span>
+                      {row.entity_label && (
+                        <span className="rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[10px] font-semibold text-gray-500 dark:text-gray-400">
+                          {row.entity_label}
+                        </span>
+                      )}
+                      {row.is_title && (
+                        <span className="rounded-md bg-amber-50 dark:bg-amber-950/30 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                          Title
+                        </span>
+                      )}
+                    </div>
+                    <span className={`rounded-md border px-2 py-1 text-[11px] font-bold capitalize ${getEvidenceColor(row.sentiment_label)}`}>
+                      {row.sentiment_label} {row.sentiment_score > 0 ? "+" : ""}{row.sentiment_score.toFixed(3)}
+                    </span>
+                  </div>
+
+                  <blockquote className="mt-3 flex gap-2 text-sm leading-6 text-gray-800 dark:text-gray-200">
+                    <Quote className="mt-1 h-4 w-4 shrink-0 text-gray-400" />
+                    <span>
+                      <HighlightedSentence sentence={row.sentence} target={row.target_entity} />
+                    </span>
+                  </blockquote>
+
+                  <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                    <ProbabilityBar label="Negative" value={row.negative_prob} className="bg-rose-500" />
+                    <ProbabilityBar label="Neutral" value={row.neutral_prob} className="bg-gray-400" />
+                    <ProbabilityBar label="Positive" value={row.positive_prob} className="bg-emerald-500" />
+                  </div>
+                </div>
+              ))}
+
+              {rows.length > visibleRows.length && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Showing {visibleRows.length} strongest evidence rows of {rows.length}.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm overflow-hidden transition-all duration-300">
@@ -314,56 +517,78 @@ export default function TopicValidationPanel() {
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                   {sortedArticles.map((article) => (
-                    <tr key={article.id} className="group hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
-                      <td className="px-4 py-4">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-sm font-medium text-gray-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors line-clamp-1">
-                            {article.title}
-                          </span>
-                          <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
-                            {article.outlet}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4">
-                        <div className="flex flex-col items-center gap-1">
-                          <div className="flex items-center gap-1.5">
-                            {getSentimentIcon(article.sentiment_score)}
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                              {article.sentiment_score.toFixed(3)}
+                    <Fragment key={article.id}>
+                      <tr className="group hover:bg-slate-50 dark:hover:bg-gray-800/40 transition-colors">
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-sm font-medium text-gray-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors line-clamp-1">
+                              {article.title}
+                            </span>
+                            <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
+                              {article.outlet}
                             </span>
                           </div>
-                          <span className="text-[10px] text-gray-400 dark:text-gray-500 capitalize">
-                            {article.sentiment_label}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4 text-center">
-                        <div className="flex flex-col items-center">
-                          <span className={`text-sm ${getBiasColor(article.sentiment_bias)}`}>
-                            {article.sentiment_bias > 0 ? '+' : ''}{article.sentiment_bias.toFixed(3)}
-                          </span>
-                          <div className="w-24 h-2 bg-gray-100 dark:bg-gray-800 rounded-full mt-1.5 overflow-hidden relative">
-                            <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-300 dark:bg-gray-600" />
-                            <div
-                              className={`absolute top-0 h-full rounded-full ${article.sentiment_bias > 0 ? 'left-1/2 bg-emerald-500' : 'right-1/2 bg-rose-500'}`}
-                              style={{ width: `${Math.min(Math.abs(article.sentiment_bias) * 100, 50)}%` }}
-                            />
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="flex items-center gap-1.5">
+                              {getSentimentIcon(article.sentiment_score)}
+                              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                {article.sentiment_score.toFixed(3)}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 capitalize">
+                              {article.sentiment_label}
+                            </span>
                           </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4 text-right">
-                        <a
-                          href={article.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-all"
-                        >
-                          Read
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </td>
-                    </tr>
+                        </td>
+                        <td className="px-4 py-4 text-center">
+                          <div className="flex flex-col items-center">
+                            <span className={`text-sm ${getBiasColor(article.sentiment_bias)}`}>
+                              {article.sentiment_bias > 0 ? '+' : ''}{article.sentiment_bias.toFixed(3)}
+                            </span>
+                            <div className="w-24 h-2 bg-gray-100 dark:bg-gray-800 rounded-full mt-1.5 overflow-hidden relative">
+                              <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-300 dark:bg-gray-600" />
+                              <div
+                                className={`absolute top-0 h-full rounded-full ${article.sentiment_bias > 0 ? 'left-1/2 bg-emerald-500' : 'right-1/2 bg-rose-500'}`}
+                                style={{ width: `${Math.min(Math.abs(article.sentiment_bias) * 100, 50)}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => toggleEvidence(article)}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                                expandedArticleId === article.article_id
+                                  ? "bg-indigo-600 text-white"
+                                  : "text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                              }`}
+                            >
+                              <Eye className="w-3 h-3" />
+                              Evidence
+                            </button>
+                            <a
+                              href={article.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-all"
+                            >
+                              Read
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
+                        </td>
+                      </tr>
+                      {expandedArticleId === article.article_id && (
+                        <tr className="bg-white dark:bg-gray-900">
+                          <td colSpan={4} className="p-0">
+                            <EvidencePanel article={article} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

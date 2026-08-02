@@ -89,11 +89,45 @@ export interface ArticleBiasWithArticleData {
   sentiment_label: string;
   sentiment_score: number;
   sentiment_confidence: number;
+  entity_sentiments?: EntitySentimentData[] | null;
   sentiment_bias: number;
   group_sentiment_mean: number;
   coverage_majority: boolean;
   coverage_present: boolean;
   emphasis_bias?: number | null;
+  created_at: string;
+}
+
+export interface EntitySentimentData {
+  target: string;
+  entity_label?: string | null;
+  label: "negative" | "neutral" | "positive" | string;
+  score: number;
+  confidence: number;
+  negative: number;
+  neutral: number;
+  positive: number;
+  mentions: number;
+  title_mention: boolean;
+}
+
+export interface ArticleBiasEvidenceData {
+  id: number;
+  article_id: number;
+  outlet: string;
+  topic_key: string;
+  topic_label?: string | null;
+  target_entity: string;
+  entity_label?: string | null;
+  sentence: string;
+  sentence_index: number;
+  is_title: boolean;
+  sentiment_label: "negative" | "neutral" | "positive" | string;
+  sentiment_score: number;
+  sentiment_confidence: number;
+  negative_prob: number;
+  neutral_prob: number;
+  positive_prob: number;
   created_at: string;
 }
 
@@ -470,6 +504,23 @@ export async function fetchArticleBiasScore(articleId: number): Promise<ArticleB
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to fetch article bias score");
+  }
+  return res.json();
+}
+
+export async function fetchArticleBiasEvidence(
+  articleId: number,
+  topicKey?: string
+): Promise<ArticleBiasEvidenceData[]> {
+  const params = new URLSearchParams();
+  if (topicKey) params.set("topic_key", topicKey);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${API_BASE_URL}/bias/articles/${articleId}/evidence${suffix}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to fetch article bias evidence");
   }
   return res.json();
 }

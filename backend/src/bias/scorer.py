@@ -67,20 +67,20 @@ def compute_source_trust_score(
     """Source trust score [0-1]. Higher = more trustworthy.
 
     This is a source-level reliability heuristic, not a factuality verdict. It
-    rewards low bias, consistent model confidence, enough scored evidence, and
-    broad topic coverage.
+    rewards low measured bias, enough scored evidence, and broad topic
+    coverage. Sentiment confidence is accepted for API compatibility but is
+    deliberately excluded: classifier certainty is not evidence of factuality.
     """
     bsi = min(max(float(bsi_score or 0.0), 0.0), 1.0)
-    confidence = min(max(float(sentiment_confidence_avg), 0.0), 1.0)
+    _ = sentiment_confidence_avg
     coverage_raw = coverage_bias_rate_soft if coverage_bias_rate_soft is not None else coverage_bias_rate
     coverage_quality = 1.0 - min(max(float(coverage_raw), 0.0), 1.0)
     evidence_quality = math.sqrt(min(max(float(articles_scored), 0.0) / 20.0, 1.0))
 
     score = (
-        0.45 * (1.0 - bsi)
-        + 0.20 * confidence
-        + 0.20 * coverage_quality
-        + 0.15 * evidence_quality
+        0.55 * (1.0 - bsi)
+        + 0.25 * coverage_quality
+        + 0.20 * evidence_quality
     )
     return round(float(min(max(score, 0.0), 1.0)), 6)
 
@@ -416,6 +416,28 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
 
     db.commit()
     return len(deduped)
+
+
+def replace_article_bias_evidence(
+    db: Session,
+    rows: List[models.ArticleBiasEvidence],
+    scored_keys: Iterable[Tuple[int, str]] | None = None,
+) -> int:
+    """Replace sentence-level evidence keyed by (article_id, topic_key)."""
+    keys = set(scored_keys or [])
+    keys.update((row.article_id, row.topic_key) for row in rows)
+    for article_id, topic_key in keys:
+        (
+            db.query(models.ArticleBiasEvidence)
+            .filter(models.ArticleBiasEvidence.article_id == article_id)
+            .filter(models.ArticleBiasEvidence.topic_key == topic_key)
+            .delete(synchronize_session="fetch")
+        )
+
+    if rows:
+        db.add_all(rows)
+    db.commit()
+    return len(rows)
 
 
 def insert_topic_bsi_rows(db: Session, rows: List[models.OutletTopicBSI]) -> int:

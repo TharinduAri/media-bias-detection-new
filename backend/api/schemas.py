@@ -82,6 +82,28 @@ class ArticleBiasScoreResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ArticleBiasEvidenceResponse(BaseModel):
+    id: int
+    article_id: int
+    outlet: str
+    topic_key: str
+    topic_label: Optional[str] = None
+    target_entity: str
+    entity_label: Optional[str] = None
+    sentence: str
+    sentence_index: int
+    is_title: bool
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_confidence: float
+    negative_prob: float
+    neutral_prob: float
+    positive_prob: float
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ArticleBiasWithArticleResponse(BaseModel):
     id: int
     article_id: int
@@ -94,6 +116,7 @@ class ArticleBiasWithArticleResponse(BaseModel):
     sentiment_label: str
     sentiment_score: float
     sentiment_confidence: float
+    entity_sentiments: Optional[List[dict]] = None
     sentiment_bias: float
     group_sentiment_mean: float
     coverage_majority: bool

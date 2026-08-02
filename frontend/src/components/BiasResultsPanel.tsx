@@ -508,6 +508,21 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
                     {row.sentiment_score > 0 ? "+" : ""}{row.sentiment_score.toFixed(2)}
                   </span>
                   <div className="text-[10px] text-slate-400 capitalize">{row.sentiment_label}</div>
+                  {row.entity_sentiments?.slice(0, 2).map((entity) => (
+                    <div
+                      key={entity.target}
+                      className="mt-1 max-w-36 truncate text-[10px] text-slate-500 dark:text-slate-400"
+                      title={`${entity.target}: ${entity.label} (${Math.round(entity.confidence * 100)}% confidence)`}
+                    >
+                      {entity.target}:{" "}
+                      <span className={entity.score > 0.1 ? "text-emerald-600 dark:text-emerald-400" : entity.score < -0.1 ? "text-rose-600 dark:text-rose-400" : ""}>
+                        {entity.score > 0 ? "+" : ""}{entity.score.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                  {!row.entity_sentiments?.length && (
+                    <div className="mt-1 text-[10px] text-slate-400">No matched targets</div>
+                  )}
                 </td>
                 <td className="py-2 pr-3">
                   <div className="flex flex-col items-center gap-1">

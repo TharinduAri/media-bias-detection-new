@@ -28,6 +28,17 @@ This document describes the complete internal bias-analysis pipeline from the mo
 
 ## 4. Analysis Text Construction
 
+Before embeddings or sentiment inference, missing article preprocessing data is
+backfilled:
+
+1. Missing `Article.sentences` values are derived from `clean_text` or `text`.
+2. Articles without `Article.entities` are scanned by the English
+   `dslim/bert-base-NER` token-classification model.
+3. `PER`, `ORG`, `LOC`, and `MISC` predictions are normalized to `PERSON`,
+   `ORG`, `GPE`, and `NORP`, deduplicated, and persisted.
+4. Existing sentence and entity data is reused, so NER is normally a one-time
+   cost per article.
+
 For each selected article, the pipeline builds a model-ready analysis string:
 
 1. Start from title, sentence snippets, entities, and body text.
@@ -128,18 +139,42 @@ This supports cross-run comparability.
 
 ## 13. Sentiment Inference
 
-1. Sentiment model is loaded from environment configuration:
-   - primary key: `SENTIMENT_MODEL`
-   - fallback key: `BIAS_SENTIMENT_MODEL`
-   - default fallback: `cardiffnlp/twitter-roberta-base-sentiment-latest`
-2. Long article handling uses chunked sliding-window inference:
-   - fixed chunk size
-   - overlap between chunks
-   - lead chunk receives extra weight
-3. Chunk outputs are aggregated into:
+1. The only sentiment path is a local DeBERTa-v3 checkpoint fine-tuned on NewsMTSC:
+   - configuration key: `SENTIMENT_MODEL`
+   - default path: `backend/models/deberta-v3-newsmtsc`
+   - training entry point: `backend/train_newsmtsc.py`
+2. Missing targets are extracted by the English NER model:
+   - model: `NER_MODEL` (default `dslim/bert-base-NER`)
+   - inference batch size: `NER_BATCH_SIZE` (default `32`)
+   - body sentence limit: `NER_SENTENCE_LIMIT` (default `48`)
+   - confidence threshold: `NER_MIN_SCORE` (default `0.65`)
+   - long-text overlap: `NER_STRIDE` (default `32`)
+3. Each article is converted into target-sentence pairs:
+   - targets come from `Article.entities`
+   - supported entity types are `PERSON`, `ORG`, `GPE`, and `NORP`
+   - targets are matched conservatively against the title and stored sentences
+4. DeBERTa receives the target and sentence as a text pair and returns negative,
+   neutral, and positive probabilities.
+5. Target occurrences are aggregated by entity and saved to
+   `Article.entity_sentiments`.
+6. Entity outputs are aggregated into the existing article-level fields:
    - final label (`positive`, `neutral`, `negative`)
    - confidence
    - scalar sentiment score in `[-1, 1]`
+7. Articles without a matched target are recorded as neutral with zero
+   confidence, explicitly indicating that no target evidence was available.
+
+Train the local checkpoint from the backend directory:
+
+```powershell
+python -m pip install -r requirements.txt
+python train_newsmtsc.py
+```
+
+The script trains on the NewsMTSC real-world split, selects the checkpoint with
+the best validation macro F1, evaluates both the real-world and multi-target
+test sets, and writes the model plus `evaluation_metrics.json` to
+`backend/models/deberta-v3-newsmtsc`.
 
 ## 14. Cluster Eligibility Filters
 
@@ -219,7 +254,7 @@ After article scoring:
 2. coverage gap is computed:
    - `coverage_bias_rate = coverage_missing_majority / topics_considered`
 3. composite BSI is computed from sentiment, coverage, and emphasis components.
-4. source trust and misinformation-risk scores are derived from BSI, model confidence, evidence volume, and coverage quality.
+4. source trust and misinformation-risk scores are derived from BSI, evidence volume, and coverage quality. Sentiment classifier confidence is excluded because certainty about portrayal is not evidence of factual accuracy.
 5. outlet profile rows are upserted into `OutletBiasProfile`.
 
 ## 21. Topic-Level Outlet BSI Rows

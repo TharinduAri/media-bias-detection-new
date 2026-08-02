@@ -39,6 +39,7 @@ from .scorer import (
     init_outlet_stats,
     insert_snapshots_with_omission,
     insert_topic_bsi_rows,
+    replace_article_bias_evidence,
     upsert_article_bias_scores,
     upsert_profiles,
 )
@@ -129,6 +130,7 @@ def _migrate_article_bias_unique_constraint() -> None:
 def ensure_bias_tables(drop_first: bool = False) -> None:
     target_tables = [
         models.ArticleBiasScore.__table__,
+        models.ArticleBiasEvidence.__table__,
         models.ArticleEmbedding.__table__,
         models.OutletBiasProfile.__table__,
         models.BiasRunLog.__table__,
@@ -201,6 +203,16 @@ def _run_bias_analysis_impl(
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
         model_manager = get_models()
+        target_prep = model_manager.prepare_article_targets(recent_articles)
+        db.commit()
+        run_logs.append(
+            "Target preparation: "
+            f"articles={target_prep.articles_scanned}, "
+            f"sentences_added={target_prep.articles_with_sentences_added}, "
+            f"entity_articles={target_prep.articles_with_entities_added}, "
+            f"sentences_scanned={target_prep.sentences_scanned}, "
+            f"entities={target_prep.entities_extracted}"
+        )
         if skip_embedding:
             run_logs.append("Skipping embedding step — using saved embeddings.")
             embeddings_saved = 0
@@ -249,19 +261,23 @@ def _run_bias_analysis_impl(
             _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
             return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
 
-        texts = [row["text"] for row in analysis_rows]
-        sentiment_results = model_manager.analyze_sentiment(texts)
-        run_logs.append("Computed sentiment scores.")
+        sentiment_results = model_manager.analyze_sentiment(analysis_articles)
+        for article, sentiment in zip(analysis_articles, sentiment_results):
+            article.entity_sentiments = sentiment.entity_sentiments
+        run_logs.append("Computed target-dependent sentiment scores.")
         run_logs.append(
-            "Sentiment mix: "
+            "Target sentiment mix: "
             f"positive={sum(1 for r in sentiment_results if r.label == 'positive')}, "
             f"neutral={sum(1 for r in sentiment_results if r.label == 'neutral')}, "
             f"negative={sum(1 for r in sentiment_results if r.label == 'negative')}, "
-            f"near_zero_score={sum(1 for r in sentiment_results if abs(r.score) < 1e-6)}"
+            f"without_target_evidence={sum(1 for r in sentiment_results if r.target_pair_count == 0)}, "
+            f"target_pairs={sum(r.target_pair_count for r in sentiment_results)}"
         )
 
         now = datetime.utcnow()
         article_scores: List[models.ArticleBiasScore] = []
+        article_evidence_rows: List[models.ArticleBiasEvidence] = []
+        scored_evidence_keys: Set[tuple[int, str]] = set()
         outlet_stats = init_outlet_stats(outlets)
         outlet_topic_stats: Dict[str, Dict[str, Dict[str, Any]]] = {o: {} for o in outlets}
         outlet_score_arrays: Dict[str, Dict[str, List[float]]] = {
@@ -350,6 +366,8 @@ def _run_bias_analysis_impl(
                 })
                 bias_score = float(sentiment.score - group_mean)
                 emph = float(emph_dict["emphasis_bias"])
+                if article.id is not None and topic_key is not None:
+                    scored_evidence_keys.add((int(article.id), str(topic_key)))
                 article_scores.append(
                     models.ArticleBiasScore(
                         article_id=article.id,
@@ -371,6 +389,31 @@ def _run_bias_analysis_impl(
                         created_at=now,
                     )
                 )
+                for evidence in sentiment.sentence_sentiments:
+                    target = str(evidence.get("target", "") or "").strip()
+                    sentence = str(evidence.get("sentence", "") or "").strip()
+                    if not target or not sentence or article.id is None or topic_key is None:
+                        continue
+                    article_evidence_rows.append(
+                        models.ArticleBiasEvidence(
+                            article_id=int(article.id),
+                            outlet=article.outlet or "",
+                            topic_key=str(topic_key),
+                            topic_label=topic_label,
+                            target_entity=target,
+                            entity_label=evidence.get("entity_label"),
+                            sentence=sentence,
+                            sentence_index=int(evidence.get("sentence_index", 0) or 0),
+                            is_title=bool(evidence.get("is_title", False)),
+                            sentiment_label=str(evidence.get("label", "neutral") or "neutral"),
+                            sentiment_score=float(evidence.get("score", 0.0) or 0.0),
+                            sentiment_confidence=float(evidence.get("confidence", 0.0) or 0.0),
+                            negative_prob=float(evidence.get("negative", 0.0) or 0.0),
+                            neutral_prob=float(evidence.get("neutral", 0.0) or 0.0),
+                            positive_prob=float(evidence.get("positive", 0.0) or 0.0),
+                            created_at=now,
+                        )
+                    )
                 stats = outlet_stats[article.outlet]
                 stats["sentiment_bias_sum"] += bias_score
                 stats["sentiment_score_sum"] += sentiment.score
@@ -429,7 +472,13 @@ def _run_bias_analysis_impl(
 
         if article_scores:
             article_scores_saved = upsert_article_bias_scores(db, article_scores)
+            evidence_saved = replace_article_bias_evidence(
+                db,
+                article_evidence_rows,
+                scored_keys=scored_evidence_keys,
+            )
             run_logs.append(f"Article bias scores saved: {article_scores_saved}")
+            run_logs.append(f"Article bias evidence rows saved: {evidence_saved}")
         else:
             article_scores_saved = 0
             run_logs.append("No qualifying topic groups produced bias scores.")

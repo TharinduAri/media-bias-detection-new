@@ -18,6 +18,7 @@ from src.bias.scorer import (
     compute_soft_coverage_score,
     compute_source_trust_score,
     insert_snapshots_with_omission,
+    replace_article_bias_evidence,
     upsert_article_bias_scores,
 )
 
@@ -55,7 +56,7 @@ def test_compute_bsi_uses_soft_coverage_when_provided():
 
 # --- source trust / misinformation risk ---
 
-def test_source_trust_score_rewards_low_bias_confidence_and_evidence():
+def test_source_trust_score_rewards_low_bias_coverage_and_evidence():
     strong = compute_source_trust_score(
         bsi_score=0.1,
         sentiment_confidence_avg=0.9,
@@ -69,6 +70,22 @@ def test_source_trust_score_rewards_low_bias_confidence_and_evidence():
         coverage_bias_rate=0.7,
     )
     assert 0.0 <= weak < strong <= 1.0
+
+
+def test_source_trust_score_ignores_sentiment_classifier_confidence():
+    low_confidence = compute_source_trust_score(
+        bsi_score=0.2,
+        sentiment_confidence_avg=0.1,
+        articles_scored=10,
+        coverage_bias_rate=0.2,
+    )
+    high_confidence = compute_source_trust_score(
+        bsi_score=0.2,
+        sentiment_confidence_avg=0.99,
+        articles_scored=10,
+        coverage_bias_rate=0.2,
+    )
+    assert low_confidence == high_confidence
 
 
 def test_source_trust_score_uses_soft_coverage_when_available():
@@ -283,6 +300,52 @@ def test_upsert_article_bias_scores_updates_existing(mem_db):
     rows = mem_db.query(models.ArticleBiasScore).all()
     assert len(rows) == 1
     assert rows[0].sentiment_bias == pytest.approx(0.99, abs=1e-5)
+
+
+def _make_evidence(
+    article_id: int,
+    topic_key: str,
+    target_entity: str = "IMF",
+    sentence: str = "The IMF said reforms were delayed.",
+) -> models.ArticleBiasEvidence:
+    return models.ArticleBiasEvidence(
+        article_id=article_id,
+        outlet="Test Outlet",
+        topic_key=topic_key,
+        topic_label="Test Topic",
+        target_entity=target_entity,
+        entity_label="ORG",
+        sentence=sentence,
+        sentence_index=1,
+        is_title=False,
+        sentiment_label="negative",
+        sentiment_score=-0.7,
+        sentiment_confidence=0.8,
+        negative_prob=0.8,
+        neutral_prob=0.1,
+        positive_prob=0.1,
+        created_at=datetime.utcnow(),
+    )
+
+
+def test_replace_article_bias_evidence_replaces_existing_rows(mem_db):
+    original = _make_evidence(1, "topic-aaa", target_entity="IMF")
+    assert replace_article_bias_evidence(mem_db, [original]) == 1
+
+    updated = _make_evidence(1, "topic-aaa", target_entity="Government")
+    assert replace_article_bias_evidence(mem_db, [updated]) == 1
+
+    rows = mem_db.query(models.ArticleBiasEvidence).all()
+    assert len(rows) == 1
+    assert rows[0].target_entity == "Government"
+
+
+def test_replace_article_bias_evidence_clears_scored_key_without_new_evidence(mem_db):
+    original = _make_evidence(1, "topic-aaa")
+    replace_article_bias_evidence(mem_db, [original])
+
+    assert replace_article_bias_evidence(mem_db, [], scored_keys={(1, "topic-aaa")}) == 0
+    assert mem_db.query(models.ArticleBiasEvidence).count() == 0
 
 
 # ── insert_snapshots_with_omission (new outlet fallback) ─────────────────────

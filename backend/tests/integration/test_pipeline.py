@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 from api import models
 from api.database import Base
+from src.bias.entity_extraction import EntityPreparationStats
 from src.bias.models_manager import SentimentResult
 
 
@@ -114,9 +115,29 @@ def test_full_pipeline_end_to_end(db_session, seeded_articles):
 
     mock_manager = MagicMock()
     mock_manager.embedding_model_name = "all-mpnet-base-v2"
-    mock_manager.sentiment_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+    mock_manager.sentiment_model_name = "models/deberta-v3-newsmtsc"
+    mock_manager.prepare_article_targets.return_value = EntityPreparationStats(
+        articles_scanned=n,
+        articles_with_sentences_added=0,
+        articles_with_entities_added=0,
+        sentences_scanned=0,
+        entities_extracted=0,
+    )
     mock_manager.analyze_sentiment.return_value = [
-        SentimentResult(label="neutral", confidence=0.8, score=float(i % 3) * 0.1 - 0.1)
+        SentimentResult(
+            label="neutral",
+            confidence=0.8,
+            score=float(i % 3) * 0.1 - 0.1,
+            entity_sentiments=[
+                {
+                    "target": "Entity0",
+                    "label": "neutral",
+                    "score": 0.0,
+                    "confidence": 0.8,
+                }
+            ],
+            target_pair_count=1,
+        )
         for i in range(n)
     ]
     mock_manager.generate_topic_label.return_value = ("Test Topic", "gemini")
@@ -129,13 +150,7 @@ def test_full_pipeline_end_to_end(db_session, seeded_articles):
         patch("src.bias.service.load_analysis_rows", return_value=(analysis_rows, embeddings)),
         patch("src.bias.service.generate_labels_with_gemini", return_value=["Test Topic"] * 20),
         patch("src.bias.service._persist_run_log") as mock_log,
-        patch("src.bias.service.distinct") as mock_distinct,
     ):
-        # Mock distinct outlet query
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.all.return_value = [
-            ("Outlet A",), ("Outlet B",), ("Outlet C",)
-        ]
         mock_log.return_value.id = 1
 
         from src.bias.service import _run_bias_analysis_impl
@@ -144,6 +159,8 @@ def test_full_pipeline_end_to_end(db_session, seeded_articles):
     assert result["status"] == "ok"
     assert result["topics_processed"] >= 1
     assert result["profiles_updated"] >= 1
+    db_session.refresh(seeded_articles[0])
+    assert seeded_articles[0].entity_sentiments[0]["target"] == "Entity0"
 
 
 def test_pipeline_returns_empty_result_with_no_articles(db_session):
@@ -169,7 +186,14 @@ def test_bsi_scores_in_valid_range(db_session, seeded_articles):
 
     mock_manager = MagicMock()
     mock_manager.embedding_model_name = "all-mpnet-base-v2"
-    mock_manager.sentiment_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+    mock_manager.sentiment_model_name = "models/deberta-v3-newsmtsc"
+    mock_manager.prepare_article_targets.return_value = EntityPreparationStats(
+        articles_scanned=n,
+        articles_with_sentences_added=0,
+        articles_with_entities_added=0,
+        sentences_scanned=0,
+        entities_extracted=0,
+    )
     mock_manager.analyze_sentiment.return_value = [
         SentimentResult(label="neutral", confidence=0.8, score=0.1) for _ in range(n)
     ]
@@ -183,13 +207,8 @@ def test_bsi_scores_in_valid_range(db_session, seeded_articles):
         patch("src.bias.service.load_analysis_rows", return_value=(analysis_rows, embeddings)),
         patch("src.bias.service.generate_labels_with_gemini", return_value=["Economics"] * 20),
         patch("src.bias.service._persist_run_log") as mock_log,
-        patch("src.bias.service.distinct"),
     ):
         mock_log.return_value.id = 1
-        mock_db = MagicMock()
-        mock_db.query.return_value.filter.return_value.all.return_value = [
-            ("Outlet A",), ("Outlet B",), ("Outlet C",)
-        ]
 
         from src.bias.service import _run_bias_analysis_impl
         _run_bias_analysis_impl(db=db_session, external_clusters=None, skip_embedding=True)

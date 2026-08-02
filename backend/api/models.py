@@ -54,6 +54,28 @@ class ArticleBiasScore(Base):
     __table_args__ = (UniqueConstraint("article_id", "topic_key", name="uq_article_bias_article_topic"),)
 
 
+class ArticleBiasEvidence(Base):
+    __tablename__ = "ArticleBiasEvidence"
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, nullable=False, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    topic_key = Column(String, nullable=False, index=True)
+    topic_label = Column(String, nullable=True)
+    target_entity = Column(String, nullable=False, index=True)
+    entity_label = Column(String, nullable=True)
+    sentence = Column(Text, nullable=False)
+    sentence_index = Column(Integer, nullable=False)
+    is_title = Column(Boolean, nullable=False, default=False)
+    sentiment_label = Column(String, nullable=False)
+    sentiment_score = Column(Float, nullable=False)
+    sentiment_confidence = Column(Float, nullable=False)
+    negative_prob = Column(Float, nullable=False)
+    neutral_prob = Column(Float, nullable=False)
+    positive_prob = Column(Float, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
 class ArticleEmbedding(Base):
     __tablename__ = "ArticleEmbedding"
 

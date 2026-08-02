@@ -33,4 +33,5 @@ build/
 
 # Data and Logs
 backend/data/
+backend/models/
 *.jsonl

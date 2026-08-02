@@ -11,7 +11,12 @@ lxml_html_clean
 beautifulsoup4
 sentence-transformers
 transformers
+datasets
+accelerate
+sentencepiece
+protobuf
 scikit-learn
-torch
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.11.0+cu130
 numpy
 keybert

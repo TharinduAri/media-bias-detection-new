@@ -4,6 +4,7 @@ from api import models
 def reset_bias_tables():
     target_tables = [
         models.ArticleBiasScore.__table__,
+        models.ArticleBiasEvidence.__table__,
         models.ArticleEmbedding.__table__,
         models.OutletBiasProfile.__table__,
         models.BiasRunLog.__table__,
