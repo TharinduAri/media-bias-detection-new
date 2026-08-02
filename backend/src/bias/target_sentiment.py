@@ -29,6 +29,7 @@ class SentimentResult:
     confidence: float
     score: float
     entity_sentiments: List[Dict[str, Any]] = field(default_factory=list)
+    sentence_sentiments: List[Dict[str, Any]] = field(default_factory=list)
     target_pair_count: int = 0
 
 
@@ -139,6 +140,7 @@ def aggregate_target_sentiment(
         raise ValueError("Target pairs and sentiment distributions must have equal length.")
 
     grouped: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    sentence_rows_by_article: Dict[int, List[Dict[str, Any]]] = {}
     for pair, raw_distribution in zip(pairs, distributions):
         probabilities = {
             label: max(float(raw_distribution.get(label, 0.0)), 0.0)
@@ -151,6 +153,25 @@ def aggregate_target_sentiment(
             probabilities = {
                 label: value / total for label, value in probabilities.items()
             }
+
+        pair_label = _label_from_probabilities(probabilities)
+        pair_confidence = probabilities[pair_label]
+        pair_score = probabilities["positive"] - probabilities["negative"]
+        sentence_rows_by_article.setdefault(pair.article_index, []).append(
+            {
+                "target": pair.target,
+                "entity_label": pair.entity_label or None,
+                "sentence": pair.sentence,
+                "sentence_index": int(pair.sentence_index),
+                "is_title": bool(pair.is_title),
+                "label": pair_label,
+                "score": round(float(pair_score), 6),
+                "confidence": round(float(pair_confidence), 6),
+                "negative": round(float(probabilities["negative"]), 6),
+                "neutral": round(float(probabilities["neutral"]), 6),
+                "positive": round(float(probabilities["positive"]), 6),
+            }
+        )
 
         article_targets = grouped.setdefault(pair.article_index, {})
         target_key = pair.target.casefold()
@@ -226,6 +247,7 @@ def aggregate_target_sentiment(
                     label="neutral",
                     confidence=0.0,
                     score=0.0,
+                    sentence_sentiments=sentence_rows_by_article.get(article_index, []),
                 )
             )
             continue
@@ -248,6 +270,7 @@ def aggregate_target_sentiment(
                 confidence=round(float(article_probabilities[article_label]), 6),
                 score=round(float(max(-1.0, min(1.0, article_score))), 6),
                 entity_sentiments=target_rows,
+                sentence_sentiments=sentence_rows_by_article.get(article_index, []),
                 target_pair_count=sum(row["mentions"] for row in target_rows),
             )
         )

@@ -129,6 +129,31 @@ def get_article_bias(article_id: int, db: Session = Depends(get_db)):
     return scores
 
 
+@router.get("/articles/{article_id}/evidence", response_model=list[schemas.ArticleBiasEvidenceResponse])
+def get_article_bias_evidence(
+    article_id: int,
+    topic_key: str | None = Query(None, description="Filter evidence to one topic"),
+    db: Session = Depends(get_db),
+):
+    """Return sentence-level target sentiment evidence used for article bias scoring."""
+    ensure_bias_tables()
+    q = (
+        db.query(models.ArticleBiasEvidence)
+        .filter(models.ArticleBiasEvidence.article_id == article_id)
+    )
+    if topic_key:
+        q = q.filter(models.ArticleBiasEvidence.topic_key == topic_key)
+    return (
+        q.order_by(
+            models.ArticleBiasEvidence.topic_key.asc(),
+            models.ArticleBiasEvidence.is_title.desc(),
+            models.ArticleBiasEvidence.sentence_index.asc(),
+            models.ArticleBiasEvidence.target_entity.asc(),
+        )
+        .all()
+    )
+
+
 @router.get("/topics", response_model=list[schemas.TopicSummaryResponse])
 def list_bias_topics(
     db: Session = Depends(get_db),
@@ -213,6 +238,7 @@ def cleanup_bias_results_keep_embeddings(db: Session = Depends(get_db)):
     """Clear all bias results but keep article embeddings."""
     ensure_bias_tables()
     deleted_articles = db.query(models.ArticleBiasScore).delete(synchronize_session=False)
+    deleted_evidence = db.query(models.ArticleBiasEvidence).delete(synchronize_session=False)
     deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
     deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
     db.query(models.OutletBiasSnapshot).delete(synchronize_session=False)
@@ -222,6 +248,7 @@ def cleanup_bias_results_keep_embeddings(db: Session = Depends(get_db)):
         "status": "ok",
         "message": "Bias results cleared. Embeddings preserved.",
         "deleted_article_scores": deleted_articles,
+        "deleted_article_evidence": deleted_evidence,
         "deleted_outlet_profiles": deleted_profiles,
         "deleted_run_logs": deleted_logs,
     }
@@ -231,6 +258,7 @@ def cleanup_bias_results_keep_embeddings(db: Session = Depends(get_db)):
 def cleanup_bias_results(db: Session = Depends(get_db)):
     ensure_bias_tables()
     deleted_articles = db.query(models.ArticleBiasScore).delete(synchronize_session=False)
+    deleted_evidence = db.query(models.ArticleBiasEvidence).delete(synchronize_session=False)
     deleted_embeddings = db.query(models.ArticleEmbedding).delete(synchronize_session=False)
     deleted_profiles = db.query(models.OutletBiasProfile).delete(synchronize_session=False)
     deleted_logs = db.query(models.BiasRunLog).delete(synchronize_session=False)
@@ -241,6 +269,7 @@ def cleanup_bias_results(db: Session = Depends(get_db)):
         "status": "ok",
         "message": "Bias analysis data cleared.",
         "deleted_article_scores": deleted_articles,
+        "deleted_article_evidence": deleted_evidence,
         "deleted_article_embeddings": deleted_embeddings,
         "deleted_outlet_profiles": deleted_profiles,
         "deleted_run_logs": deleted_logs,

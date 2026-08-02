@@ -70,6 +70,14 @@ def test_aggregate_target_sentiment_keeps_targets_separate():
     assert entities["Alice"]["score"] == pytest.approx(0.75)
     assert entities["Bob"]["label"] == "negative"
     assert entities["Bob"]["score"] == pytest.approx(-0.60)
+    evidence = {(row["target"], row["sentence"]) for row in result.sentence_sentiments}
+    assert evidence == {
+        ("Alice", "Alice praised Bob."),
+        ("Bob", "Alice praised Bob."),
+    }
+    alice_evidence = next(row for row in result.sentence_sentiments if row["target"] == "Alice")
+    assert alice_evidence["positive"] == pytest.approx(0.8)
+    assert alice_evidence["score"] == pytest.approx(0.75)
     assert result.target_pair_count == 2
 
 
@@ -79,4 +87,5 @@ def test_aggregate_target_sentiment_returns_no_evidence_for_unmatched_article():
     assert result.score == 0.0
     assert result.confidence == 0.0
     assert result.entity_sentiments == []
+    assert result.sentence_sentiments == []
     assert result.target_pair_count == 0

@@ -418,6 +418,28 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
     return len(deduped)
 
 
+def replace_article_bias_evidence(
+    db: Session,
+    rows: List[models.ArticleBiasEvidence],
+    scored_keys: Iterable[Tuple[int, str]] | None = None,
+) -> int:
+    """Replace sentence-level evidence keyed by (article_id, topic_key)."""
+    keys = set(scored_keys or [])
+    keys.update((row.article_id, row.topic_key) for row in rows)
+    for article_id, topic_key in keys:
+        (
+            db.query(models.ArticleBiasEvidence)
+            .filter(models.ArticleBiasEvidence.article_id == article_id)
+            .filter(models.ArticleBiasEvidence.topic_key == topic_key)
+            .delete(synchronize_session="fetch")
+        )
+
+    if rows:
+        db.add_all(rows)
+    db.commit()
+    return len(rows)
+
+
 def insert_topic_bsi_rows(db: Session, rows: List[models.OutletTopicBSI]) -> int:
     if not rows:
         return 0
