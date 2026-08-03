@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from src.bias.service import (
+    analyze_manual_article,
     ensure_bias_tables,
     get_models,
     get_run_state,
@@ -87,6 +88,26 @@ def run_bias_with_clusters(
 ):
     try:
         return run_bias_analysis_with_clusters(db=db, clusters=payload.clusters)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/manual-article", response_model=schemas.ManualArticleBiasResponse)
+def analyze_single_manual_article(
+    payload: schemas.ManualArticleBiasRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return analyze_manual_article(
+            db=db,
+            outlet=payload.outlet,
+            title=payload.title,
+            text_body=payload.text,
+            url=payload.url,
+            article_date=payload.date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

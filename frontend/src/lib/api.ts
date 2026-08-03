@@ -265,6 +265,60 @@ export interface BiasTopicClusterInput {
   article_ids: number[];
 }
 
+export interface ManualArticleBiasInput {
+  outlet: string;
+  title: string;
+  text: string;
+  url?: string;
+  date?: string;
+}
+
+export interface ManualArticlePeerData {
+  article_id: number;
+  outlet: string;
+  title: string;
+  url: string;
+  similarity: number;
+  sentiment_score: number;
+  sentiment_label: string;
+}
+
+export interface ManualArticleBiasData {
+  article: ArticleData;
+  sentiment_label: string;
+  sentiment_score: number;
+  sentiment_confidence: number;
+  target_pair_count: number;
+  entity_sentiments: EntitySentimentData[];
+  sentence_evidence: Array<{
+    target: string;
+    entity_label?: string | null;
+    sentence: string;
+    sentence_index: number;
+    is_title: boolean;
+    label: string;
+    score: number;
+    confidence: number;
+    negative: number;
+    neutral: number;
+    positive: number;
+  }>;
+  relative_sentiment_bias: number | null;
+  peer_sentiment_mean: number | null;
+  peer_count: number;
+  peer_outlet_count: number;
+  topic_key: string | null;
+  topic_label: string | null;
+  topic_similarity: number | null;
+  emphasis_bias: number | null;
+  bias_signal: number;
+  bias_label: string;
+  saved_article_bias_score: boolean;
+  outlet_profile: OutletBiasProfileData | null;
+  matched_articles: ManualArticlePeerData[];
+  notes: string[];
+}
+
 export const OUTLET_NAMES: string[] = [
   "Ada Derana",
   "Ceylon Today",
@@ -467,6 +521,24 @@ export async function triggerBiasAnalysisWithClusters(
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to run bias analysis with external clusters");
+  }
+
+  return res.json();
+}
+
+export async function createManualArticleBiasReading(
+  input: ManualArticleBiasInput
+): Promise<ManualArticleBiasData> {
+  const res = await fetch(`${API_BASE_URL}/bias/manual-article`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to analyze article");
   }
 
   return res.json();
