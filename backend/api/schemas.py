@@ -59,6 +59,24 @@ class BiasRunWithClustersRequest(BaseModel):
     clusters: List[BiasTopicClusterRequest]
 
 
+class ManualArticleBiasRequest(BaseModel):
+    outlet: str
+    title: str
+    text: str
+    url: Optional[str] = None
+    date: Optional[datetime] = None
+
+
+class ManualArticlePeerResponse(BaseModel):
+    article_id: int
+    outlet: str
+    title: str
+    url: str
+    similarity: float
+    sentiment_score: float
+    sentiment_label: str
+
+
 class ArticleBiasScoreResponse(BaseModel):
     id: int
     article_id: int
@@ -153,6 +171,30 @@ class OutletBiasProfileResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ManualArticleBiasResponse(BaseModel):
+    article: ArticleResponse
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_confidence: float
+    target_pair_count: int
+    entity_sentiments: List[dict]
+    sentence_evidence: List[dict]
+    relative_sentiment_bias: Optional[float] = None
+    peer_sentiment_mean: Optional[float] = None
+    peer_count: int
+    peer_outlet_count: int
+    topic_key: Optional[str] = None
+    topic_label: Optional[str] = None
+    topic_similarity: Optional[float] = None
+    emphasis_bias: Optional[float] = None
+    bias_signal: float
+    bias_label: str
+    saved_article_bias_score: bool
+    outlet_profile: Optional[OutletBiasProfileResponse] = None
+    matched_articles: List[ManualArticlePeerResponse]
+    notes: List[str]
 
 
 class OutletCompareRequest(BaseModel):

@@ -4,6 +4,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Set
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,9 @@ from .clusterer import (
     MIN_TOPIC_OUTLETS,
 )
 from .embedder import (
+    _embed_texts,
     _resolve_embedding_model_name,
+    _upsert_article_embeddings,
     load_analysis_rows,
     prepare_embeddings,
 )
@@ -34,6 +37,7 @@ from .models_manager import SentimentResult, generate_labels_with_gemini, get_mo
 from .scorer import (
     COVERAGE_MAJORITY_THRESHOLD,
     build_profiles,
+    compute_bsi,
     compute_emphasis_bias,
     compute_soft_coverage_score,
     init_outlet_stats,
@@ -43,7 +47,7 @@ from .scorer import (
     upsert_article_bias_scores,
     upsert_profiles,
 )
-from .text_utils import _build_outlet_blocklist
+from .text_utils import _build_article_text, _build_outlet_blocklist
 
 # Re-exported for backward compatibility with api/routers/bias.py
 __all__ = [
@@ -51,6 +55,7 @@ __all__ = [
     "get_models",
     "run_bias_analysis",
     "run_bias_analysis_with_clusters",
+    "analyze_manual_article",
     "TopicClusterSpec",
     "SentimentResult",
 ]
@@ -162,6 +167,9 @@ def run_bias_analysis_with_clusters(
 
 EMBEDDING_PROVIDER = "local"
 EMBEDDING_MODEL_KEY = "mpnet_v2"
+MANUAL_PEER_LIMIT = 12
+MANUAL_MIN_PEER_SIMILARITY = 0.35
+MANUAL_FALLBACK_PEER_SIMILARITY = 0.25
 
 
 def _run_bias_analysis_impl(
@@ -538,6 +546,334 @@ def _run_bias_analysis_impl(
         db.rollback()
         _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
         raise
+
+
+def analyze_manual_article(
+    db: Session,
+    outlet: str,
+    title: str,
+    text_body: str,
+    url: str | None = None,
+    article_date: datetime | None = None,
+) -> Dict[str, object]:
+    """Insert a pasted article and return a single-article bias reading.
+
+    The strongest reading is peer-relative: the new article is embedded, matched
+    to similar stored articles, and its target sentiment is compared to those
+    peers. When peer evidence is thin, the response still returns target
+    sentiment and marks the peer-relative fields as unavailable.
+    """
+    ensure_bias_tables()
+
+    outlet = (outlet or "").strip()
+    title = (title or "").strip()
+    text_body = (text_body or "").strip()
+    url = (url or "").strip() or _manual_article_url(outlet)
+    now = datetime.utcnow()
+
+    if not outlet:
+        raise ValueError("Outlet is required.")
+    if len(title) < 5:
+        raise ValueError("Title must be at least 5 characters.")
+    if len(text_body) < 100:
+        raise ValueError("Article text must be at least 100 characters.")
+
+    outlets = [
+        row[0]
+        for row in db.query(distinct(models.Article.outlet))
+        .filter(models.Article.outlet.isnot(None))
+        .order_by(models.Article.outlet.asc())
+        .all()
+        if row[0]
+    ]
+    if outlet not in set(outlets):
+        raise ValueError("Selected outlet does not exist in the stored outlet list.")
+
+    existing = db.query(models.Article).filter(models.Article.url == url).first()
+    if existing:
+        raise ValueError("An article with this URL already exists.")
+
+    article = models.Article(
+        outlet=outlet,
+        date=article_date or now,
+        title=title,
+        url=url,
+        text=text_body,
+        clean_text=text_body,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(article)
+    db.flush()
+
+    outlet_blocklist = _build_outlet_blocklist(outlets)
+    model_manager = get_models()
+    model_manager.prepare_article_targets([article])
+    db.flush()
+
+    embedding_model = _resolve_embedding_model_name(EMBEDDING_PROVIDER, EMBEDDING_MODEL_KEY)
+    article_text = _build_article_text(article, outlet_blocklist)
+    article_embedding = _embed_texts(
+        texts=[article_text],
+        embedding_provider=EMBEDDING_PROVIDER,
+        local_embedding_key=EMBEDDING_MODEL_KEY,
+        model_manager=model_manager,
+    )
+    _upsert_article_embeddings(
+        db=db,
+        articles=[article],
+        texts=[article_text],
+        embeddings=article_embedding,
+        embedding_provider=EMBEDDING_PROVIDER,
+        embedding_model=embedding_model,
+        now=now,
+    )
+
+    peer_matches = _find_manual_article_peers(
+        db=db,
+        article_id=int(article.id),
+        query_embedding=article_embedding[0],
+        embedding_model=embedding_model,
+    )
+    peer_articles = [match["article"] for match in peer_matches]
+    if peer_articles:
+        model_manager.prepare_article_targets(peer_articles)
+
+    cluster_articles = [article] + peer_articles
+    sentiment_results = model_manager.analyze_sentiment(cluster_articles)
+    manual_sentiment = sentiment_results[0]
+    article.entity_sentiments = manual_sentiment.entity_sentiments
+    for peer, sentiment in zip(peer_articles, sentiment_results[1:]):
+        peer.entity_sentiments = sentiment.entity_sentiments
+
+    peer_outlets = {peer.outlet for peer in peer_articles if peer.outlet}
+    cluster_outlets = {a.outlet for a in cluster_articles if a.outlet}
+    comparable = len(peer_articles) >= 2 and len(cluster_outlets) >= 2
+
+    relative_sentiment_bias: float | None = None
+    peer_sentiment_mean: float | None = None
+    topic_key: str | None = None
+    topic_label: str | None = None
+    topic_similarity: float | None = None
+    emphasis: Dict[str, float] | None = None
+    saved_article_bias_score = False
+
+    if peer_articles:
+        topic_similarity = float(np.mean([m["similarity"] for m in peer_matches]))
+
+    if comparable:
+        peer_scores = [r.score for r in sentiment_results[1:]]
+        peer_sentiment_mean = float(np.mean(peer_scores)) if peer_scores else 0.0
+        relative_sentiment_bias = float(manual_sentiment.score - peer_sentiment_mean)
+
+        cluster_embeddings = _cluster_embeddings(article_embedding[0], peer_matches)
+        topic_label, _ = model_manager.generate_topic_label(
+            [a.title for a in cluster_articles],
+            outlet_blocklist,
+            cluster_embeddings,
+        )
+        topic_key = stable_topic_key(
+            cluster_embeddings=cluster_embeddings,
+            articles=cluster_articles,
+            indices=list(range(len(cluster_articles))),
+        )
+        emphasis = compute_emphasis_bias(list(range(len(cluster_articles))), cluster_articles).get(0)
+
+        coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
+        score_row = models.ArticleBiasScore(
+            article_id=article.id,
+            outlet=article.outlet,
+            topic_key=topic_key,
+            topic_label=topic_label,
+            sentiment_label=manual_sentiment.label,
+            sentiment_score=float(manual_sentiment.score),
+            sentiment_confidence=float(manual_sentiment.confidence),
+            sentiment_bias=relative_sentiment_bias,
+            group_sentiment_mean=peer_sentiment_mean,
+            coverage_majority=coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD,
+            coverage_present=True,
+            emphasis_bias=float(emphasis["emphasis_bias"]) if emphasis else 0.0,
+            dominant_outlet=False,
+            emphasis_length_bias=float(emphasis["length_bias"]) if emphasis else 0.0,
+            emphasis_sentence_bias=float(emphasis["sentence_bias"]) if emphasis else 0.0,
+            emphasis_entity_bias=float(emphasis["entity_bias"]) if emphasis else 0.0,
+            created_at=now,
+        )
+        upsert_article_bias_scores(db, [score_row])
+        replace_article_bias_evidence(
+            db,
+            _manual_evidence_rows(
+                article=article,
+                topic_key=topic_key,
+                topic_label=topic_label,
+                sentiment=manual_sentiment,
+                created_at=now,
+            ),
+            scored_keys={(int(article.id), topic_key)},
+        )
+        saved_article_bias_score = True
+
+    db.commit()
+
+    outlet_profile = (
+        db.query(models.OutletBiasProfile)
+        .filter(models.OutletBiasProfile.outlet == outlet)
+        .first()
+    )
+    bias_signal = compute_bsi(
+        relative_sentiment_bias if relative_sentiment_bias is not None else manual_sentiment.score,
+        0.0,
+        float(emphasis["emphasis_bias"]) if emphasis else 0.0,
+    )
+
+    notes: List[str] = []
+    if not peer_matches:
+        notes.append("No embedded peer articles were close enough for a peer-relative comparison.")
+    elif not comparable:
+        notes.append("Peer evidence was found, but not enough cross-outlet peers were available for a robust relative score.")
+    else:
+        notes.append("Relative bias compares this article's target sentiment with similar stored articles.")
+    if outlet_profile is None:
+        notes.append("No outlet profile is available yet; run full bias analysis to add outlet-level context.")
+
+    return {
+        "article": article,
+        "sentiment_label": manual_sentiment.label,
+        "sentiment_score": float(manual_sentiment.score),
+        "sentiment_confidence": float(manual_sentiment.confidence),
+        "target_pair_count": int(manual_sentiment.target_pair_count),
+        "entity_sentiments": manual_sentiment.entity_sentiments,
+        "sentence_evidence": manual_sentiment.sentence_sentiments[:25],
+        "relative_sentiment_bias": relative_sentiment_bias,
+        "peer_sentiment_mean": peer_sentiment_mean,
+        "peer_count": len(peer_articles),
+        "peer_outlet_count": len(peer_outlets),
+        "topic_key": topic_key,
+        "topic_label": topic_label,
+        "topic_similarity": topic_similarity,
+        "emphasis_bias": float(emphasis["emphasis_bias"]) if emphasis else None,
+        "bias_signal": float(bias_signal),
+        "bias_label": _bias_signal_label(float(bias_signal)),
+        "saved_article_bias_score": saved_article_bias_score,
+        "outlet_profile": outlet_profile,
+        "matched_articles": [
+            {
+                "article_id": int(peer.id),
+                "outlet": peer.outlet,
+                "title": peer.title,
+                "url": peer.url,
+                "similarity": float(match["similarity"]),
+                "sentiment_score": float(sentiment.score),
+                "sentiment_label": sentiment.label,
+            }
+            for match, peer, sentiment in zip(peer_matches, peer_articles, sentiment_results[1:])
+        ],
+        "notes": notes,
+    }
+
+
+def _manual_article_url(outlet: str) -> str:
+    slug = "-".join((outlet or "manual").lower().split())
+    return f"manual://{slug}/{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+
+
+def _find_manual_article_peers(
+    db: Session,
+    article_id: int,
+    query_embedding: np.ndarray,
+    embedding_model: str,
+) -> List[Dict[str, Any]]:
+    rows = (
+        db.query(models.ArticleEmbedding, models.Article)
+        .join(models.Article, models.Article.id == models.ArticleEmbedding.article_id)
+        .filter(models.ArticleEmbedding.article_id != article_id)
+        .filter(models.ArticleEmbedding.embedding_provider == EMBEDDING_PROVIDER)
+        .filter(models.ArticleEmbedding.embedding_model == embedding_model)
+        .filter(models.Article.text.isnot(None))
+        .filter(func.length(models.Article.text) > 100)
+        .all()
+    )
+    if not rows:
+        return []
+
+    query = np.asarray(query_embedding, dtype=np.float32)
+    q_norm = np.linalg.norm(query)
+    if q_norm > 1e-8:
+        query = query / q_norm
+
+    matches: List[Dict[str, Any]] = []
+    for embedding_row, article in rows:
+        vector_raw = embedding_row.embedding if isinstance(embedding_row.embedding, list) else []
+        if not vector_raw or len(vector_raw) != len(query):
+            continue
+        vector = np.asarray([float(v) for v in vector_raw], dtype=np.float32)
+        norm = np.linalg.norm(vector)
+        if norm > 1e-8:
+            vector = vector / norm
+        similarity = float(np.dot(query, vector))
+        matches.append({"article": article, "embedding": vector, "similarity": similarity})
+
+    matches.sort(key=lambda item: item["similarity"], reverse=True)
+    close = [m for m in matches if m["similarity"] >= MANUAL_MIN_PEER_SIMILARITY]
+    if len(close) >= 2:
+        return close[:MANUAL_PEER_LIMIT]
+    fallback = [m for m in matches if m["similarity"] >= MANUAL_FALLBACK_PEER_SIMILARITY]
+    return fallback[:MANUAL_PEER_LIMIT]
+
+
+def _cluster_embeddings(
+    manual_embedding: np.ndarray,
+    peer_matches: List[Dict[str, Any]],
+) -> np.ndarray:
+    vectors = [np.asarray(manual_embedding, dtype=np.float32)]
+    vectors.extend(np.asarray(match["embedding"], dtype=np.float32) for match in peer_matches)
+    return np.asarray(vectors, dtype=np.float32)
+
+
+def _manual_evidence_rows(
+    article: models.Article,
+    topic_key: str,
+    topic_label: str | None,
+    sentiment: SentimentResult,
+    created_at: datetime,
+) -> List[models.ArticleBiasEvidence]:
+    rows: List[models.ArticleBiasEvidence] = []
+    for evidence in sentiment.sentence_sentiments:
+        target = str(evidence.get("target", "") or "").strip()
+        sentence = str(evidence.get("sentence", "") or "").strip()
+        if not target or not sentence:
+            continue
+        rows.append(
+            models.ArticleBiasEvidence(
+                article_id=int(article.id),
+                outlet=article.outlet or "",
+                topic_key=topic_key,
+                topic_label=topic_label,
+                target_entity=target,
+                entity_label=evidence.get("entity_label"),
+                sentence=sentence,
+                sentence_index=int(evidence.get("sentence_index", 0) or 0),
+                is_title=bool(evidence.get("is_title", False)),
+                sentiment_label=str(evidence.get("label", "neutral") or "neutral"),
+                sentiment_score=float(evidence.get("score", 0.0) or 0.0),
+                sentiment_confidence=float(evidence.get("confidence", 0.0) or 0.0),
+                negative_prob=float(evidence.get("negative", 0.0) or 0.0),
+                neutral_prob=float(evidence.get("neutral", 0.0) or 0.0),
+                positive_prob=float(evidence.get("positive", 0.0) or 0.0),
+                created_at=created_at,
+            )
+        )
+    return rows
+
+
+def _bias_signal_label(score: float) -> str:
+    if score >= 0.7:
+        return "High"
+    if score >= 0.4:
+        return "Moderate"
+    if score >= 0.2:
+        return "Low"
+    return "Minimal"
 
 
 def _load_recent_articles(db: Session, since: datetime) -> List[models.Article]:

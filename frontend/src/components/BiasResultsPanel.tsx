@@ -11,6 +11,7 @@ import {
 
 interface Props {
   outlets: string[];
+  mode?: "all" | "profiles";
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
@@ -581,8 +582,9 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
 
 type Tab = "profiles" | "articles";
 
-export default function BiasResultsPanel({ outlets }: Props) {
+export default function BiasResultsPanel({ outlets, mode = "all" }: Props) {
   const [tab, setTab] = useState<Tab>("profiles");
+  const profilesOnly = mode === "profiles";
 
   return (
     <section className="space-y-6">
@@ -591,33 +593,37 @@ export default function BiasResultsPanel({ outlets }: Props) {
         <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Bias Analysis Results</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Outlet profiles, side-by-side comparison, and every scored article.
+            {profilesOnly
+              ? "Outlet profiles and side-by-side comparison."
+              : "Outlet profiles, side-by-side comparison, and every scored article."}
           </p>
-          <div className="mt-4 flex gap-1">
-            {(["profiles", "articles"] as Tab[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                  tab === t
-                    ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900"
-                    : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                }`}
-              >
-                {t === "profiles" ? "Profiles & Compare" : "Scored Articles"}
-              </button>
-            ))}
-          </div>
+          {!profilesOnly && (
+            <div className="mt-4 flex gap-1">
+              {(["profiles", "articles"] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    tab === t
+                      ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900"
+                      : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  }`}
+                >
+                  {t === "profiles" ? "Profiles & Compare" : "Scored Articles"}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {tab === "profiles" && (
+        {(profilesOnly || tab === "profiles") && (
           <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
             <OutletProfileCard outlets={outlets} />
             <CompareCard outlets={outlets} />
           </div>
         )}
 
-        {tab === "articles" && (
+        {!profilesOnly && tab === "articles" && (
           <div className="px-5 py-5">
             <ArticlesTable outlets={outlets} />
           </div>
