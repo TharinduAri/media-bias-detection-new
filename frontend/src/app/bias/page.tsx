@@ -1,10 +1,6 @@
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import BiasCleanupButton from "@/components/BiasCleanupButton";
-import ManualArticleBiasPanel from "@/components/ManualArticleBiasPanel";
-import TopicValidationPanel from "@/components/TopicValidationPanel";
-import CoverageHeatmap from "@/components/CoverageHeatmap";
-import BiasResultsPanel from "@/components/BiasResultsPanel";
-import BsiLeaderboard from "@/components/BsiLeaderboard";
+import BiasPageTabs from "@/components/BiasPageTabs";
 import { fetchArticleOutlets, fetchBiasTopics } from "@/lib/api";
 
 export const metadata = {
@@ -44,12 +40,8 @@ export default async function BiasPage() {
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-12">
-        <ManualArticleBiasPanel outlets={outlets} />
-        <BsiLeaderboard />
-        <BiasResultsPanel outlets={outlets} />
-        <TopicValidationPanel />
-        <CoverageHeatmap />
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <BiasPageTabs outlets={outlets} />
       </main>
     </div>
   );
