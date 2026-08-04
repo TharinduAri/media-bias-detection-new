@@ -11,6 +11,12 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "sri_lanka_political_actors.json"
 POLITICAL_SIDES = {"government", "opposition"}
+ACTOR_TYPE_WEIGHTS = {
+    "person": 1.0,
+    "party": 0.9,
+    "bloc": 0.6,
+    "institution": 0.25,
+}
 
 
 @dataclass(frozen=True)
@@ -130,6 +136,8 @@ class PoliticalActorRegistry:
                 continue
             actor_type = str(actor.get("actor_type", "") or "")
             confidence = float(actor.get("confidence", 0.0) or 0.0)
+            if actor_type == "institution":
+                continue
             if actor_type == "person" and len(normalized_alias.split()) < 2:
                 continue
             if confidence < 0.7:
@@ -187,7 +195,9 @@ def compute_political_side_metrics(entity_sentiments: Sequence[Dict[str, Any]]) 
         mentions = max(int(row.get("mentions", 1) or 1), 1)
         title_boost = 1.25 if row.get("title_mention") else 1.0
         actor_confidence = max(float(row.get("political_side_confidence", 0.0) or 0.0), 0.05)
-        weight = confidence * actor_confidence * mentions * title_boost
+        actor_type = str(row.get("political_actor_type", "") or "").lower()
+        type_weight = ACTOR_TYPE_WEIGHTS.get(actor_type, 0.75)
+        weight = confidence * actor_confidence * type_weight * mentions * title_boost
 
         side_score_sum[side] += score * weight
         side_weight_sum[side] += weight

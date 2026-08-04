@@ -344,7 +344,7 @@
       "actor_type": "institution",
       "side": "government",
       "role": "Government ministry reference",
-      "confidence": 0.7,
+      "confidence": 0.45,
       "valid_from": "2024-11-21",
       "aliases": ["Ministry", "Minister", "Deputy Minister"]
     }

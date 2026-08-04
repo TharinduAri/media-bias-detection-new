@@ -41,6 +41,20 @@ def test_build_target_pairs_adds_registry_targets_without_ner_entities():
     assert "NPP" in targets
 
 
+def test_build_target_pairs_does_not_add_generic_ministry_targets():
+    article = SimpleNamespace(
+        title="Minister says Ministry will review the decision",
+        sentences=["The Deputy Minister said the Ministry had received reports."],
+        entities=[],
+        clean_text="",
+        text="",
+    )
+
+    pairs = build_target_pairs([article])
+
+    assert pairs == []
+
+
 def test_aggregate_target_sentiment_computes_political_side_bias():
     article = SimpleNamespace(
         title="Government and Opposition debate the budget",
@@ -84,3 +98,40 @@ def test_compute_political_side_metrics_handles_one_sided_evidence():
     assert metrics["political_side_bias"] == pytest.approx(-0.4, abs=1e-6)
     assert metrics["government_target_count"] == 2
     assert metrics["opposition_target_count"] == 0
+
+
+def test_compute_political_side_metrics_downweights_generic_institutions():
+    metrics = compute_political_side_metrics([
+        {
+            "target": "Minister",
+            "political_side": "government",
+            "political_actor_type": "institution",
+            "political_side_confidence": 0.45,
+            "score": 0.8,
+            "confidence": 0.9,
+            "mentions": 10,
+        },
+        {
+            "target": "Harini Amarasuriya",
+            "political_side": "government",
+            "political_actor_type": "person",
+            "political_side_confidence": 0.98,
+            "score": -0.8,
+            "confidence": 0.9,
+            "mentions": 1,
+        },
+        {
+            "target": "Opposition",
+            "political_side": "opposition",
+            "political_actor_type": "person",
+            "political_side_confidence": 0.98,
+            "score": 0.0,
+            "confidence": 0.9,
+            "mentions": 1,
+        },
+    ])
+
+    assert metrics["government_sentiment"] is not None
+    assert metrics["government_sentiment"] < 0.1
+    assert metrics["government_target_count"] == 11
+    assert metrics["opposition_target_count"] == 1
