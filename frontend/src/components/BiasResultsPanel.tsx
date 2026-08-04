@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   compareBiasProfiles,
   fetchBiasArticles,
@@ -44,6 +44,20 @@ function emphasisLabel(v: number): string {
 function emphasisColor(v: number): string {
   if (Math.abs(v) < 0.05) return "text-slate-500 dark:text-slate-400";
   return v > 0 ? "text-blue-600 dark:text-blue-400" : "text-orange-500 dark:text-orange-400";
+}
+
+function politicalColor(value: number | null | undefined): string {
+  if (value == null) return "text-slate-400";
+  if (value > 0.15) return "text-blue-600 dark:text-blue-400";
+  if (value < -0.15) return "text-violet-600 dark:text-violet-400";
+  return "text-slate-600 dark:text-slate-300";
+}
+
+function politicalLabel(value: number | null | undefined): string {
+  if (value == null) return "No political actors";
+  if (value > 0.15) return "Govt-leaning framing";
+  if (value < -0.15) return "Opposition-leaning framing";
+  return "Balanced political framing";
 }
 
 function trustColor(score: number | null | undefined): string {
@@ -168,6 +182,26 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
+          {/* Political side bias */}
+          {profile.political_side_bias_avg != null && (
+            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Political Framing</p>
+                <p className={`text-lg font-bold mt-0.5 ${politicalColor(profile.political_side_bias_avg)}`}>
+                  {profile.political_side_bias_avg > 0 ? "+" : ""}{profile.political_side_bias_avg.toFixed(3)}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  {politicalLabel(profile.political_side_bias_avg)}
+                </p>
+              </div>
+              <div className="text-right text-[11px] text-slate-500 dark:text-slate-400">
+                <p>Govt {profile.government_sentiment_avg != null ? `${profile.government_sentiment_avg > 0 ? "+" : ""}${profile.government_sentiment_avg.toFixed(2)}` : "n/a"}</p>
+                <p>Opp {profile.opposition_sentiment_avg != null ? `${profile.opposition_sentiment_avg > 0 ? "+" : ""}${profile.opposition_sentiment_avg.toFixed(2)}` : "n/a"}</p>
+                <p>{profile.political_actor_count} actor mentions</p>
+              </div>
+            </div>
+          )}
+
           {/* Source trust */}
           {profile.source_trust_score != null && (
             <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
@@ -282,6 +316,8 @@ function CompareCard({ outlets }: { outlets: string[] }) {
   const hasEmphasis = results.some((r) => r.emphasis_bias_avg != null);
   const maxEmph = hasEmphasis ? Math.max(...results.map((r) => Math.abs(r.emphasis_bias_avg ?? 0)), 0.01) : 1;
   const hasTrust = results.some((r) => r.source_trust_score != null);
+  const hasPolitical = results.some((r) => r.political_side_bias_avg != null);
+  const maxPolitical = hasPolitical ? Math.max(...results.map((r) => Math.abs(r.political_side_bias_avg ?? 0)), 0.01) : 1;
 
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-4">
@@ -372,6 +408,32 @@ function CompareCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
+          {/* Political framing */}
+          {hasPolitical && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Political Framing (govt vs opposition)</p>
+              {results.map((r) => {
+                const v = r.political_side_bias_avg ?? 0;
+                return (
+                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
+                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
+                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden relative">
+                      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
+                      {v >= 0 ? (
+                        <div className="absolute top-0 h-full bg-blue-400 rounded-r-full" style={{ left: "50%", width: `${(v / maxPolitical) * 50}%` }} />
+                      ) : (
+                        <div className="absolute top-0 h-full bg-violet-400 rounded-l-full" style={{ right: "50%", width: `${(Math.abs(v) / maxPolitical) * 50}%` }} />
+                      )}
+                    </div>
+                    <span className={`text-xs font-bold w-12 text-right ${politicalColor(v)}`}>
+                      {v > 0 ? "+" : ""}{v.toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Source trust */}
           {hasTrust && (
             <div>
@@ -410,7 +472,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
   const [sort, setSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
   const limit = 50;
 
-  const load = async (newOffset: number, replace: boolean) => {
+  const load = useCallback(async (newOffset: number, replace: boolean) => {
     setLoading(true);
     setError(null);
     try {
@@ -423,13 +485,13 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [outletFilter]);
 
   useEffect(() => {
     setOffset(0);
     setHasMore(true);
     load(0, true);
-  }, [outletFilter]);
+  }, [load, outletFilter]);
 
   const sorted = useMemo(() => {
     const items = [...articles];
@@ -486,6 +548,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
               <th className="pb-2 pr-3">Topic</th>
               <th className="pb-2 pr-3 text-center">Sentiment</th>
               <th className="pb-2 pr-3 text-center">Bias vs. peers</th>
+              <th className="pb-2 pr-3 text-center">Political framing</th>
               <th className="pb-2 pr-3 text-center">Story emphasis</th>
               <th className="pb-2 text-center">Coverage</th>
               <th className="pb-2">Date</th>
@@ -535,6 +598,19 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
                   </div>
                 </td>
                 <td className="py-2 pr-3 text-center">
+                  {row.political_side_bias != null ? (
+                    <div className="flex flex-col items-center gap-1">
+                      <span className={`font-bold ${politicalColor(row.political_side_bias)}`}>
+                        {row.political_side_bias > 0 ? "+" : ""}{row.political_side_bias.toFixed(3)}
+                      </span>
+                      <span className="text-[10px] text-slate-400">{politicalLabel(row.political_side_bias)}</span>
+                      <span className="text-[10px] text-slate-400">{row.political_actor_count} actors</span>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-slate-300 dark:text-slate-600">n/a</span>
+                  )}
+                </td>
+                <td className="py-2 pr-3 text-center">
                   {row.emphasis_bias != null ? (
                     <span className={`text-[11px] font-medium ${emphasisColor(row.emphasis_bias)}`}>
                       {row.emphasis_bias > 0 ? "+" : ""}{Math.round(row.emphasis_bias * 100)}%
@@ -555,7 +631,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
             ))}
             {articles.length === 0 && !loading && (
               <tr>
-                <td colSpan={8} className="py-8 text-center text-slate-400">No bias scores found yet. Run bias analysis first.</td>
+                <td colSpan={9} className="py-8 text-center text-slate-400">No bias scores found yet. Run bias analysis first.</td>
               </tr>
             )}
           </tbody>

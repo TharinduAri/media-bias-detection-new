@@ -232,6 +232,17 @@ def list_article_bias_scores(
                 group_sentiment_mean=score.group_sentiment_mean,
                 coverage_majority=score.coverage_majority,
                 coverage_present=score.coverage_present,
+                emphasis_bias=score.emphasis_bias,
+                dominant_outlet=score.dominant_outlet,
+                emphasis_length_bias=score.emphasis_length_bias,
+                emphasis_sentence_bias=score.emphasis_sentence_bias,
+                emphasis_entity_bias=score.emphasis_entity_bias,
+                political_side_bias=score.political_side_bias,
+                government_sentiment=score.government_sentiment,
+                opposition_sentiment=score.opposition_sentiment,
+                government_target_count=score.government_target_count,
+                opposition_target_count=score.opposition_target_count,
+                political_actor_count=score.political_actor_count,
                 created_at=score.created_at,
             )
         )

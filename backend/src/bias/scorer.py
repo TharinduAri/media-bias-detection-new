@@ -43,18 +43,23 @@ def compute_bsi(
     coverage_bias_rate: float,
     emphasis_bias_avg: float,
     coverage_bias_rate_soft: float | None = None,
+    political_side_bias_avg: float | None = None,
 ) -> float:
     """Bias Signal Index [0-1]. Higher = more biased.
 
     BSI = 0.4 * clamp(|sentiment| / 0.5) + 0.4 * coverage_rate + 0.2 * clamp(|emphasis|)
 
     If coverage_bias_rate_soft is provided it replaces the binary coverage_bias_rate.
+    If political_side_bias_avg is provided, political-side skew joins the composite.
     """
     s = min(abs(sentiment_bias_avg) / 0.5, 1.0)
     c_raw = coverage_bias_rate_soft if coverage_bias_rate_soft is not None else coverage_bias_rate
     c = min(max(c_raw, 0.0), 1.0)
     e = min(abs(emphasis_bias_avg), 1.0)
-    return round(0.4 * s + 0.4 * c + 0.2 * e, 6)
+    if political_side_bias_avg is None:
+        return round(0.4 * s + 0.4 * c + 0.2 * e, 6)
+    p = min(abs(political_side_bias_avg) / 0.5, 1.0)
+    return round(0.35 * s + 0.30 * c + 0.20 * e + 0.15 * p, 6)
 
 
 def compute_source_trust_score(
@@ -173,6 +178,13 @@ def init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, Any]]:
             "sentiment_score_sum": 0.0,
             "sentiment_confidence_sum": 0.0,
             "emphasis_bias_sum": 0.0,
+            "political_side_bias_sum": 0.0,
+            "political_side_bias_count": 0.0,
+            "government_sentiment_sum": 0.0,
+            "government_sentiment_count": 0.0,
+            "opposition_sentiment_sum": 0.0,
+            "opposition_sentiment_count": 0.0,
+            "political_actor_count": 0.0,
             "articles_scored": 0.0,
             "topics_covered": 0.0,
             "topics_considered": 0.0,
@@ -266,10 +278,35 @@ def build_profiles(
             stats["sentiment_confidence_sum"] / articles_scored if articles_scored else 0.0
         )
         emphasis_bias_avg = stats["emphasis_bias_sum"] / articles_scored if articles_scored else 0.0
+        political_side_bias_count = int(stats.get("political_side_bias_count", 0))
+        political_side_bias_avg = (
+            stats.get("political_side_bias_sum", 0.0) / political_side_bias_count
+            if political_side_bias_count
+            else None
+        )
+        government_sentiment_count = int(stats.get("government_sentiment_count", 0))
+        government_sentiment_avg = (
+            stats.get("government_sentiment_sum", 0.0) / government_sentiment_count
+            if government_sentiment_count
+            else None
+        )
+        opposition_sentiment_count = int(stats.get("opposition_sentiment_count", 0))
+        opposition_sentiment_avg = (
+            stats.get("opposition_sentiment_sum", 0.0) / opposition_sentiment_count
+            if opposition_sentiment_count
+            else None
+        )
+        political_actor_count = int(stats.get("political_actor_count", 0))
         coverage_missing = int(stats["coverage_missing_majority"])
         coverage_bias_rate = coverage_missing / topics_considered if topics_considered else 0.0
         coverage_soft = outlet_soft_coverage.get(outlet) if outlet_soft_coverage else None
-        bsi = compute_bsi(sentiment_bias_avg, coverage_bias_rate, emphasis_bias_avg, coverage_soft)
+        bsi = compute_bsi(
+            sentiment_bias_avg,
+            coverage_bias_rate,
+            emphasis_bias_avg,
+            coverage_soft,
+            political_side_bias_avg,
+        )
         source_trust = compute_source_trust_score(
             bsi,
             sentiment_confidence_avg,
@@ -298,6 +335,16 @@ def build_profiles(
                 sentiment_bias_avg=float(sentiment_bias_avg),
                 sentiment_score_avg=float(sentiment_score_avg),
                 emphasis_bias_avg=float(emphasis_bias_avg),
+                political_side_bias_avg=(
+                    float(political_side_bias_avg) if political_side_bias_avg is not None else None
+                ),
+                government_sentiment_avg=(
+                    float(government_sentiment_avg) if government_sentiment_avg is not None else None
+                ),
+                opposition_sentiment_avg=(
+                    float(opposition_sentiment_avg) if opposition_sentiment_avg is not None else None
+                ),
+                political_actor_count=political_actor_count,
                 articles_scored=articles_scored,
                 topics_covered=int(stats["topics_covered"]),
                 topics_considered=topics_considered,
@@ -319,6 +366,12 @@ def build_profiles(
             cnt = t["article_count"]
             t_sent = t["sentiment_bias_sum"] / cnt if cnt else 0.0
             t_emph = t["emphasis_bias_sum"] / cnt if cnt else 0.0
+            t_pol_count = int(t.get("political_side_bias_count", 0))
+            t_pol = (
+                t.get("political_side_bias_sum", 0.0) / t_pol_count
+                if t_pol_count
+                else None
+            )
             t_cov_rate = 0.0 if t["coverage_present"] else 1.0
             topic_bsi_rows.append(
                 models.OutletTopicBSI(
@@ -329,9 +382,10 @@ def build_profiles(
                     label_source=t.get("label_source"),
                     sentiment_bias_avg=float(t_sent),
                     emphasis_bias_avg=float(t_emph),
+                    political_side_bias_avg=float(t_pol) if t_pol is not None else None,
                     coverage_present=bool(t["coverage_present"]),
                     article_count=cnt,
-                    bsi_score=compute_bsi(t_sent, t_cov_rate, t_emph),
+                    bsi_score=compute_bsi(t_sent, t_cov_rate, t_emph, political_side_bias_avg=t_pol),
                     snapshot_date=now,
                 )
             )
@@ -358,6 +412,10 @@ def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -
             existing.coverage_bias_rate_soft = profile.coverage_bias_rate_soft
             existing.missed_topics = profile.missed_topics
             existing.emphasis_bias_avg = profile.emphasis_bias_avg
+            existing.political_side_bias_avg = profile.political_side_bias_avg
+            existing.government_sentiment_avg = profile.government_sentiment_avg
+            existing.opposition_sentiment_avg = profile.opposition_sentiment_avg
+            existing.political_actor_count = profile.political_actor_count
             existing.bsi_score = profile.bsi_score
             existing.source_trust_score = profile.source_trust_score
             existing.misinformation_risk_score = profile.misinformation_risk_score
@@ -410,6 +468,12 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
             existing.emphasis_length_bias = score.emphasis_length_bias
             existing.emphasis_sentence_bias = score.emphasis_sentence_bias
             existing.emphasis_entity_bias = score.emphasis_entity_bias
+            existing.political_side_bias = score.political_side_bias
+            existing.government_sentiment = score.government_sentiment
+            existing.opposition_sentiment = score.opposition_sentiment
+            existing.government_target_count = int(score.government_target_count or 0)
+            existing.opposition_target_count = int(score.opposition_target_count or 0)
+            existing.political_actor_count = int(score.political_actor_count or 0)
             existing.created_at = score.created_at
         else:
             db.add(score)
@@ -456,6 +520,7 @@ def insert_topic_bsi_rows(db: Session, rows: List[models.OutletTopicBSI]) -> int
         if existing:
             existing.sentiment_bias_avg = row.sentiment_bias_avg
             existing.emphasis_bias_avg = row.emphasis_bias_avg
+            existing.political_side_bias_avg = row.political_side_bias_avg
             existing.coverage_present = row.coverage_present
             existing.article_count = row.article_count
             existing.bsi_score = row.bsi_score
@@ -509,6 +574,10 @@ def insert_snapshots_with_omission(
                 coverage_bias_rate_soft=profile.coverage_bias_rate_soft,
                 missed_topics=profile.missed_topics,
                 emphasis_bias_avg=profile.emphasis_bias_avg,
+                political_side_bias_avg=profile.political_side_bias_avg,
+                government_sentiment_avg=profile.government_sentiment_avg,
+                opposition_sentiment_avg=profile.opposition_sentiment_avg,
+                political_actor_count=profile.political_actor_count,
                 bsi_score=profile.bsi_score,
                 source_trust_score=profile.source_trust_score,
                 misinformation_risk_score=profile.misinformation_risk_score,

@@ -1,0 +1,352 @@
+{
+  "metadata": {
+    "country": "Sri Lanka",
+    "last_checked": "2026-08-04",
+    "notes": "Seed registry for political-side sentiment. Government side is based on the Cabinet Office present cabinet and Parliament party composition. Opposition seed includes Parliament's Leader of the Opposition and Chief Opposition Whip pages.",
+    "sources": [
+      {
+        "name": "Office of the Cabinet of Ministers - Present Cabinet",
+        "url": "https://www.cabinetoffice.gov.lk/cab/index.php?Itemid=11&id=12&lang=en&option=com_content&view=article"
+      },
+      {
+        "name": "President Media Division - Cabinet Ministers",
+        "url": "https://pmd.gov.lk/cabinet-ministers/"
+      },
+      {
+        "name": "Parliament of Sri Lanka - Party Composition",
+        "url": "https://www.parliament.lk/en/members-of-parliament/party-composition"
+      },
+      {
+        "name": "Parliament of Sri Lanka - Leaders of the Opposition",
+        "url": "https://www.parliament.lk/en/learn/handbook-of-parliament/leaders-of-the-opposition"
+      },
+      {
+        "name": "Parliament of Sri Lanka - Chief Government Whips",
+        "url": "https://www.parliament.lk/en/learn/handbook-of-parliament/chief-government-whips"
+      },
+      {
+        "name": "Parliament of Sri Lanka - Chief Opposition Whips",
+        "url": "https://www.parliament.lk/en/learn/handbook-of-parliament/chief-opposition-whips"
+      }
+    ]
+  },
+  "actors": [
+    {
+      "canonical_name": "Anura Kumara Dissanayake",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "President and Head of the Cabinet of Ministers",
+      "confidence": 0.98,
+      "valid_from": "2024-09-23",
+      "aliases": ["Anura Kumara Dissanayake", "Anura Kumara Dissanayaka", "Anura Dissanayake", "Anura Dissanayaka", "AKD", "President"]
+    },
+    {
+      "canonical_name": "Harini Amarasuriya",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Prime Minister; Minister of Education, Higher Education and Vocational Education",
+      "confidence": 0.98,
+      "valid_from": "2024-11-21",
+      "aliases": ["Harini Amarasuriya", "Harini", "Dr Harini Amarasuriya", "Prime Minister"]
+    },
+    {
+      "canonical_name": "Vijitha Herath",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Foreign Affairs, Foreign Employment and Tourism",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Vijitha Herath"]
+    },
+    {
+      "canonical_name": "K.D. Lal Kantha",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Agriculture, Livestock, Land and Irrigation",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["K.D. Lal Kantha", "K D Lal Kantha", "KD Lal Kantha", "Lal Kantha", "Lalkantha", "K.D. Lalkantha"]
+    },
+    {
+      "canonical_name": "Bimal Rathnayaka",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Transport, Highways and Urban Development",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Bimal Rathnayaka", "Bimal Rathnayake"]
+    },
+    {
+      "canonical_name": "Sunil Handunneththi",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Industry and Entrepreneurship Development",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Sunil Handunneththi", "Sunil Handunnetti", "Sunil Handunneththi"]
+    },
+    {
+      "canonical_name": "Ramalingam Chandrasekar",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Fisheries, Aquatic and Ocean Resources",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Ramalingam Chandrasekar", "R. Chandrasekar", "Chandrasekar"]
+    },
+    {
+      "canonical_name": "Anil Jayantha Fernando",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Labour",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Anil Jayantha Fernando", "Prof Anil Jayantha Fernando"]
+    },
+    {
+      "canonical_name": "Samantha Viddyarathna",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Plantation and Community Infrastructure",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Samantha Viddyarathna", "Samantha Vidyarathna"]
+    },
+    {
+      "canonical_name": "Anura Karunathilaka",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Ports and Civil Aviation; Minister of Energy",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Anura Karunathilaka", "Anura Karunathilake"]
+    },
+    {
+      "canonical_name": "Nalinda Jayatissa",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Health and Mass Media; Chief Government Whip",
+      "confidence": 0.97,
+      "valid_from": "2024-11-21",
+      "aliases": ["Nalinda Jayatissa", "Nalinda Jayathissa", "Dr Nalinda Jayatissa", "Dr Nalinda Jayathissa"]
+    },
+    {
+      "canonical_name": "A.H.M.H. Abayarathna",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Public Administration, Provincial Councils and Local Government",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["A.H.M.H. Abayarathna", "AHMH Abayarathna", "Abayarathna", "Chandana Abeyratne", "Chandana Abeyrathne"]
+    },
+    {
+      "canonical_name": "Wasantha Samarasinghe",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Trade, Commerce, Food Security and Cooperative Development",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Wasantha Samarasinghe", "Wasantha Samarasingha"]
+    },
+    {
+      "canonical_name": "Harshana Nanayakkara",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Justice and National Integration",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Harshana Nanayakkara", "Harshana Nanayakara"]
+    },
+    {
+      "canonical_name": "Saroja Savithri Paulraj",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Women and Child Affairs",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Saroja Savithri Paulraj", "Sarojani Savithri Paulraj", "Saroja Paulraj"]
+    },
+    {
+      "canonical_name": "Upali Pannilage",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Rural Development, Social Security and Community Empowerment",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Upali Pannilage", "Prof Upali Pannilage"]
+    },
+    {
+      "canonical_name": "K.M. Ananda Wijepala",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Public Security and Parliamentary Affairs",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["K.M. Ananda Wijepala", "KM Ananda Wijepala", "Ananda Wijepala"]
+    },
+    {
+      "canonical_name": "Hiniduma Sunil Senevi",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Buddhasasana, Religious and Cultural Affairs",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Hiniduma Sunil Senevi", "Sunil Senevi"]
+    },
+    {
+      "canonical_name": "Sunil Kumara Gamage",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Youth Affairs and Sports",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Sunil Kumara Gamage"]
+    },
+    {
+      "canonical_name": "Chrishantha Abeysena",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Science and Technology",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Chrishantha Abeysena", "Chrishantha Abeysenna"]
+    },
+    {
+      "canonical_name": "Dammika Patabendi",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Environment",
+      "confidence": 0.96,
+      "valid_from": "2024-11-21",
+      "aliases": ["Dammika Patabendi", "Dhammika Patabandi", "Dhammika Patabendi", "Dammika Patabandi"]
+    },
+    {
+      "canonical_name": "Susil Ranasinghe",
+      "actor_type": "person",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Minister of Housing, Construction and Water Supply",
+      "confidence": 0.96,
+      "valid_from": "2026-04-23",
+      "aliases": ["Susil Ranasinghe"]
+    },
+    {
+      "canonical_name": "Sajith Premadasa",
+      "actor_type": "person",
+      "side": "opposition",
+      "party": "Samagi Jana Balawegaya",
+      "role": "Leader of the Opposition",
+      "confidence": 0.98,
+      "valid_from": "2024-11-21",
+      "aliases": ["Sajith Premadasa", "Sajith", "Opposition Leader", "Leader of the Opposition"]
+    },
+    {
+      "canonical_name": "Gayantha Karunathilleka",
+      "actor_type": "person",
+      "side": "opposition",
+      "party": "Samagi Jana Balawegaya",
+      "role": "Chief Opposition Whip",
+      "confidence": 0.96,
+      "valid_from": "2024-12-03",
+      "aliases": ["Gayantha Karunathilleka", "Gayantha Karunathilaka", "Chief Opposition Whip"]
+    },
+    {
+      "canonical_name": "Jathika Jana Balawegaya",
+      "actor_type": "party",
+      "side": "government",
+      "party": "Jathika Jana Balawegaya",
+      "role": "Governing party / alliance",
+      "confidence": 0.95,
+      "valid_from": "2024-11-21",
+      "aliases": ["Jathika Jana Balawegaya", "National People's Power", "National Peoples Power", "NPP", "N.P.P.", "JJB", "J.J.B."]
+    },
+    {
+      "canonical_name": "Samagi Jana Balawegaya",
+      "actor_type": "party",
+      "side": "opposition",
+      "party": "Samagi Jana Balawegaya",
+      "role": "Main opposition party",
+      "confidence": 0.95,
+      "valid_from": "2024-11-21",
+      "aliases": ["Samagi Jana Balawegaya", "SJB", "S.J.B.", "main opposition"]
+    },
+    {
+      "canonical_name": "Illankai Tamil Arasu Kadchi",
+      "actor_type": "party",
+      "side": "opposition",
+      "party": "Illankai Tamil Arasu Kadchi",
+      "role": "Opposition party",
+      "confidence": 0.82,
+      "valid_from": "2024-11-21",
+      "aliases": ["Illankai Tamil Arasu Kadchi", "ITAK", "I.T.A.K.", "Tamil National Alliance", "TNA"]
+    },
+    {
+      "canonical_name": "Sri Lanka Podujana Peramuna",
+      "actor_type": "party",
+      "side": "opposition",
+      "party": "Sri Lanka Podujana Peramuna",
+      "role": "Opposition party",
+      "confidence": 0.8,
+      "valid_from": "2024-11-21",
+      "aliases": ["Sri Lanka Podujana Peramuna", "SLPP", "S.L.P.P."]
+    },
+    {
+      "canonical_name": "United National Party",
+      "actor_type": "party",
+      "side": "opposition",
+      "party": "United National Party",
+      "role": "Opposition party",
+      "confidence": 0.78,
+      "valid_from": "2024-11-21",
+      "aliases": ["United National Party", "UNP", "U.N.P."]
+    },
+    {
+      "canonical_name": "Government of Sri Lanka",
+      "actor_type": "bloc",
+      "side": "government",
+      "role": "Government / administration",
+      "confidence": 0.9,
+      "valid_from": "2024-11-21",
+      "aliases": ["Government", "Govt", "Govt.", "the Government", "ruling party", "administration", "Cabinet"]
+    },
+    {
+      "canonical_name": "Opposition",
+      "actor_type": "bloc",
+      "side": "opposition",
+      "role": "Parliamentary opposition",
+      "confidence": 0.9,
+      "valid_from": "2024-11-21",
+      "aliases": ["Opposition", "the Opposition", "opposition parties", "opposition MPs"]
+    },
+    {
+      "canonical_name": "Ministry",
+      "actor_type": "institution",
+      "side": "government",
+      "role": "Government ministry reference",
+      "confidence": 0.45,
+      "valid_from": "2024-11-21",
+      "aliases": ["Ministry", "Minister", "Deputy Minister"]
+    }
+  ]
+}

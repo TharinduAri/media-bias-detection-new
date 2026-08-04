@@ -144,10 +144,3 @@ def _build_article_text(article: models.Article, outlet_blocklist: Set[str]) -> 
     return cleaned[:CLUSTER_TEXT_CHAR_LIMIT].strip()
 
 
-def _label_to_score(label: str, confidence: float) -> float:
-    normalized = label.lower()
-    if "positive" in normalized:
-        return confidence
-    if "negative" in normalized:
-        return -confidence
-    return 0.0

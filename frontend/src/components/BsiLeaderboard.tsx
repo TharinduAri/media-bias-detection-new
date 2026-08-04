@@ -22,6 +22,20 @@ function trustColor(score: number | null | undefined) {
   return "text-rose-600 dark:text-rose-400";
 }
 
+function politicalColor(score: number | null | undefined) {
+  if (score == null) return "text-slate-400";
+  if (score > 0.15) return "text-blue-600 dark:text-blue-400";
+  if (score < -0.15) return "text-violet-600 dark:text-violet-400";
+  return "text-slate-500 dark:text-slate-400";
+}
+
+function politicalLabel(score: number | null | undefined) {
+  if (score == null) return "n/a";
+  if (score > 0.15) return "Govt";
+  if (score < -0.15) return "Opp";
+  return "Bal";
+}
+
 function Badge({ text, variant }: { text: string; variant: "red" | "green" }) {
   return (
     <span
@@ -126,8 +140,15 @@ export default function BsiLeaderboard() {
                 >
                   {trust != null ? Math.round(trust * 100) : "--"}
                 </span>
+                <span
+                  className={`text-sm font-mono font-semibold tabular-nums ${politicalColor(p.political_side_bias_avg)}`}
+                  title="Political framing: positive favors government side, negative favors opposition side"
+                >
+                  {politicalLabel(p.political_side_bias_avg)}
+                  {p.political_side_bias_avg != null ? ` ${p.political_side_bias_avg > 0 ? "+" : ""}${p.political_side_bias_avg.toFixed(2)}` : ""}
+                </span>
                 <span className="text-xs text-gray-400 dark:text-gray-500 tabular-nums">
-                  {p.articles_scored} art.
+                  {p.articles_scored} art. / {p.political_actor_count} pol.
                 </span>
               </div>
             </div>
