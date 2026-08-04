@@ -93,11 +93,19 @@ export default function TopicValidationPanel() {
     let totalAbsBias = 0;
     let sentimentTotal = 0;
     let meanTotal = 0;
+    let politicalSideTotal = 0;
+    let politicalSideCount = 0;
+    let politicalActorCount = 0;
 
     for (const article of articles) {
       sentimentTotal += article.sentiment_score;
       meanTotal += article.group_sentiment_mean;
       totalAbsBias += Math.abs(article.sentiment_bias);
+      if (article.political_side_bias != null) {
+        politicalSideTotal += article.political_side_bias;
+        politicalSideCount += 1;
+      }
+      politicalActorCount += article.political_actor_count || 0;
 
       if (article.sentiment_bias > 0.05) positiveBias += 1;
       else if (article.sentiment_bias < -0.05) negativeBias += 1;
@@ -141,6 +149,9 @@ export default function TopicValidationPanel() {
       outlets: outletMap.size,
       outletBias,
       strongestOutlier,
+      politicalSideAvg: politicalSideCount ? politicalSideTotal / politicalSideCount : null,
+      politicalSideCount,
+      politicalActorCount,
     };
   }, [articles]);
 
@@ -191,17 +202,40 @@ export default function TopicValidationPanel() {
     return "text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700";
   };
 
+  const politicalColor = (value: number | null | undefined) => {
+    if (value == null) return "text-gray-400 dark:text-gray-500";
+    if (value > 0.15) return "text-blue-600 dark:text-blue-400";
+    if (value < -0.15) return "text-violet-600 dark:text-violet-400";
+    return "text-gray-600 dark:text-gray-300";
+  };
+
+  const politicalLabel = (value: number | null | undefined) => {
+    if (value == null) return "No political actors";
+    if (value > 0.15) return "Govt-leaning";
+    if (value < -0.15) return "Opposition-leaning";
+    return "Balanced";
+  };
+
+  const sideBadgeClass = (side: string | null | undefined) => {
+    if (side === "government") return "border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300";
+    if (side === "opposition") return "border-violet-200 dark:border-violet-900 bg-violet-50 dark:bg-violet-950/30 text-violet-700 dark:text-violet-300";
+    return "border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400";
+  };
+
   const evidenceSummary = (rows: ArticleBiasEvidenceData[]) => {
     const counts = { positive: 0, neutral: 0, negative: 0 };
+    const political = { government: 0, opposition: 0 };
     let strongest = rows[0] ?? null;
     for (const row of rows) {
       const label = row.sentiment_label.toLowerCase();
       if (label.includes("positive")) counts.positive += 1;
       else if (label.includes("negative")) counts.negative += 1;
       else counts.neutral += 1;
+      if (row.political_side === "government") political.government += 1;
+      if (row.political_side === "opposition") political.opposition += 1;
       if (!strongest || row.sentiment_confidence > strongest.sentiment_confidence) strongest = row;
     }
-    return { counts, strongest };
+    return { counts, political, strongest };
   };
 
   const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -323,6 +357,19 @@ export default function TopicValidationPanel() {
                           Title
                         </span>
                       )}
+                      {row.political_side && (
+                        <span className={`rounded-md border px-2 py-1 text-[10px] font-semibold capitalize ${sideBadgeClass(row.political_side)}`}>
+                          {row.political_side}
+                        </span>
+                      )}
+                      {row.canonical_actor && (
+                        <span className="rounded-md bg-gray-100 dark:bg-gray-800 px-2 py-1 text-[10px] font-semibold text-gray-600 dark:text-gray-300">
+                          {row.canonical_actor}
+                          {row.political_side_confidence != null && (
+                            <span className="ml-1 text-gray-400">{Math.round(row.political_side_confidence * 100)}%</span>
+                          )}
+                        </span>
+                      )}
                     </div>
                     <span className={`rounded-md border px-2 py-1 text-[11px] font-bold capitalize ${getEvidenceColor(row.sentiment_label)}`}>
                       {row.sentiment_label} {row.sentiment_score > 0 ? "+" : ""}{row.sentiment_score.toFixed(3)}
@@ -346,7 +393,7 @@ export default function TopicValidationPanel() {
 
               {rows.length > visibleRows.length && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Showing {visibleRows.length} strongest evidence rows of {rows.length}.
+                  Showing {visibleRows.length} strongest evidence rows of {rows.length}. Political rows: govt {summary.political.government}, opposition {summary.political.opposition}.
                 </p>
               )}
             </div>
@@ -485,6 +532,15 @@ export default function TopicValidationPanel() {
                       {topicMetrics.majorityCoverage}/{articles.length}
                     </p>
                   </div>
+                  <div className="rounded-xl bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Political Framing</p>
+                    <p className={`text-xl font-bold mt-1 ${politicalColor(topicMetrics.politicalSideAvg)}`}>
+                      {topicMetrics.politicalSideAvg == null ? "n/a" : `${topicMetrics.politicalSideAvg > 0 ? "+" : ""}${topicMetrics.politicalSideAvg.toFixed(3)}`}
+                    </p>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                      {politicalLabel(topicMetrics.politicalSideAvg)} | {topicMetrics.politicalActorCount} actors
+                    </p>
+                  </div>
                 </div>
 
                 <div className="mt-4">
@@ -512,6 +568,7 @@ export default function TopicValidationPanel() {
                     <th className="px-4 py-4">Article Title & Outlet</th>
                     <th className="px-4 py-4 text-center">Sentiment</th>
                     <th className="px-4 py-4 text-center">Bias Score</th>
+                    <th className="px-4 py-4 text-center">Political</th>
                     <th className="px-4 py-4 text-right">Action</th>
                   </tr>
                 </thead>
@@ -556,6 +613,19 @@ export default function TopicValidationPanel() {
                             </div>
                           </div>
                         </td>
+                        <td className="px-4 py-4 text-center">
+                          {article.political_side_bias != null ? (
+                            <div className="flex flex-col items-center">
+                              <span className={`text-sm font-semibold ${politicalColor(article.political_side_bias)}`}>
+                                {article.political_side_bias > 0 ? "+" : ""}{article.political_side_bias.toFixed(3)}
+                              </span>
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500">{politicalLabel(article.political_side_bias)}</span>
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500">{article.political_actor_count} actors</span>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-gray-400 dark:text-gray-500">n/a</span>
+                          )}
+                        </td>
                         <td className="px-4 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button
@@ -583,7 +653,7 @@ export default function TopicValidationPanel() {
                       </tr>
                       {expandedArticleId === article.article_id && (
                         <tr className="bg-white dark:bg-gray-900">
-                          <td colSpan={4} className="p-0">
+                          <td colSpan={5} className="p-0">
                             <EvidencePanel article={article} />
                           </td>
                         </tr>

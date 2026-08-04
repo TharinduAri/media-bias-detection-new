@@ -37,6 +37,26 @@ function sentimentTone(value: number | null | undefined): string {
   return "text-slate-600 dark:text-slate-300";
 }
 
+function politicalTone(value: number | null | undefined): string {
+  if (value == null) return "text-slate-500 dark:text-slate-400";
+  if (value > 0.15) return "text-blue-600 dark:text-blue-400";
+  if (value < -0.15) return "text-violet-600 dark:text-violet-400";
+  return "text-slate-600 dark:text-slate-300";
+}
+
+function politicalLabel(value: number | null | undefined): string {
+  if (value == null) return "No political actors";
+  if (value > 0.15) return "Govt-leaning";
+  if (value < -0.15) return "Opposition-leaning";
+  return "Balanced";
+}
+
+function sideBadgeClass(side: string | null | undefined): string {
+  if (side === "government") return "border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300";
+  if (side === "opposition") return "border-violet-200 dark:border-violet-900 bg-violet-50 dark:bg-violet-950/30 text-violet-700 dark:text-violet-300";
+  return "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300";
+}
+
 function signalTone(value: number): string {
   if (value >= 0.7) return "text-rose-600 dark:text-rose-400";
   if (value >= 0.4) return "text-amber-600 dark:text-amber-400";
@@ -200,7 +220,7 @@ export default function ManualArticleBiasPanel({ outlets }: Props) {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
                 <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3">
                   <p className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1.5">
                     <Gauge className="h-3.5 w-3.5" />
@@ -225,6 +245,18 @@ export default function ManualArticleBiasPanel({ outlets }: Props) {
                 </div>
                 <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3">
                   <p className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1.5">
+                    <Scale className="h-3.5 w-3.5" />
+                    Political
+                  </p>
+                  <p className={`mt-1 text-2xl font-bold ${politicalTone(result.political_side_bias)}`}>
+                    {signed(result.political_side_bias)}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {politicalLabel(result.political_side_bias)}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3">
+                  <p className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1.5">
                     <Users className="h-3.5 w-3.5" />
                     Peer Evidence
                   </p>
@@ -236,6 +268,24 @@ export default function ManualArticleBiasPanel({ outlets }: Props) {
                   </p>
                 </div>
               </div>
+
+              {result.political_actor_count > 0 && (
+                <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-slate-400">Political Actor Split</p>
+                      <p className={`mt-1 text-lg font-bold ${politicalTone(result.political_side_bias)}`}>
+                        {politicalLabel(result.political_side_bias)}
+                      </p>
+                    </div>
+                    <div className="text-right text-[11px] text-slate-500 dark:text-slate-400">
+                      <p>Govt {signed(result.government_sentiment, 2)} ({result.government_target_count})</p>
+                      <p>Opp {signed(result.opposition_sentiment, 2)} ({result.opposition_target_count})</p>
+                      <p>{result.political_actor_count} actor mentions</p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3">
                 <div className="flex items-start justify-between gap-3">
@@ -270,10 +320,14 @@ export default function ManualArticleBiasPanel({ outlets }: Props) {
                     {strongestTargets.map((target) => (
                       <span
                         key={`${target.target}-${target.score}`}
-                        className="max-w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs text-slate-700 dark:text-slate-300"
+                        className={`max-w-full rounded-lg border px-2.5 py-1 text-xs ${sideBadgeClass(target.political_side)}`}
+                        title={target.canonical_actor ? `${target.canonical_actor}${target.political_side ? ` (${target.political_side})` : ""}` : undefined}
                       >
                         <span className="font-semibold">{target.target}</span>{" "}
                         <span className={sentimentTone(target.score)}>{signed(target.score, 2)}</span>
+                        {target.political_side && (
+                          <span className="ml-1 text-[10px] uppercase">{target.political_side}</span>
+                        )}
                       </span>
                     ))}
                   </div>
