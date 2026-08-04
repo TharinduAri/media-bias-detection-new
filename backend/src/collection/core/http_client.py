@@ -19,10 +19,6 @@ _FETCH_MAX_ATTEMPTS = 3
 class GhostResponseError(Exception):
     """Server returned HTTP 200 with a near-empty body — anti-scraping ghosting."""
 
-class DiscoveryError(Exception):
-    """Fatal failure during URL discovery for this outlet."""
-
-
 _REQUEST_SEMAPHORE: asyncio.Semaphore | None = None
 _DOMAIN_LOCKS: dict[str, asyncio.Lock] = {}
 _DOMAIN_LAST_REQUEST_AT: dict[str, float] = {}

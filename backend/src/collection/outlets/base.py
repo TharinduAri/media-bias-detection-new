@@ -12,7 +12,7 @@ from src.collection.core.utils import (
     is_article_url, domain_of, parse_metadata_datetime, strip_html, tag_name
 )
 from src.collection.core.http_client import (
-    fetch, fetch_xml, set_semaphore, GhostResponseError, DiscoveryError
+    fetch, fetch_xml
 )
 from src.collection.core.extraction import extract_with_trafilatura
 
@@ -23,11 +23,11 @@ class BaseOutletScraper(ABC):
     """Abstract base for a per-outlet scraper.
 
     Subclasses must implement:
-        discover_urls()   — URL discovery (sitemap / RSS / API / crawler)
-        extract_content() — article-level content extraction
+        discover_urls()   - URL discovery (sitemap / RSS / API)
+        extract_content() - article-level content extraction
 
     They may optionally override:
-        should_skip_url() — extra outlet-specific URL filter
+        should_skip_url() - extra outlet-specific URL filter
     """
 
     name: str = ""
@@ -54,7 +54,7 @@ class BaseOutletScraper(ABC):
     ) -> dict[str, str]:
         """Fetch url and return {text, title, date, raw_html}.
 
-        Default implementation: HTTP GET → trafilatura.
+        Default implementation: HTTP GET, then trafilatura.
         Override for outlets that need a different extraction path.
         """
         resp = await fetch(client, url)

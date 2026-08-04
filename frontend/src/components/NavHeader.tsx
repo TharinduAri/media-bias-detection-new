@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 const navLinks = [
     { href: "/", label: "Scraping Workspace" },
@@ -12,11 +12,17 @@ const navLinks = [
     { href: "/api-explorer", label: "Exposed API" },
 ];
 
+const subscribeToHydration = () => () => {};
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
+
 function ThemeToggle() {
     const { theme, setTheme } = useTheme();
-    const [mounted, setMounted] = useState(false);
-
-    useEffect(() => setMounted(true), []);
+    const mounted = useSyncExternalStore(
+        subscribeToHydration,
+        getClientSnapshot,
+        getServerSnapshot
+    );
 
     if (!mounted) {
         return <div className="w-9 h-9" />;

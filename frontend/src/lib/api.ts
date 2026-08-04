@@ -60,23 +60,6 @@ export interface BiasRunLogData {
   created_at: string | null;
 }
 
-export interface ArticleBiasScoreData {
-  id: number;
-  article_id: number;
-  outlet: string;
-  topic_key: string;
-  topic_label?: string;
-  sentiment_label: string;
-  sentiment_score: number;
-  sentiment_confidence: number;
-  sentiment_bias: number;
-  group_sentiment_mean: number;
-  coverage_majority: boolean;
-  coverage_present: boolean;
-  emphasis_bias?: number | null;
-  created_at: string;
-}
-
 export interface ArticleBiasWithArticleData {
   id: number;
   article_id: number;
@@ -153,42 +136,6 @@ export interface OutletBiasProfileData {
   updated_at: string;
 }
 
-export interface OutletBiasSnapshotData {
-  id: number;
-  outlet: string;
-  run_id: number;
-  snapshot_date: string;
-  sentiment_bias_avg: number;
-  sentiment_score_avg: number;
-  articles_scored: number;
-  topics_covered: number;
-  topics_considered: number;
-  coverage_missing_majority: number;
-  coverage_bias_rate: number;
-  missed_topics: string[] | null;
-  emphasis_bias_avg?: number | null;
-  bsi_score?: number | null;
-  source_trust_score?: number | null;
-  misinformation_risk_score?: number | null;
-  bsi_confidence_low?: number | null;
-  bsi_confidence_high?: number | null;
-  article_count_per_topic_avg?: number | null;
-  coverage_bias_rate_soft?: number | null;
-  omission_score?: number | null;
-  systematic_omission?: boolean | null;
-  baseline_used_runs?: number | null;
-}
-
-export interface OutletTrendData {
-  outlet: string;
-  snapshots: OutletBiasSnapshotData[];
-}
-
-export interface AllTrendsData {
-  last_run_at: string | null;
-  trends: OutletTrendData[];
-}
-
 export interface OutletTopicBSIData {
   id: number;
   run_id: number;
@@ -206,33 +153,6 @@ export interface OutletTopicBSIData {
 export interface BiasScoresData {
   last_run_at: string | null;
   scores: OutletTopicBSIData[];
-}
-
-export interface OutletOmissionData {
-  outlet: string;
-  current_coverage_bias_rate: number;
-  current_bsi_score?: number | null;
-  omission_score?: number | null;
-  systematic_omission?: boolean | null;
-  baseline_used_runs?: number | null;
-  last_run_at?: string | null;
-}
-
-export interface AllOmissionsData {
-  last_run_at: string | null;
-  omissions: OutletOmissionData[];
-}
-
-export interface TopicCoverageData {
-  topic_key: string;
-  topic_label?: string | null;
-  covered_by: string[];
-  missed_by: string[];
-}
-
-export interface OmittedTopicsData {
-  last_run_at: string | null;
-  topics: TopicCoverageData[];
 }
 
 export interface AllProfilesData {
@@ -257,12 +177,6 @@ export interface BiasRunResponse {
   embedding_model: string;
   cluster_source: "internal" | "external" | string;
   clusters_received?: number | null;
-}
-
-export interface BiasTopicClusterInput {
-  topic_key: string;
-  topic_label?: string;
-  article_ids: number[];
 }
 
 export interface ManualArticleBiasInput {
@@ -508,24 +422,6 @@ export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
   return res.json();
 }
 
-export async function triggerBiasAnalysisWithClusters(
-  clusters: BiasTopicClusterInput[]
-): Promise<BiasRunResponse> {
-  const res = await fetch(`${API_BASE_URL}/bias/run-with-clusters`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clusters }),
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || "Failed to run bias analysis with external clusters");
-  }
-
-  return res.json();
-}
-
 export async function createManualArticleBiasReading(
   input: ManualArticleBiasInput
 ): Promise<ManualArticleBiasData> {
@@ -567,15 +463,6 @@ export async function compareBiasProfiles(outlets: string[]): Promise<OutletBias
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || "Failed to compare bias profiles");
-  }
-  return res.json();
-}
-
-export async function fetchArticleBiasScore(articleId: number): Promise<ArticleBiasScoreData> {
-  const res = await fetch(`${API_BASE_URL}/bias/articles/${articleId}`, { cache: "no-store" });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || "Failed to fetch article bias score");
   }
   return res.json();
 }
@@ -632,26 +519,6 @@ export async function triggerBiasCleanup(): Promise<{ status: string; message: s
   return res.json();
 }
 
-export async function fetchOutletTrend(
-  outletName: string,
-  daysBack = 90
-): Promise<OutletBiasSnapshotData[]> {
-  const params = new URLSearchParams({ days_back: String(daysBack) });
-  const res = await fetch(
-    `${API_BASE_URL}/bias/outlets/${encodeURIComponent(outletName)}/trend?${params}`,
-    { cache: "no-store" }
-  );
-  if (!res.ok) throw new Error("Failed to fetch outlet trend");
-  return res.json();
-}
-
-export async function fetchAllTrends(daysBack = 90): Promise<AllTrendsData> {
-  const params = new URLSearchParams({ days_back: String(daysBack) });
-  const res = await fetch(`${API_BASE_URL}/bias/trends?${params}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch all trends");
-  return res.json();
-}
-
 export async function fetchBiasScores(opts?: {
   outlet?: string;
   topic_key?: string;
@@ -663,18 +530,6 @@ export async function fetchBiasScores(opts?: {
   if (opts?.run_id != null) params.set("run_id", String(opts.run_id));
   const res = await fetch(`${API_BASE_URL}/bias/scores?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch bias scores");
-  return res.json();
-}
-
-export async function fetchOmittedTopics(): Promise<OmittedTopicsData> {
-  const res = await fetch(`${API_BASE_URL}/bias/omitted-topics`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch omitted topics");
-  return res.json();
-}
-
-export async function fetchOmissions(): Promise<AllOmissionsData> {
-  const res = await fetch(`${API_BASE_URL}/bias/omissions`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch omissions");
   return res.json();
 }
 

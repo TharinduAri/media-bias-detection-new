@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   compareBiasProfiles,
   fetchBiasArticles,
@@ -410,7 +410,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
   const [sort, setSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
   const limit = 50;
 
-  const load = async (newOffset: number, replace: boolean) => {
+  const load = useCallback(async (newOffset: number, replace: boolean) => {
     setLoading(true);
     setError(null);
     try {
@@ -423,13 +423,13 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [outletFilter]);
 
   useEffect(() => {
     setOffset(0);
     setHasMore(true);
     load(0, true);
-  }, [outletFilter]);
+  }, [load, outletFilter]);
 
   const sorted = useMemo(() => {
     const items = [...articles];
