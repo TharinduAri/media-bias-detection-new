@@ -78,6 +78,16 @@ export interface ArticleBiasWithArticleData {
   coverage_majority: boolean;
   coverage_present: boolean;
   emphasis_bias?: number | null;
+  dominant_outlet?: boolean;
+  emphasis_length_bias?: number | null;
+  emphasis_sentence_bias?: number | null;
+  emphasis_entity_bias?: number | null;
+  political_side_bias?: number | null;
+  government_sentiment?: number | null;
+  opposition_sentiment?: number | null;
+  government_target_count: number;
+  opposition_target_count: number;
+  political_actor_count: number;
   created_at: string;
 }
 
@@ -92,6 +102,13 @@ export interface EntitySentimentData {
   positive: number;
   mentions: number;
   title_mention: boolean;
+  canonical_actor?: string | null;
+  political_actor_type?: string | null;
+  political_side?: "government" | "opposition" | string | null;
+  political_side_confidence?: number | null;
+  political_party?: string | null;
+  political_role?: string | null;
+  matched_actor_alias?: string | null;
 }
 
 export interface ArticleBiasEvidenceData {
@@ -111,6 +128,10 @@ export interface ArticleBiasEvidenceData {
   negative_prob: number;
   neutral_prob: number;
   positive_prob: number;
+  canonical_actor?: string | null;
+  political_actor_type?: string | null;
+  political_side?: "government" | "opposition" | string | null;
+  political_side_confidence?: number | null;
   created_at: string;
 }
 
@@ -126,6 +147,10 @@ export interface OutletBiasProfileData {
   coverage_bias_rate: number;
   missed_topics: string[] | null;
   emphasis_bias_avg?: number | null;
+  political_side_bias_avg?: number | null;
+  government_sentiment_avg?: number | null;
+  opposition_sentiment_avg?: number | null;
+  political_actor_count: number;
   bsi_score?: number | null;
   source_trust_score?: number | null;
   misinformation_risk_score?: number | null;
@@ -144,6 +169,7 @@ export interface OutletTopicBSIData {
   topic_label?: string | null;
   sentiment_bias_avg: number;
   emphasis_bias_avg?: number | null;
+  political_side_bias_avg?: number | null;
   coverage_present: boolean;
   article_count: number;
   bsi_score: number;
@@ -216,8 +242,18 @@ export interface ManualArticleBiasData {
     negative: number;
     neutral: number;
     positive: number;
+    canonical_actor?: string | null;
+    political_actor_type?: string | null;
+    political_side?: "government" | "opposition" | string | null;
+    political_side_confidence?: number | null;
   }>;
   relative_sentiment_bias: number | null;
+  political_side_bias: number | null;
+  government_sentiment: number | null;
+  opposition_sentiment: number | null;
+  government_target_count: number;
+  opposition_target_count: number;
+  political_actor_count: number;
   peer_sentiment_mean: number | null;
   peer_count: number;
   peer_outlet_count: number;

@@ -95,6 +95,12 @@ class ArticleBiasScoreResponse(BaseModel):
     emphasis_length_bias: Optional[float] = None
     emphasis_sentence_bias: Optional[float] = None
     emphasis_entity_bias: Optional[float] = None
+    political_side_bias: Optional[float] = None
+    government_sentiment: Optional[float] = None
+    opposition_sentiment: Optional[float] = None
+    government_target_count: int = 0
+    opposition_target_count: int = 0
+    political_actor_count: int = 0
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -117,6 +123,10 @@ class ArticleBiasEvidenceResponse(BaseModel):
     negative_prob: float
     neutral_prob: float
     positive_prob: float
+    canonical_actor: Optional[str] = None
+    political_actor_type: Optional[str] = None
+    political_side: Optional[str] = None
+    political_side_confidence: Optional[float] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -144,6 +154,12 @@ class ArticleBiasWithArticleResponse(BaseModel):
     emphasis_length_bias: Optional[float] = None
     emphasis_sentence_bias: Optional[float] = None
     emphasis_entity_bias: Optional[float] = None
+    political_side_bias: Optional[float] = None
+    government_sentiment: Optional[float] = None
+    opposition_sentiment: Optional[float] = None
+    government_target_count: int = 0
+    opposition_target_count: int = 0
+    political_actor_count: int = 0
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -161,6 +177,10 @@ class OutletBiasProfileResponse(BaseModel):
     coverage_bias_rate: float
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
+    political_side_bias_avg: Optional[float] = None
+    government_sentiment_avg: Optional[float] = None
+    opposition_sentiment_avg: Optional[float] = None
+    political_actor_count: int = 0
     bsi_score: Optional[float] = None
     source_trust_score: Optional[float] = None
     misinformation_risk_score: Optional[float] = None
@@ -182,6 +202,12 @@ class ManualArticleBiasResponse(BaseModel):
     entity_sentiments: List[dict]
     sentence_evidence: List[dict]
     relative_sentiment_bias: Optional[float] = None
+    political_side_bias: Optional[float] = None
+    government_sentiment: Optional[float] = None
+    opposition_sentiment: Optional[float] = None
+    government_target_count: int = 0
+    opposition_target_count: int = 0
+    political_actor_count: int = 0
     peer_sentiment_mean: Optional[float] = None
     peer_count: int
     peer_outlet_count: int
@@ -234,6 +260,10 @@ class OutletBiasSnapshotResponse(BaseModel):
     coverage_bias_rate: float
     missed_topics: Optional[List[str]] = None
     emphasis_bias_avg: Optional[float] = None
+    political_side_bias_avg: Optional[float] = None
+    government_sentiment_avg: Optional[float] = None
+    opposition_sentiment_avg: Optional[float] = None
+    political_actor_count: int = 0
     bsi_score: Optional[float] = None
     source_trust_score: Optional[float] = None
     misinformation_risk_score: Optional[float] = None
@@ -261,6 +291,7 @@ class OutletTopicBSIResponse(BaseModel):
     topic_label: Optional[str] = None
     sentiment_bias_avg: float
     emphasis_bias_avg: Optional[float] = None
+    political_side_bias_avg: Optional[float] = None
     coverage_present: bool
     article_count: int
     bsi_score: float

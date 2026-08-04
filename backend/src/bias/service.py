@@ -92,19 +92,38 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_length_bias FLOAT',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_sentence_bias FLOAT',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_entity_bias FLOAT',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS political_side_bias FLOAT',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS government_sentiment FLOAT',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS opposition_sentiment FLOAT',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS government_target_count INTEGER DEFAULT 0',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS opposition_target_count INTEGER DEFAULT 0',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
+        'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS canonical_actor VARCHAR',
+        'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_actor_type VARCHAR',
+        'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_side VARCHAR',
+        'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_side_confidence FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS source_trust_score FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS misinformation_risk_score FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS article_count_per_topic_avg FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS coverage_bias_rate_soft FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS political_side_bias_avg FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS government_sentiment_avg FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS opposition_sentiment_avg FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS source_trust_score FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS misinformation_risk_score FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS article_count_per_topic_avg FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS coverage_bias_rate_soft FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS political_side_bias_avg FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS government_sentiment_avg FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS opposition_sentiment_avg FLOAT',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
         'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS label_source VARCHAR(32)',
+        'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS political_side_bias_avg FLOAT',
     ]
     with db_manager.engine.connect() as conn:
         for stmt in migrations:
@@ -374,6 +393,11 @@ def _run_bias_analysis_impl(
                 })
                 bias_score = float(sentiment.score - group_mean)
                 emph = float(emph_dict["emphasis_bias"])
+                political_side_bias = (
+                    float(sentiment.political_side_bias)
+                    if sentiment.political_side_bias is not None
+                    else None
+                )
                 if article.id is not None and topic_key is not None:
                     scored_evidence_keys.add((int(article.id), str(topic_key)))
                 article_scores.append(
@@ -394,6 +418,20 @@ def _run_bias_analysis_impl(
                         emphasis_length_bias=float(emph_dict["length_bias"]),
                         emphasis_sentence_bias=float(emph_dict["sentence_bias"]),
                         emphasis_entity_bias=float(emph_dict["entity_bias"]),
+                        political_side_bias=political_side_bias,
+                        government_sentiment=(
+                            float(sentiment.government_sentiment)
+                            if sentiment.government_sentiment is not None
+                            else None
+                        ),
+                        opposition_sentiment=(
+                            float(sentiment.opposition_sentiment)
+                            if sentiment.opposition_sentiment is not None
+                            else None
+                        ),
+                        government_target_count=int(sentiment.government_target_count),
+                        opposition_target_count=int(sentiment.opposition_target_count),
+                        political_actor_count=int(sentiment.political_actor_count),
                         created_at=now,
                     )
                 )
@@ -419,6 +457,14 @@ def _run_bias_analysis_impl(
                             negative_prob=float(evidence.get("negative", 0.0) or 0.0),
                             neutral_prob=float(evidence.get("neutral", 0.0) or 0.0),
                             positive_prob=float(evidence.get("positive", 0.0) or 0.0),
+                            canonical_actor=evidence.get("canonical_actor"),
+                            political_actor_type=evidence.get("political_actor_type"),
+                            political_side=evidence.get("political_side"),
+                            political_side_confidence=(
+                                float(evidence.get("political_side_confidence"))
+                                if evidence.get("political_side_confidence") is not None
+                                else None
+                            ),
                             created_at=now,
                         )
                     )
@@ -427,12 +473,24 @@ def _run_bias_analysis_impl(
                 stats["sentiment_score_sum"] += sentiment.score
                 stats["sentiment_confidence_sum"] += sentiment.confidence
                 stats["emphasis_bias_sum"] += emph
+                if political_side_bias is not None:
+                    stats["political_side_bias_sum"] += political_side_bias
+                    stats["political_side_bias_count"] += 1
+                if sentiment.government_sentiment is not None:
+                    stats["government_sentiment_sum"] += float(sentiment.government_sentiment)
+                    stats["government_sentiment_count"] += 1
+                if sentiment.opposition_sentiment is not None:
+                    stats["opposition_sentiment_sum"] += float(sentiment.opposition_sentiment)
+                    stats["opposition_sentiment_count"] += 1
+                stats["political_actor_count"] += int(sentiment.political_actor_count)
                 stats["articles_scored"] += 1
                 outlet_score_arrays[article.outlet]["sentiment_bias"].append(bias_score)
                 outlet_score_arrays[article.outlet]["emphasis_bias"].append(emph)
                 t = outlet_topic_stats[article.outlet].setdefault(topic_key, {
                     "sentiment_bias_sum": 0.0,
                     "emphasis_bias_sum": 0.0,
+                    "political_side_bias_sum": 0.0,
+                    "political_side_bias_count": 0,
                     "article_count": 0,
                     "topic_label": topic_label,
                     "label_source": label_source,
@@ -440,6 +498,9 @@ def _run_bias_analysis_impl(
                 })
                 t["sentiment_bias_sum"] += bias_score
                 t["emphasis_bias_sum"] += emph
+                if political_side_bias is not None:
+                    t["political_side_bias_sum"] += political_side_bias
+                    t["political_side_bias_count"] += 1
                 t["article_count"] += 1
 
             for idx in indices:
@@ -464,6 +525,8 @@ def _run_bias_analysis_impl(
                         outlet_topic_stats[outlet].setdefault(topic_key, {
                             "sentiment_bias_sum": 0.0,
                             "emphasis_bias_sum": 0.0,
+                            "political_side_bias_sum": 0.0,
+                            "political_side_bias_count": 0,
                             "article_count": 0,
                             "topic_label": topic_label,
                             "label_source": label_source,
@@ -697,6 +760,24 @@ def analyze_manual_article(
             emphasis_length_bias=float(emphasis["length_bias"]) if emphasis else 0.0,
             emphasis_sentence_bias=float(emphasis["sentence_bias"]) if emphasis else 0.0,
             emphasis_entity_bias=float(emphasis["entity_bias"]) if emphasis else 0.0,
+            political_side_bias=(
+                float(manual_sentiment.political_side_bias)
+                if manual_sentiment.political_side_bias is not None
+                else None
+            ),
+            government_sentiment=(
+                float(manual_sentiment.government_sentiment)
+                if manual_sentiment.government_sentiment is not None
+                else None
+            ),
+            opposition_sentiment=(
+                float(manual_sentiment.opposition_sentiment)
+                if manual_sentiment.opposition_sentiment is not None
+                else None
+            ),
+            government_target_count=int(manual_sentiment.government_target_count),
+            opposition_target_count=int(manual_sentiment.opposition_target_count),
+            political_actor_count=int(manual_sentiment.political_actor_count),
             created_at=now,
         )
         upsert_article_bias_scores(db, [score_row])
@@ -724,6 +805,7 @@ def analyze_manual_article(
         relative_sentiment_bias if relative_sentiment_bias is not None else manual_sentiment.score,
         0.0,
         float(emphasis["emphasis_bias"]) if emphasis else 0.0,
+        political_side_bias_avg=manual_sentiment.political_side_bias,
     )
 
     notes: List[str] = []
@@ -745,6 +827,12 @@ def analyze_manual_article(
         "entity_sentiments": manual_sentiment.entity_sentiments,
         "sentence_evidence": manual_sentiment.sentence_sentiments[:25],
         "relative_sentiment_bias": relative_sentiment_bias,
+        "political_side_bias": manual_sentiment.political_side_bias,
+        "government_sentiment": manual_sentiment.government_sentiment,
+        "opposition_sentiment": manual_sentiment.opposition_sentiment,
+        "government_target_count": manual_sentiment.government_target_count,
+        "opposition_target_count": manual_sentiment.opposition_target_count,
+        "political_actor_count": manual_sentiment.political_actor_count,
         "peer_sentiment_mean": peer_sentiment_mean,
         "peer_count": len(peer_articles),
         "peer_outlet_count": len(peer_outlets),
@@ -860,6 +948,14 @@ def _manual_evidence_rows(
                 negative_prob=float(evidence.get("negative", 0.0) or 0.0),
                 neutral_prob=float(evidence.get("neutral", 0.0) or 0.0),
                 positive_prob=float(evidence.get("positive", 0.0) or 0.0),
+                canonical_actor=evidence.get("canonical_actor"),
+                political_actor_type=evidence.get("political_actor_type"),
+                political_side=evidence.get("political_side"),
+                political_side_confidence=(
+                    float(evidence.get("political_side_confidence"))
+                    if evidence.get("political_side_confidence") is not None
+                    else None
+                ),
                 created_at=created_at,
             )
         )

@@ -5,6 +5,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
+from .actor_registry import (
+    compute_political_side_metrics,
+    enrich_row_with_actor,
+    get_political_actor_registry,
+)
 from .entity_extraction import split_article_sentences
 
 
@@ -21,6 +26,7 @@ class TargetPair:
     sentence: str
     sentence_index: int
     is_title: bool = False
+    article_date: Any = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,12 @@ class SentimentResult:
     entity_sentiments: List[Dict[str, Any]] = field(default_factory=list)
     sentence_sentiments: List[Dict[str, Any]] = field(default_factory=list)
     target_pair_count: int = 0
+    political_side_bias: float | None = None
+    government_sentiment: float | None = None
+    opposition_sentiment: float | None = None
+    government_target_count: int = 0
+    opposition_target_count: int = 0
+    political_actor_count: int = 0
 
 
 def _article_sentences(article: Any) -> List[tuple[str, bool]]:
@@ -99,10 +111,15 @@ def _contains_target(sentence: str, target: str) -> bool:
 
 def build_target_pairs(articles: Sequence[Any]) -> List[TargetPair]:
     pairs: List[TargetPair] = []
+    registry = get_political_actor_registry()
     for article_index, article in enumerate(articles):
         article_pairs: List[TargetPair] = []
         sentences = _article_sentences(article)
-        for target, entity_label in _article_entities(article):
+        entities = _article_entities(article)
+        existing_targets = [target for target, _ in entities]
+        sentence_texts = [sentence for sentence, _ in sentences]
+        entities.extend(registry.supplemental_targets(sentence_texts, existing_targets))
+        for target, entity_label in entities:
             for sentence_index, (sentence, is_title) in enumerate(sentences):
                 if not _contains_target(sentence, target):
                     continue
@@ -114,6 +131,7 @@ def build_target_pairs(articles: Sequence[Any]) -> List[TargetPair]:
                         sentence=sentence,
                         sentence_index=sentence_index,
                         is_title=is_title,
+                        article_date=getattr(article, "date", None),
                     )
                 )
                 if len(article_pairs) >= MAX_TARGET_PAIRS_PER_ARTICLE:
@@ -157,7 +175,7 @@ def aggregate_target_sentiment(
         pair_label = _label_from_probabilities(probabilities)
         pair_confidence = probabilities[pair_label]
         pair_score = probabilities["positive"] - probabilities["negative"]
-        sentence_rows_by_article.setdefault(pair.article_index, []).append(
+        sentence_row = enrich_row_with_actor(
             {
                 "target": pair.target,
                 "entity_label": pair.entity_label or None,
@@ -170,8 +188,10 @@ def aggregate_target_sentiment(
                 "negative": round(float(probabilities["negative"]), 6),
                 "neutral": round(float(probabilities["neutral"]), 6),
                 "positive": round(float(probabilities["positive"]), 6),
-            }
+            },
+            pair.article_date,
         )
+        sentence_rows_by_article.setdefault(pair.article_index, []).append(sentence_row)
 
         article_targets = grouped.setdefault(pair.article_index, {})
         target_key = pair.target.casefold()
@@ -190,6 +210,14 @@ def aggregate_target_sentiment(
                 },
             },
         )
+        actor_match = sentence_row.get("canonical_actor")
+        if actor_match and "actor" not in target_stats:
+            target_stats["actor"] = {
+                key: value
+                for key, value in sentence_row.items()
+                if key.startswith("political_")
+                or key in {"canonical_actor", "political_party", "political_role", "matched_actor_alias"}
+            }
 
         context_weight = 1.5 if pair.is_title else 1.0 / math.sqrt(max(pair.sentence_index, 1))
         target_stats["mentions"] += 1
@@ -226,8 +254,7 @@ def aggregate_target_sentiment(
                 article_probability_sums[probability_label] += value * aggregate_weight
             article_weight += aggregate_weight
 
-            target_rows.append(
-                {
+            target_row = {
                     "target": stats["target"],
                     "entity_label": stats["entity_label"] or None,
                     "label": label,
@@ -239,15 +266,26 @@ def aggregate_target_sentiment(
                     "mentions": int(stats["mentions"]),
                     "title_mention": bool(stats["title_mention"]),
                 }
-            )
+            if isinstance(stats.get("actor"), dict):
+                target_row.update(stats["actor"])
+            else:
+                enrich_row_with_actor(target_row)
+            target_rows.append(target_row)
 
         if not target_rows or article_weight <= 0.0:
+            political_metrics = compute_political_side_metrics(target_rows)
             results.append(
                 SentimentResult(
                     label="neutral",
                     confidence=0.0,
                     score=0.0,
                     sentence_sentiments=sentence_rows_by_article.get(article_index, []),
+                    political_side_bias=political_metrics["political_side_bias"],
+                    government_sentiment=political_metrics["government_sentiment"],
+                    opposition_sentiment=political_metrics["opposition_sentiment"],
+                    government_target_count=political_metrics["government_target_count"],
+                    opposition_target_count=political_metrics["opposition_target_count"],
+                    political_actor_count=political_metrics["political_actor_count"],
                 )
             )
             continue
@@ -264,6 +302,7 @@ def aggregate_target_sentiment(
             key=lambda row: (row["title_mention"], row["mentions"], row["confidence"]),
             reverse=True,
         )
+        political_metrics = compute_political_side_metrics(target_rows)
         results.append(
             SentimentResult(
                 label=article_label,
@@ -272,6 +311,12 @@ def aggregate_target_sentiment(
                 entity_sentiments=target_rows,
                 sentence_sentiments=sentence_rows_by_article.get(article_index, []),
                 target_pair_count=sum(row["mentions"] for row in target_rows),
+                political_side_bias=political_metrics["political_side_bias"],
+                government_sentiment=political_metrics["government_sentiment"],
+                opposition_sentiment=political_metrics["opposition_sentiment"],
+                government_target_count=political_metrics["government_target_count"],
+                opposition_target_count=political_metrics["opposition_target_count"],
+                political_actor_count=political_metrics["political_actor_count"],
             )
         )
     return results
