@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  OUTLET_NAMES,
+  fetchOutletRegistry,
   fetchPipelineStatus,
   triggerScrape,
   PipelineStatus,
@@ -116,6 +116,7 @@ function ProgressModal({
 
 // ── Main component ───────────────────────────────────────────────────────────
 export default function ScrapeOutletsPanel() {
+  const [outletNames, setOutletNames] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [isScraping, setIsScraping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,6 +146,12 @@ export default function ScrapeOutletsPanel() {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
+  useEffect(() => {
+    fetchOutletRegistry()
+      .then((entries) => setOutletNames(entries.map((entry) => entry.name)))
+      .catch(() => setError("Failed to load the active scraper registry."));
+  }, []);
+
   const toggleOutlet = (name: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -157,7 +164,7 @@ export default function ScrapeOutletsPanel() {
     });
   };
 
-  const selectAll = () => setSelected(new Set(OUTLET_NAMES));
+  const selectAll = () => setSelected(new Set(outletNames));
   const clearAll = () => setSelected(new Set());
 
   const handleScrape = async () => {
@@ -177,7 +184,7 @@ export default function ScrapeOutletsPanel() {
     }
   };
 
-  const allSelected = selected.size === OUTLET_NAMES.length;
+  const allSelected = outletNames.length > 0 && selected.size === outletNames.length;
   const noneSelected = selected.size === 0;
 
   return (
@@ -204,7 +211,7 @@ export default function ScrapeOutletsPanel() {
 
       {/* Outlet grid */}
       <div className="p-5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-        {OUTLET_NAMES.map((name) => {
+        {outletNames.map((name) => {
           const isChecked = selected.has(name);
           return (
             <button
@@ -239,7 +246,7 @@ export default function ScrapeOutletsPanel() {
       <div className="px-5 pb-5 flex items-center justify-between gap-4">
         <p className="text-xs text-slate-500 dark:text-slate-400">
           {noneSelected
-            ? "No outlets selected — will scrape all 13"
+            ? `No outlets selected — will scrape all ${outletNames.length || "configured"}`
             : `${selected.size} outlet${selected.size === 1 ? "" : "s"} selected`}
         </p>
         <div className="flex items-center gap-3">

@@ -5,6 +5,7 @@ import {
   fetchBiasTopics, 
   fetchBiasArticles, 
   fetchArticleBiasEvidence,
+  AnalysisType,
   TopicSummaryData, 
   ArticleBiasWithArticleData,
   ArticleBiasEvidenceData,
@@ -24,7 +25,7 @@ import {
   Eye
 } from "lucide-react";
 
-export default function TopicValidationPanel() {
+export default function TopicValidationPanel({ analysisType = "general" }: { analysisType?: AnalysisType }) {
   const [topics, setTopics] = useState<TopicSummaryData[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<string>("");
   const [articles, setArticles] = useState<ArticleBiasWithArticleData[]>([]);
@@ -41,21 +42,23 @@ export default function TopicValidationPanel() {
     setLoadingTopics(true);
     setError(null);
     try {
-      const data = await fetchBiasTopics();
+      const data = await fetchBiasTopics(analysisType);
       setTopics(data);
+      setSelectedTopic("");
+      setEvidenceByArticle({});
     } catch (err) {
       setError("Failed to load topic groups.");
       console.error(err);
     } finally {
       setLoadingTopics(false);
     }
-  }, []);
+  }, [analysisType]);
 
   const loadArticles = useCallback(async (topicKey: string) => {
     setLoadingArticles(true);
     setError(null);
     try {
-      const data = await fetchBiasArticles(100, 0, undefined, topicKey);
+      const data = await fetchBiasArticles(100, 0, undefined, topicKey, analysisType);
       setArticles(data);
     } catch (err) {
       setError("Failed to load articles for this topic.");
@@ -63,7 +66,7 @@ export default function TopicValidationPanel() {
     } finally {
       setLoadingArticles(false);
     }
-  }, []);
+  }, [analysisType]);
 
   useEffect(() => {
     loadTopics();
@@ -173,14 +176,14 @@ export default function TopicValidationPanel() {
 
     setLoadingEvidenceId(articleId);
     try {
-      const rows = await fetchArticleBiasEvidence(articleId, article.topic_key);
+      const rows = await fetchArticleBiasEvidence(articleId, article.topic_key, analysisType);
       setEvidenceByArticle((prev) => ({ ...prev, [articleId]: rows }));
     } catch (err) {
       setEvidenceError(err instanceof Error ? err.message : "Failed to load evidence.");
     } finally {
       setLoadingEvidenceId(null);
     }
-  }, [evidenceByArticle, expandedArticleId]);
+  }, [analysisType, evidenceByArticle, expandedArticleId]);
 
   const getSentimentIcon = (score: number) => {
     if (score > 0.2) return <TrendingUp className="w-4 h-4 text-emerald-500" />;

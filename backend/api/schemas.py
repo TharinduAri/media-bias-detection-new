@@ -39,6 +39,7 @@ class ScrapeRunLogResponse(BaseModel):
 class BiasRunResponse(BaseModel):
     status: str
     message: str
+    analysis_type: str = "general"
     processed_articles: int
     topics_processed: int
     profiles_updated: int
@@ -81,6 +82,7 @@ class ArticleBiasScoreResponse(BaseModel):
     id: int
     article_id: int
     outlet: str
+    analysis_type: str = "general"
     topic_key: str
     topic_label: Optional[str] = None
     sentiment_label: str
@@ -110,6 +112,7 @@ class ArticleBiasEvidenceResponse(BaseModel):
     id: int
     article_id: int
     outlet: str
+    analysis_type: str = "general"
     topic_key: str
     topic_label: Optional[str] = None
     target_entity: str
@@ -136,6 +139,7 @@ class ArticleBiasWithArticleResponse(BaseModel):
     id: int
     article_id: int
     outlet: str
+    analysis_type: str = "general"
     title: str
     date: datetime
     url: str
@@ -168,6 +172,7 @@ class ArticleBiasWithArticleResponse(BaseModel):
 class OutletBiasProfileResponse(BaseModel):
     id: int
     outlet: str
+    analysis_type: str = "general"
     sentiment_bias_avg: float
     sentiment_score_avg: float
     articles_scored: int
@@ -239,6 +244,7 @@ class BiasRunLogResponse(BaseModel):
     started_at: datetime
     finished_at: datetime
     status: str
+    analysis_type: str = "general"
     error: Optional[str] = None
     log_lines: List[str]
     created_at: Optional[datetime] = None
@@ -249,6 +255,7 @@ class BiasRunLogResponse(BaseModel):
 class OutletBiasSnapshotResponse(BaseModel):
     id: int
     outlet: str
+    analysis_type: str = "general"
     run_id: int
     snapshot_date: datetime
     sentiment_bias_avg: float
@@ -287,6 +294,7 @@ class OutletTopicBSIResponse(BaseModel):
     id: int
     run_id: int
     outlet: str
+    analysis_type: str = "general"
     topic_key: str
     topic_label: Optional[str] = None
     sentiment_bias_avg: float

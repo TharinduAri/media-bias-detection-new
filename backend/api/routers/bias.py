@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from src.bias.service import (
+    FINANCIAL_ANALYSIS_TYPE,
+    GENERAL_ANALYSIS_TYPE,
     analyze_manual_article,
     ensure_bias_tables,
     get_models,
@@ -15,11 +17,30 @@ from src.bias.service import (
     run_bias_analysis,
     run_bias_analysis_fast,
     run_bias_analysis_with_clusters,
+    run_financial_news_analysis,
+    run_financial_news_analysis_fast,
 )
 
 
 def _get_last_run_at(db: Session) -> datetime | None:
     row = db.query(models.BiasRunLog).order_by(models.BiasRunLog.id.desc()).first()
+    return row.finished_at if row else None
+
+
+def _analysis_type(value: str | None) -> str:
+    normalized = (value or GENERAL_ANALYSIS_TYPE).strip().lower()
+    if normalized == FINANCIAL_ANALYSIS_TYPE:
+        return FINANCIAL_ANALYSIS_TYPE
+    return GENERAL_ANALYSIS_TYPE
+
+
+def _get_last_run_at_for(db: Session, analysis_type: str) -> datetime | None:
+    row = (
+        db.query(models.BiasRunLog)
+        .filter(models.BiasRunLog.analysis_type == _analysis_type(analysis_type))
+        .order_by(models.BiasRunLog.id.desc())
+        .first()
+    )
     return row.finished_at if row else None
 
 router = APIRouter(
@@ -81,6 +102,22 @@ def run_bias_fast(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/run-financial", response_model=schemas.BiasRunResponse)
+def run_financial_bias(db: Session = Depends(get_db)):
+    try:
+        return run_financial_news_analysis(db)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/run-financial-fast", response_model=schemas.BiasRunResponse)
+def run_financial_bias_fast(db: Session = Depends(get_db)):
+    try:
+        return run_financial_news_analysis_fast(db)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/run-with-clusters", response_model=schemas.BiasRunResponse)
 def run_bias_with_clusters(
     payload: schemas.BiasRunWithClustersRequest,
@@ -113,10 +150,17 @@ def analyze_single_manual_article(
 
 
 @router.get("/outlets/{outlet_name}", response_model=schemas.OutletBiasProfileResponse)
-def get_outlet_profile(outlet_name: str, db: Session = Depends(get_db)):
+def get_outlet_profile(
+    outlet_name: str,
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
+    db: Session = Depends(get_db),
+):
+    ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     profile = (
         db.query(models.OutletBiasProfile)
         .filter(models.OutletBiasProfile.outlet == outlet_name)
+        .filter(models.OutletBiasProfile.analysis_type == analysis_type)
         .first()
     )
     if not profile:
@@ -125,12 +169,19 @@ def get_outlet_profile(outlet_name: str, db: Session = Depends(get_db)):
 
 
 @router.post("/compare", response_model=list[schemas.OutletBiasProfileResponse])
-def compare_outlets(payload: schemas.OutletCompareRequest, db: Session = Depends(get_db)):
+def compare_outlets(
+    payload: schemas.OutletCompareRequest,
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
+    db: Session = Depends(get_db),
+):
     if not payload.outlets:
         raise HTTPException(status_code=400, detail="No outlets provided")
+    ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     profiles = (
         db.query(models.OutletBiasProfile)
         .filter(models.OutletBiasProfile.outlet.in_(payload.outlets))
+        .filter(models.OutletBiasProfile.analysis_type == analysis_type)
         .order_by(models.OutletBiasProfile.outlet.asc())
         .all()
     )
@@ -138,11 +189,18 @@ def compare_outlets(payload: schemas.OutletCompareRequest, db: Session = Depends
 
 
 @router.get("/articles/{article_id}", response_model=list[schemas.ArticleBiasScoreResponse])
-def get_article_bias(article_id: int, db: Session = Depends(get_db)):
+def get_article_bias(
+    article_id: int,
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
+    db: Session = Depends(get_db),
+):
     """Return all bias scores for an article (one per topic it was assigned to)."""
+    ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     scores = (
         db.query(models.ArticleBiasScore)
         .filter(models.ArticleBiasScore.article_id == article_id)
+        .filter(models.ArticleBiasScore.analysis_type == analysis_type)
         .all()
     )
     if not scores:
@@ -154,6 +212,7 @@ def get_article_bias(article_id: int, db: Session = Depends(get_db)):
 def get_article_bias_evidence(
     article_id: int,
     topic_key: str | None = Query(None, description="Filter evidence to one topic"),
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
     db: Session = Depends(get_db),
 ):
     """Return sentence-level target sentiment evidence used for article bias scoring."""
@@ -161,6 +220,7 @@ def get_article_bias_evidence(
     q = (
         db.query(models.ArticleBiasEvidence)
         .filter(models.ArticleBiasEvidence.article_id == article_id)
+        .filter(models.ArticleBiasEvidence.analysis_type == _analysis_type(analysis_type))
     )
     if topic_key:
         q = q.filter(models.ArticleBiasEvidence.topic_key == topic_key)
@@ -177,15 +237,19 @@ def get_article_bias_evidence(
 
 @router.get("/topics", response_model=list[schemas.TopicSummaryResponse])
 def list_bias_topics(
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import func
+    ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     rows = (
         db.query(
             models.ArticleBiasScore.topic_key,
             func.max(models.ArticleBiasScore.topic_label).label("topic_label"),
             func.count(models.ArticleBiasScore.id).label("article_count")
         )
+        .filter(models.ArticleBiasScore.analysis_type == analysis_type)
         .group_by(models.ArticleBiasScore.topic_key)
         .order_by(func.count(models.ArticleBiasScore.id).desc())
         .all()
@@ -197,13 +261,16 @@ def list_bias_topics(
 def list_article_bias_scores(
     outlet: str | None = Query(None, description="Filter by outlet name"),
     topic_key: str | None = Query(None, description="Filter by topic key"),
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
+    ensure_bias_tables()
     q = (
         db.query(models.ArticleBiasScore, models.Article)
         .join(models.Article, models.Article.id == models.ArticleBiasScore.article_id)
+        .filter(models.ArticleBiasScore.analysis_type == _analysis_type(analysis_type))
         .order_by(models.ArticleBiasScore.sentiment_bias.desc())
     )
     if outlet:
@@ -219,6 +286,7 @@ def list_article_bias_scores(
                 id=score.id,
                 article_id=score.article_id,
                 outlet=score.outlet,
+                analysis_type=score.analysis_type,
                 title=article.title,
                 date=article.date,
                 url=article.url,
@@ -253,15 +321,14 @@ def list_article_bias_scores(
 @router.get("/logs", response_model=list[schemas.BiasRunLogResponse])
 def list_bias_logs(
     limit: int = Query(10, ge=1, le=100),
+    analysis_type: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     ensure_bias_tables()
-    rows = (
-        db.query(models.BiasRunLog)
-        .order_by(models.BiasRunLog.id.desc())
-        .limit(limit)
-        .all()
-    )
+    q = db.query(models.BiasRunLog)
+    if analysis_type:
+        q = q.filter(models.BiasRunLog.analysis_type == _analysis_type(analysis_type))
+    rows = q.order_by(models.BiasRunLog.id.desc()).limit(limit).all()
     return rows
 
 
@@ -311,15 +378,20 @@ def cleanup_bias_results(db: Session = Depends(get_db)):
 # ── Agentic-layer & longitudinal endpoints ────────────────────────────────────
 
 @router.get("/profiles", response_model=schemas.AllProfilesResponse)
-def get_all_profiles(db: Session = Depends(get_db)):
+def get_all_profiles(
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
+    db: Session = Depends(get_db),
+):
     ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     profiles = (
         db.query(models.OutletBiasProfile)
+        .filter(models.OutletBiasProfile.analysis_type == analysis_type)
         .order_by(models.OutletBiasProfile.outlet.asc())
         .all()
     )
     return schemas.AllProfilesResponse(
-        last_run_at=_get_last_run_at(db),
+        last_run_at=_get_last_run_at_for(db, analysis_type),
         profiles=profiles,
     )
 
@@ -328,13 +400,16 @@ def get_all_profiles(db: Session = Depends(get_db)):
 def get_outlet_trend(
     outlet_name: str,
     days_back: int = Query(90, ge=1, le=730),
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
     db: Session = Depends(get_db),
 ):
     ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     since = datetime.utcnow() - timedelta(days=days_back)
     rows = (
         db.query(models.OutletBiasSnapshot)
         .filter(models.OutletBiasSnapshot.outlet == outlet_name)
+        .filter(models.OutletBiasSnapshot.analysis_type == analysis_type)
         .filter(models.OutletBiasSnapshot.snapshot_date >= since)
         .order_by(models.OutletBiasSnapshot.snapshot_date.asc())
         .all()
@@ -345,12 +420,15 @@ def get_outlet_trend(
 @router.get("/trends", response_model=schemas.AllTrendsResponse)
 def get_all_trends(
     days_back: int = Query(90, ge=1, le=730),
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
     db: Session = Depends(get_db),
 ):
     ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     since = datetime.utcnow() - timedelta(days=days_back)
     rows = (
         db.query(models.OutletBiasSnapshot)
+        .filter(models.OutletBiasSnapshot.analysis_type == analysis_type)
         .filter(models.OutletBiasSnapshot.snapshot_date >= since)
         .order_by(
             models.OutletBiasSnapshot.outlet.asc(),
@@ -365,7 +443,7 @@ def get_all_trends(
         schemas.OutletTrendResponse(outlet=outlet, snapshots=snaps)
         for outlet, snaps in outlet_map.items()
     ]
-    return schemas.AllTrendsResponse(last_run_at=_get_last_run_at(db), trends=trends)
+    return schemas.AllTrendsResponse(last_run_at=_get_last_run_at_for(db, analysis_type), trends=trends)
 
 
 @router.get("/scores", response_model=schemas.BiasScoresResponse)
@@ -373,10 +451,13 @@ def get_bias_scores(
     outlet: str | None = Query(None),
     topic_key: str | None = Query(None),
     run_id: int | None = Query(None),
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
     db: Session = Depends(get_db),
 ):
     ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     q = db.query(models.OutletTopicBSI)
+    q = q.filter(models.OutletTopicBSI.analysis_type == analysis_type)
     if outlet:
         q = q.filter(models.OutletTopicBSI.outlet == outlet)
     if topic_key:
@@ -384,24 +465,30 @@ def get_bias_scores(
     if run_id is not None:
         q = q.filter(models.OutletTopicBSI.run_id == run_id)
     rows = q.order_by(models.OutletTopicBSI.bsi_score.desc()).all()
-    return schemas.BiasScoresResponse(last_run_at=_get_last_run_at(db), scores=rows)
+    return schemas.BiasScoresResponse(last_run_at=_get_last_run_at_for(db, analysis_type), scores=rows)
 
 
 @router.get("/omitted-topics", response_model=schemas.OmittedTopicsResponse)
-def get_omitted_topics(db: Session = Depends(get_db)):
+def get_omitted_topics(
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
+    db: Session = Depends(get_db),
+):
     ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
 
     # Use the latest run only
     latest = (
         db.query(func.max(models.OutletTopicBSI.run_id))
+        .filter(models.OutletTopicBSI.analysis_type == analysis_type)
         .scalar()
     )
     if latest is None:
-        return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at(db), topics=[])
+        return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at_for(db, analysis_type), topics=[])
 
     rows = (
         db.query(models.OutletTopicBSI)
         .filter(models.OutletTopicBSI.run_id == latest)
+        .filter(models.OutletTopicBSI.analysis_type == analysis_type)
         .order_by(models.OutletTopicBSI.topic_label.asc(), models.OutletTopicBSI.outlet.asc())
         .all()
     )
@@ -431,17 +518,22 @@ def get_omitted_topics(db: Session = Depends(get_db)):
     ]
     # Sort by most missed first so the most contentious topics surface at the top
     topics.sort(key=lambda t: len(t.missed_by), reverse=True)
-    return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at(db), topics=topics)
+    return schemas.OmittedTopicsResponse(last_run_at=_get_last_run_at_for(db, analysis_type), topics=topics)
 
 
 @router.get("/omissions", response_model=schemas.AllOmissionsResponse)
-def get_omissions(db: Session = Depends(get_db)):
+def get_omissions(
+    analysis_type: str = Query(GENERAL_ANALYSIS_TYPE),
+    db: Session = Depends(get_db),
+):
     ensure_bias_tables()
+    analysis_type = _analysis_type(analysis_type)
     subq = (
         db.query(
             models.OutletBiasSnapshot.outlet,
             func.max(models.OutletBiasSnapshot.id).label("max_id"),
         )
+        .filter(models.OutletBiasSnapshot.analysis_type == analysis_type)
         .group_by(models.OutletBiasSnapshot.outlet)
         .subquery()
     )
@@ -463,4 +555,4 @@ def get_omissions(db: Session = Depends(get_db)):
         )
         for s in latest_snaps
     ]
-    return schemas.AllOmissionsResponse(last_run_at=_get_last_run_at(db), omissions=omissions)
+    return schemas.AllOmissionsResponse(last_run_at=_get_last_run_at_for(db, analysis_type), omissions=omissions)

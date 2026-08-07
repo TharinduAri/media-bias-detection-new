@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-import math
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import numpy as np
@@ -33,9 +32,14 @@ from sqlalchemy.orm import Session
 
 from api import models
 
+DEFAULT_ANALYSIS_TYPE = "general"
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 OMISSION_THRESHOLD = 0.15
 OMISSION_LOOKBACK_RUNS = 5
+
+
+def _analysis_type(value: str | None) -> str:
+    return (value or DEFAULT_ANALYSIS_TYPE).strip().lower() or DEFAULT_ANALYSIS_TYPE
 
 
 def compute_bsi(
@@ -62,40 +66,6 @@ def compute_bsi(
     return round(0.35 * s + 0.30 * c + 0.20 * e + 0.15 * p, 6)
 
 
-def compute_source_trust_score(
-    bsi_score: float | None,
-    sentiment_confidence_avg: float,
-    articles_scored: int,
-    coverage_bias_rate: float,
-    coverage_bias_rate_soft: float | None = None,
-) -> float:
-    """Source trust score [0-1]. Higher = more trustworthy.
-
-    This is a source-level reliability heuristic, not a factuality verdict. It
-    rewards low measured bias, enough scored evidence, and broad topic
-    coverage. Sentiment confidence is accepted for API compatibility but is
-    deliberately excluded: classifier certainty is not evidence of factuality.
-    """
-    bsi = min(max(float(bsi_score or 0.0), 0.0), 1.0)
-    _ = sentiment_confidence_avg
-    coverage_raw = coverage_bias_rate_soft if coverage_bias_rate_soft is not None else coverage_bias_rate
-    coverage_quality = 1.0 - min(max(float(coverage_raw), 0.0), 1.0)
-    evidence_quality = math.sqrt(min(max(float(articles_scored), 0.0) / 20.0, 1.0))
-
-    score = (
-        0.55 * (1.0 - bsi)
-        + 0.25 * coverage_quality
-        + 0.20 * evidence_quality
-    )
-    return round(float(min(max(score, 0.0), 1.0)), 6)
-
-
-def compute_misinformation_risk_score(source_trust_score: float | None) -> float:
-    """Inverse of source trust [0-1]. Higher = more misinformation risk."""
-    trust = min(max(float(source_trust_score or 0.0), 0.0), 1.0)
-    return round(1.0 - trust, 6)
-
-
 def compute_bsi_confidence_interval(
     sentiment_bias_scores: List[float],
     coverage_bias_rate: float,
@@ -103,6 +73,8 @@ def compute_bsi_confidence_interval(
     n_resamples: int = 1000,
     ci_level: float = 0.95,
     rng_seed: int = 42,
+    coverage_bias_rate_soft: float | None = None,
+    political_side_bias_avg: float | None = None,
 ) -> Tuple[float, float]:
     """Bootstrap CI on BSI. Returns (ci_low, ci_high).
 
@@ -116,6 +88,8 @@ def compute_bsi_confidence_interval(
             float(np.mean(sentiment_bias_scores)) if sentiment_bias_scores else 0.0,
             coverage_bias_rate,
             float(np.mean(emphasis_bias_scores)) if emphasis_bias_scores else 0.0,
+            coverage_bias_rate_soft,
+            political_side_bias_avg,
         )
         return (point, point)
 
@@ -127,7 +101,13 @@ def compute_bsi_confidence_interval(
     for _ in range(n_resamples):
         idx = rng.integers(0, n, size=n)
         bsi_samples.append(
-            compute_bsi(float(np.mean(sent_arr[idx])), coverage_bias_rate, float(np.mean(emph_arr[idx])))
+            compute_bsi(
+                float(np.mean(sent_arr[idx])),
+                coverage_bias_rate,
+                float(np.mean(emph_arr[idx])),
+                coverage_bias_rate_soft,
+                political_side_bias_avg,
+            )
         )
 
     alpha = 1.0 - ci_level
@@ -142,33 +122,26 @@ def compute_soft_coverage_score(
     cluster_outlet_sets: List[Set[str]],
     topic_mainstream_weights: List[float],
 ) -> float:
-    """Continuous coverage bias in [0, 1] — replaces the binary COVERAGE_MAJORITY_THRESHOLD cliff.
+    """Return the weighted fraction of eligible topics the outlet missed.
 
-    missed_penalty = sum of mainstream weights for topics the outlet did not cover.
-    covered_weight = outlet's coverage ratio / max outlet coverage ratio across all outlets.
-    score = missed_penalty / (covered_weight + missed_penalty).
-
-    A score of 0 means the outlet covered everything relative to peers.
-    A score near 1 means the outlet systematically skipped mainstream topics.
+    Numerator and denominator deliberately use the same topic-weight scale.
     """
     if not cluster_outlet_sets:
         return 0.0
+    if len(cluster_outlet_sets) != len(topic_mainstream_weights):
+        raise ValueError("Coverage topic sets and weights must have equal length.")
 
-    n_covered = sum(1 for cs in cluster_outlet_sets if outlet in cs)
-    outlet_coverage_ratio = n_covered / len(cluster_outlet_sets)
-
-    max_ratio = max(
-        (sum(1 for cs in cluster_outlet_sets if o in cs) / len(cluster_outlet_sets) for o in all_outlets),
-        default=1.0,
+    _ = all_outlets  # Retained for API compatibility and future eligibility checks.
+    weights = [max(float(weight), 0.0) for weight in topic_mainstream_weights]
+    total_weight = sum(weights)
+    if total_weight <= 1e-8:
+        return 0.0
+    missed_weight = sum(
+        weight
+        for covered_outlets, weight in zip(cluster_outlet_sets, weights)
+        if outlet not in covered_outlets
     )
-    covered_weight = outlet_coverage_ratio / max(max_ratio, 1e-8)
-
-    missed_penalty = sum(
-        w for cs, w in zip(cluster_outlet_sets, topic_mainstream_weights) if outlet not in cs
-    )
-
-    total = covered_weight + missed_penalty
-    return float(min(1.0, missed_penalty / total)) if total > 1e-8 else 0.0
+    return float(min(max(missed_weight / total_weight, 0.0), 1.0))
 
 
 def init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -265,9 +238,11 @@ def build_profiles(
     run_id: int,
     outlet_score_arrays: Dict[str, Dict[str, List[float]]] | None = None,
     outlet_soft_coverage: Dict[str, float] | None = None,
+    analysis_type: str = DEFAULT_ANALYSIS_TYPE,
 ) -> Tuple[List[models.OutletBiasProfile], List[models.OutletTopicBSI]]:
     profiles: List[models.OutletBiasProfile] = []
     topic_bsi_rows: List[models.OutletTopicBSI] = []
+    analysis_type = _analysis_type(analysis_type)
 
     for outlet, stats in outlet_stats.items():
         articles_scored = int(stats["articles_scored"])
@@ -307,19 +282,22 @@ def build_profiles(
             coverage_soft,
             political_side_bias_avg,
         )
-        source_trust = compute_source_trust_score(
-            bsi,
-            sentiment_confidence_avg,
-            articles_scored,
-            coverage_bias_rate,
-            coverage_soft,
-        )
-        misinformation_risk = compute_misinformation_risk_score(source_trust)
+        # Bias, coverage and emphasis do not establish factual accuracy or
+        # source trust. Keep the legacy nullable columns empty rather than
+        # publishing unsupported credibility or misinformation claims.
+        source_trust = None
+        misinformation_risk = None
 
         arrays = (outlet_score_arrays or {}).get(outlet, {})
         sent_list = arrays.get("sentiment_bias", [])
         emph_list = arrays.get("emphasis_bias", [])
-        ci_low, ci_high = compute_bsi_confidence_interval(sent_list, coverage_bias_rate, emph_list)
+        ci_low, ci_high = compute_bsi_confidence_interval(
+            sent_list,
+            coverage_bias_rate,
+            emph_list,
+            coverage_bias_rate_soft=coverage_soft,
+            political_side_bias_avg=political_side_bias_avg,
+        )
 
         topic_article_counts = [
             t["article_count"] for t in outlet_topic_stats.get(outlet, {}).values()
@@ -332,6 +310,7 @@ def build_profiles(
         profiles.append(
             models.OutletBiasProfile(
                 outlet=outlet,
+                analysis_type=analysis_type,
                 sentiment_bias_avg=float(sentiment_bias_avg),
                 sentiment_score_avg=float(sentiment_score_avg),
                 emphasis_bias_avg=float(emphasis_bias_avg),
@@ -353,8 +332,8 @@ def build_profiles(
                 coverage_bias_rate_soft=float(coverage_soft) if coverage_soft is not None else None,
                 missed_topics=stats["missed_topics"],
                 bsi_score=float(bsi),
-                source_trust_score=float(source_trust),
-                misinformation_risk_score=float(misinformation_risk),
+                source_trust_score=source_trust,
+                misinformation_risk_score=misinformation_risk,
                 bsi_confidence_low=ci_low,
                 bsi_confidence_high=ci_high,
                 article_count_per_topic_avg=float(art_per_topic_avg),
@@ -377,6 +356,7 @@ def build_profiles(
                 models.OutletTopicBSI(
                     run_id=run_id,
                     outlet=outlet,
+                    analysis_type=analysis_type,
                     topic_key=t_key,
                     topic_label=t.get("topic_label"),
                     label_source=t.get("label_source"),
@@ -396,12 +376,15 @@ def build_profiles(
 def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -> int:
     updated = 0
     for profile in profiles:
+        profile.analysis_type = _analysis_type(getattr(profile, "analysis_type", None))
         existing = (
             db.query(models.OutletBiasProfile)
             .filter(models.OutletBiasProfile.outlet == profile.outlet)
+            .filter(models.OutletBiasProfile.analysis_type == profile.analysis_type)
             .first()
         )
         if existing:
+            existing.analysis_type = profile.analysis_type
             existing.sentiment_bias_avg = profile.sentiment_bias_avg
             existing.sentiment_score_avg = profile.sentiment_score_avg
             existing.articles_scored = profile.articles_scored
@@ -431,10 +414,11 @@ def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -
 
 
 def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore]) -> int:
-    """Upsert scores keyed on (article_id, topic_key) — one row per article-topic pair."""
-    deduped: Dict[Tuple[int, str], models.ArticleBiasScore] = {}
+    """Upsert scores keyed on (article_id, topic_key, analysis_type)."""
+    deduped: Dict[Tuple[int, str, str], models.ArticleBiasScore] = {}
     for score in scores:
-        key = (score.article_id, score.topic_key)
+        score.analysis_type = _analysis_type(getattr(score, "analysis_type", None))
+        key = (score.article_id, score.topic_key, score.analysis_type)
         if key not in deduped:
             deduped[key] = score
 
@@ -447,14 +431,16 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
         .filter(models.ArticleBiasScore.article_id.in_(article_ids))
         .all()
     )
-    existing_by_key: Dict[Tuple[int, str], models.ArticleBiasScore] = {
-        (s.article_id, s.topic_key): s for s in existing_scores
+    existing_by_key: Dict[Tuple[int, str, str], models.ArticleBiasScore] = {
+        (s.article_id, s.topic_key, _analysis_type(getattr(s, "analysis_type", None))): s
+        for s in existing_scores
     }
 
-    for (article_id, topic_key), score in deduped.items():
-        existing = existing_by_key.get((article_id, topic_key))
+    for (article_id, topic_key, analysis_type), score in deduped.items():
+        existing = existing_by_key.get((article_id, topic_key, analysis_type))
         if existing:
             existing.outlet = score.outlet
+            existing.analysis_type = analysis_type
             existing.topic_label = score.topic_label
             existing.sentiment_label = score.sentiment_label
             existing.sentiment_score = score.sentiment_score
@@ -485,16 +471,26 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
 def replace_article_bias_evidence(
     db: Session,
     rows: List[models.ArticleBiasEvidence],
-    scored_keys: Iterable[Tuple[int, str]] | None = None,
+    scored_keys: Iterable[Tuple[int, str] | Tuple[int, str, str]] | None = None,
 ) -> int:
-    """Replace sentence-level evidence keyed by (article_id, topic_key)."""
-    keys = set(scored_keys or [])
-    keys.update((row.article_id, row.topic_key) for row in rows)
-    for article_id, topic_key in keys:
+    """Replace sentence-level evidence keyed by (article_id, topic_key, analysis_type)."""
+    keys: Set[Tuple[int, str, str]] = set()
+    for key in scored_keys or []:
+        if len(key) == 2:
+            article_id, topic_key = key
+            analysis_type = DEFAULT_ANALYSIS_TYPE
+        else:
+            article_id, topic_key, analysis_type = key
+        keys.add((int(article_id), str(topic_key), _analysis_type(analysis_type)))
+    for row in rows:
+        row.analysis_type = _analysis_type(getattr(row, "analysis_type", None))
+        keys.add((row.article_id, row.topic_key, row.analysis_type))
+    for article_id, topic_key, analysis_type in keys:
         (
             db.query(models.ArticleBiasEvidence)
             .filter(models.ArticleBiasEvidence.article_id == article_id)
             .filter(models.ArticleBiasEvidence.topic_key == topic_key)
+            .filter(models.ArticleBiasEvidence.analysis_type == analysis_type)
             .delete(synchronize_session="fetch")
         )
 
@@ -508,16 +504,19 @@ def insert_topic_bsi_rows(db: Session, rows: List[models.OutletTopicBSI]) -> int
     if not rows:
         return 0
     for row in rows:
+        row.analysis_type = _analysis_type(getattr(row, "analysis_type", None))
         existing = (
             db.query(models.OutletTopicBSI)
             .filter(
                 models.OutletTopicBSI.run_id == row.run_id,
                 models.OutletTopicBSI.outlet == row.outlet,
                 models.OutletTopicBSI.topic_key == row.topic_key,
+                models.OutletTopicBSI.analysis_type == row.analysis_type,
             )
             .first()
         )
         if existing:
+            existing.analysis_type = row.analysis_type
             existing.sentiment_bias_avg = row.sentiment_bias_avg
             existing.emphasis_bias_avg = row.emphasis_bias_avg
             existing.political_side_bias_avg = row.political_side_bias_avg
@@ -539,9 +538,11 @@ def insert_snapshots_with_omission(
     cross_outlet_coverage_mean: float = 0.0,
 ) -> None:
     for profile in profiles:
+        profile_analysis_type = _analysis_type(getattr(profile, "analysis_type", None))
         recent_snaps = (
             db.query(models.OutletBiasSnapshot)
             .filter(models.OutletBiasSnapshot.outlet == profile.outlet)
+            .filter(models.OutletBiasSnapshot.analysis_type == profile_analysis_type)
             .filter(models.OutletBiasSnapshot.run_id != run_id)
             .order_by(models.OutletBiasSnapshot.snapshot_date.desc())
             .limit(OMISSION_LOOKBACK_RUNS)
@@ -562,6 +563,7 @@ def insert_snapshots_with_omission(
         db.add(
             models.OutletBiasSnapshot(
                 outlet=profile.outlet,
+                analysis_type=profile_analysis_type,
                 run_id=run_id,
                 snapshot_date=now,
                 sentiment_bias_avg=profile.sentiment_bias_avg,

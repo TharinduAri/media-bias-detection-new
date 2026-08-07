@@ -39,6 +39,7 @@ from .text_utils import _sanitize_topic_label, _strip_outlet_markers
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SENTIMENT_MODEL = BACKEND_ROOT / "models" / "deberta-v3-newsmtsc"
 SENTIMENT_MODEL = os.getenv("SENTIMENT_MODEL", str(DEFAULT_SENTIMENT_MODEL))
+FINANCIAL_SENTIMENT_MODEL = os.getenv("FINANCIAL_SENTIMENT_MODEL", "ProsusAI/finbert")
 SENTIMENT_BATCH_SIZE = max(1, int(os.getenv("SENTIMENT_BATCH_SIZE", "16")))
 SENTIMENT_MAX_LENGTH = max(64, int(os.getenv("SENTIMENT_MAX_LENGTH", "256")))
 NER_MODEL = os.getenv("NER_MODEL", "dslim/bert-base-NER")
@@ -171,6 +172,9 @@ class BiasModelManager:
             )
         self.sentiment_model.to(self.sentiment_device)
         self.sentiment_model.eval()
+        self.financial_sentiment_model_name = FINANCIAL_SENTIMENT_MODEL
+        self.financial_sentiment_tokenizer = None
+        self.financial_sentiment_model = None
         self.ner_model_name = NER_MODEL
         self.ner_tokenizer = AutoTokenizer.from_pretrained(self.ner_model_name)
         self.ner_model = AutoModelForTokenClassification.from_pretrained(
@@ -199,6 +203,52 @@ class BiasModelManager:
 
         distributions = self._predict_target_pairs(pairs)
         return aggregate_target_sentiment(len(articles), pairs, distributions)
+
+    def analyze_financial_sentiment(self, articles: List[Any]) -> List[SentimentResult]:
+        """Classify article-level financial sentiment with FinBERT."""
+        self._ensure_financial_sentiment_model()
+        texts = [self._financial_article_text(article) for article in articles]
+        if not texts:
+            return []
+
+        results: List[SentimentResult] = []
+        assert self.financial_sentiment_tokenizer is not None
+        assert self.financial_sentiment_model is not None
+        for start in range(0, len(texts), SENTIMENT_BATCH_SIZE):
+            batch = texts[start : start + SENTIMENT_BATCH_SIZE]
+            encoded = self.financial_sentiment_tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=SENTIMENT_MAX_LENGTH,
+                return_tensors="pt",
+            )
+            encoded = {
+                key: value.to(self.sentiment_device)
+                for key, value in encoded.items()
+            }
+            with torch.inference_mode():
+                logits = self.financial_sentiment_model(**encoded).logits
+                probabilities = torch.softmax(logits, dim=-1).detach().cpu().numpy()
+
+            id2label = getattr(self.financial_sentiment_model.config, "id2label", {}) or {}
+            for row in probabilities:
+                distribution = {"negative": 0.0, "neutral": 0.0, "positive": 0.0}
+                for label_id, value in enumerate(row):
+                    raw_label = str(id2label.get(label_id, f"label_{label_id}"))
+                    label = self._canonical_sentiment_label(raw_label)
+                    if label in distribution:
+                        distribution[label] += float(value)
+                label = max(distribution.items(), key=lambda item: item[1])[0]
+                score = float(distribution["positive"] - distribution["negative"])
+                results.append(
+                    SentimentResult(
+                        label=label,
+                        confidence=float(distribution[label]),
+                        score=float(max(-1.0, min(1.0, score))),
+                    )
+                )
+        return results
 
     def prepare_article_targets(
         self,
@@ -302,6 +352,26 @@ class BiasModelManager:
                         distribution[label] += float(value)
                 distributions.append(distribution)
         return distributions
+
+    def _ensure_financial_sentiment_model(self) -> None:
+        if self.financial_sentiment_model is not None and self.financial_sentiment_tokenizer is not None:
+            return
+        self.financial_sentiment_tokenizer = AutoTokenizer.from_pretrained(
+            self.financial_sentiment_model_name
+        )
+        self.financial_sentiment_model = AutoModelForSequenceClassification.from_pretrained(
+            self.financial_sentiment_model_name
+        )
+        self.financial_sentiment_model.to(self.sentiment_device)
+        self.financial_sentiment_model.eval()
+
+    @staticmethod
+    def _financial_article_text(article: Any) -> str:
+        title = str(getattr(article, "title", "") or "").strip()
+        text = str(getattr(article, "clean_text", None) or getattr(article, "text", "") or "").strip()
+        if title and text:
+            return f"{title}. {text}"
+        return title or text
 
     @staticmethod
     def _resolve_sentiment_model(configured_model: str) -> str:

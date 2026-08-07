@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  AnalysisType,
   fetchBiasRunStatus,
   fetchEmbeddingStatus,
+  triggerFinancialBiasAnalysis,
+  triggerFinancialBiasAnalysisFast,
   triggerBiasAnalysis,
   triggerBiasAnalysisFast,
 } from "@/lib/api";
@@ -59,13 +62,22 @@ export default function BiasAnalysisButton() {
 
   useEffect(() => () => stopPolling(), []);
 
-  const handleRun = (fast: boolean) => {
+  const handleRun = (fast: boolean, analysisType: AnalysisType) => {
     setIsRunning(true);
     setStatus("running");
     setLogs([]);
     setShowLogs(true);
 
-    (fast ? triggerBiasAnalysisFast() : triggerBiasAnalysis()).catch((error) => {
+    const run =
+      analysisType === "financial"
+        ? fast
+          ? triggerFinancialBiasAnalysisFast
+          : triggerFinancialBiasAnalysis
+        : fast
+        ? triggerBiasAnalysisFast
+        : triggerBiasAnalysis;
+
+    run().catch((error) => {
       setStatus("error");
       setLogs((prev) => [...prev, `Error: ${error instanceof Error ? error.message : "Unknown error"}`]);
       stopPolling();
@@ -114,7 +126,7 @@ export default function BiasAnalysisButton() {
         {/* Fast run button — only shown when embeddings exist */}
         {hasEmbeddings && (
           <button
-            onClick={() => handleRun(true)}
+            onClick={() => handleRun(true, "general")}
             disabled={isRunning}
             title="Skip embedding step — use saved embeddings"
             className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-70"
@@ -124,11 +136,30 @@ export default function BiasAnalysisButton() {
         )}
 
         <button
-          onClick={() => handleRun(false)}
+          onClick={() => handleRun(false, "general")}
           disabled={isRunning}
           className="inline-flex items-center gap-2 rounded-full bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-70"
         >
           {isRunning ? "Running Bias Analysis…" : "Run Bias Analysis"}
+        </button>
+        {hasEmbeddings && (
+          <button
+            onClick={() => handleRun(true, "financial")}
+            disabled={isRunning}
+            title="Skip embedding step and score Economy Next/LBO with FinBERT"
+            className="inline-flex items-center gap-2 rounded-full bg-teal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {isRunning ? "Running..." : "Run Financial Fast"}
+          </button>
+        )}
+
+        <button
+          onClick={() => handleRun(false, "financial")}
+          disabled={isRunning}
+          title="Analyze Economy Next and LBO with ProsusAI/finbert"
+          className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {isRunning ? "Running Financial Analysis..." : "Run Financial Analysis"}
         </button>
       </div>
 

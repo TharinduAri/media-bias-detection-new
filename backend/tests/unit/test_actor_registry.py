@@ -55,6 +55,25 @@ def test_build_target_pairs_does_not_add_generic_ministry_targets():
     assert pairs == []
 
 
+def test_build_target_pairs_collapses_aliases_for_same_political_actor():
+    article = SimpleNamespace(
+        title="",
+        sentences=["President Anura Kumara Dissanayake addressed Parliament."],
+        entities=[
+            {"text": "President", "label": "PERSON"},
+            {"text": "Anura Kumara Dissanayake", "label": "PERSON"},
+        ],
+        clean_text="",
+        text="",
+        date=None,
+    )
+
+    pairs = build_target_pairs([article])
+
+    assert len(pairs) == 1
+    assert pairs[0].canonical_target == "Anura Kumara Dissanayake"
+
+
 def test_aggregate_target_sentiment_computes_political_side_bias():
     article = SimpleNamespace(
         title="Government and Opposition debate the budget",
@@ -95,7 +114,7 @@ def test_compute_political_side_metrics_handles_one_sided_evidence():
         }
     ])
 
-    assert metrics["political_side_bias"] == pytest.approx(-0.4, abs=1e-6)
+    assert metrics["political_side_bias"] is None
     assert metrics["government_target_count"] == 2
     assert metrics["opposition_target_count"] == 0
 

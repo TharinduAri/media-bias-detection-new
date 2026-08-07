@@ -5,6 +5,7 @@ import {
   compareBiasProfiles,
   fetchBiasArticles,
   fetchBiasProfile,
+  AnalysisType,
   ArticleBiasWithArticleData,
   OutletBiasProfileData,
 } from "@/lib/api";
@@ -12,6 +13,7 @@ import {
 interface Props {
   outlets: string[];
   mode?: "all" | "profiles";
+  analysisType?: AnalysisType;
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
@@ -55,23 +57,9 @@ function politicalColor(value: number | null | undefined): string {
 
 function politicalLabel(value: number | null | undefined): string {
   if (value == null) return "No political actors";
-  if (value > 0.15) return "Govt-leaning framing";
-  if (value < -0.15) return "Opposition-leaning framing";
-  return "Balanced political framing";
-}
-
-function trustColor(score: number | null | undefined): string {
-  if (score == null) return "text-slate-400";
-  if (score >= 0.75) return "text-emerald-600 dark:text-emerald-400";
-  if (score >= 0.55) return "text-amber-600 dark:text-amber-400";
-  return "text-rose-600 dark:text-rose-400";
-}
-
-function trustBarColor(score: number | null | undefined): string {
-  if (score == null) return "bg-slate-300";
-  if (score >= 0.75) return "bg-emerald-400";
-  if (score >= 0.55) return "bg-amber-400";
-  return "bg-rose-400";
+  if (value > 0.15) return "More positive toward government";
+  if (value < -0.15) return "More positive toward opposition";
+  return "Similar portrayal of both sides";
 }
 
 // Centered bar: left half = negative (rose), right half = positive (emerald)
@@ -92,11 +80,23 @@ function BiasBar({ value, maxAbs = 1 }: { value: number; maxAbs?: number }) {
 
 // ─── Outlet Profile Card ──────────────────────────────────────────────────────
 
-function OutletProfileCard({ outlets }: { outlets: string[] }) {
+function OutletProfileCard({
+  outlets,
+  analysisType,
+}: {
+  outlets: string[];
+  analysisType: AnalysisType;
+}) {
   const [selected, setSelected] = useState(outlets[0] ?? "");
   const [profile, setProfile] = useState<OutletBiasProfileData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelected(outlets[0] ?? "");
+    setProfile(null);
+    setError(null);
+  }, [outlets, analysisType]);
 
   const load = async (outlet: string) => {
     if (!outlet) return;
@@ -104,7 +104,7 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
     setError(null);
     setProfile(null);
     try {
-      setProfile(await fetchBiasProfile(outlet));
+      setProfile(await fetchBiasProfile(outlet, analysisType));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load profile.");
     } finally {
@@ -202,28 +202,6 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
-          {/* Source trust */}
-          {profile.source_trust_score != null && (
-            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Source Trust</p>
-                <p className={`text-lg font-bold mt-0.5 ${trustColor(profile.source_trust_score)}`}>
-                  {Math.round(profile.source_trust_score * 100)}
-                  <span className="text-sm font-semibold">/100</span>
-                </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Risk: {Math.round((profile.misinformation_risk_score ?? 1 - profile.source_trust_score) * 100)}/100
-                </p>
-              </div>
-              <div className="w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${trustBarColor(profile.source_trust_score)}`}
-                  style={{ width: `${Math.min(profile.source_trust_score * 100, 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
           {/* BSI Score */}
           {profile.bsi_score != null && (
             <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
@@ -289,11 +267,23 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
 
 // ─── Compare Card ─────────────────────────────────────────────────────────────
 
-function CompareCard({ outlets }: { outlets: string[] }) {
+function CompareCard({
+  outlets,
+  analysisType,
+}: {
+  outlets: string[];
+  analysisType: AnalysisType;
+}) {
   const [selections, setSelections] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<OutletBiasProfileData[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelections([]);
+    setResults([]);
+    setError(null);
+  }, [outlets, analysisType]);
 
   const toggle = (o: string) =>
     setSelections((prev) => prev.includes(o) ? prev.filter((x) => x !== o) : [...prev, o]);
@@ -303,7 +293,7 @@ function CompareCard({ outlets }: { outlets: string[] }) {
     setLoading(true);
     setError(null);
     try {
-      setResults(await compareBiasProfiles(selections));
+      setResults(await compareBiasProfiles(selections, analysisType));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Compare failed.");
     } finally {
@@ -315,7 +305,6 @@ function CompareCard({ outlets }: { outlets: string[] }) {
   const maxCovBias = results.length ? Math.max(...results.map((r) => r.coverage_bias_rate), 0.01) : 1;
   const hasEmphasis = results.some((r) => r.emphasis_bias_avg != null);
   const maxEmph = hasEmphasis ? Math.max(...results.map((r) => Math.abs(r.emphasis_bias_avg ?? 0)), 0.01) : 1;
-  const hasTrust = results.some((r) => r.source_trust_score != null);
   const hasPolitical = results.some((r) => r.political_side_bias_avg != null);
   const maxPolitical = hasPolitical ? Math.max(...results.map((r) => Math.abs(r.political_side_bias_avg ?? 0)), 0.01) : 1;
 
@@ -434,26 +423,6 @@ function CompareCard({ outlets }: { outlets: string[] }) {
             </div>
           )}
 
-          {/* Source trust */}
-          {hasTrust && (
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Source Trust (higher is better)</p>
-              {results.map((r) => {
-                const v = r.source_trust_score ?? 0;
-                return (
-                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
-                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
-                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${trustBarColor(v)}`} style={{ width: `${v * 100}%` }} />
-                    </div>
-                    <span className={`text-xs font-bold w-12 text-right ${trustColor(v)}`}>
-                      {Math.round(v * 100)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -462,7 +431,13 @@ function CompareCard({ outlets }: { outlets: string[] }) {
 
 // ─── Articles Table ───────────────────────────────────────────────────────────
 
-function ArticlesTable({ outlets }: { outlets: string[] }) {
+function ArticlesTable({
+  outlets,
+  analysisType,
+}: {
+  outlets: string[];
+  analysisType: AnalysisType;
+}) {
   const [articles, setArticles] = useState<ArticleBiasWithArticleData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -472,11 +447,21 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
   const [sort, setSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
   const limit = 50;
 
+  useEffect(() => {
+    setOutletFilter("");
+  }, [analysisType]);
+
   const load = useCallback(async (newOffset: number, replace: boolean) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchBiasArticles(limit, newOffset, outletFilter || undefined);
+      const data = await fetchBiasArticles(
+        limit,
+        newOffset,
+        outletFilter || undefined,
+        undefined,
+        analysisType
+      );
       setArticles((prev) => replace ? data : [...prev, ...data]);
       setHasMore(data.length === limit);
       setOffset(newOffset + data.length);
@@ -485,7 +470,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
     } finally {
       setLoading(false);
     }
-  }, [outletFilter]);
+  }, [outletFilter, analysisType]);
 
   useEffect(() => {
     setOffset(0);
@@ -658,7 +643,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
 
 type Tab = "profiles" | "articles";
 
-export default function BiasResultsPanel({ outlets, mode = "all" }: Props) {
+export default function BiasResultsPanel({ outlets, mode = "all", analysisType = "general" }: Props) {
   const [tab, setTab] = useState<Tab>("profiles");
   const profilesOnly = mode === "profiles";
 
@@ -694,14 +679,14 @@ export default function BiasResultsPanel({ outlets, mode = "all" }: Props) {
 
         {(profilesOnly || tab === "profiles") && (
           <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <OutletProfileCard outlets={outlets} />
-            <CompareCard outlets={outlets} />
+            <OutletProfileCard outlets={outlets} analysisType={analysisType} />
+            <CompareCard outlets={outlets} analysisType={analysisType} />
           </div>
         )}
 
         {!profilesOnly && tab === "articles" && (
           <div className="px-5 py-5">
-            <ArticlesTable outlets={outlets} />
+            <ArticlesTable outlets={outlets} analysisType={analysisType} />
           </div>
         )}
       </div>

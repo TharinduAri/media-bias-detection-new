@@ -10,27 +10,12 @@ import httpx
 import sentry_sdk
 from tenacity import RetryCallState, retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from .outlets import (
-    AdaDeranaOutlet,
-    CeylonTodayOutlet,
-    DailyFTOutlet,
-    EconomyNextOutlet,
-    LBOOutlet,
-    NewsfirstOutlet,
-    TheMorningOutlet,
-    ColomboGazetteOutlet,
-    TheIslandOutlet,
-    DailyMirrorOutlet,
-    DailyNewsOutlet,
-    SundayObserverOutlet,
-    NewsLKOutlet,
-    BaseOutletScraper,
-)
+from .outlets import BaseOutletScraper
+from .outlet_catalog import OUTLET_DEFINITIONS, resolve_outlet_class
 from src.collection.core.db import replay_fallback_articles, save_to_db
 from src.collection.core.http_client import (
     GhostResponseError, set_semaphore, get_blocked_paths, clear_blocked_paths, record_blocked_path, fetch
 )
-from src.collection.core.utils import domain_of
 from src.collection.core.extraction import extract_with_trafilatura
 from src.collection.discovery.sitemap import collect_articles_from_sitemaps
 from src.collection.discovery.wordpress import fetch_wordpress_api_payload
@@ -210,45 +195,16 @@ def _filter_adaderana_legacy_urls(outlet_name: str, articles: list[dict[str, str
 
 
 _OUTLETS: list[dict[str, str]] = [
-    # Specialist scrapers (matched by domain in _OUTLET_REGISTRY below)
-    {"name": "Ada Derana",       "url": "https://www.adaderana.lk"},
-    {"name": "Ceylon Today",     "url": "https://www.ceylontoday.lk"},
-    {"name": "Daily FT",         "url": "https://www.ft.lk"},
-    {"name": "Economy Next",     "url": "https://economynext.com"},
-    {"name": "LBO",              "url": "https://www.lankabusinessonline.com"},
-    {"name": "Newsfirst",        "url": "https://english.newsfirst.lk"},
-    {"name": "Daily Mirror",     "url": "https://www.dailymirror.lk"},
-    {"name": "The Morning",      "url": "https://www.themorning.lk"},
-    {"name": "Daily News",       "url": "https://www.dailynews.lk"},
-    {"name": "The Island",       "url": "https://island.lk"},
-    {"name": "Sunday Observer",  "url": "https://www.sundayobserver.lk"},
-    {"name": "Colombo Gazette",  "url": "https://colombogazette.com"},
-    {"name": "News LK",          "url": "https://www.news.lk"},
-]
-
-_OUTLET_REGISTRY: list[tuple[tuple[str, ...], type[BaseOutletScraper]]] = [
-    (("adaderana.lk",),                            AdaDeranaOutlet),
-    (("ceylontoday.lk",),                          CeylonTodayOutlet),
-    (("ft.lk", "dailyft.lk"),                      DailyFTOutlet),
-    (("economynext.com",),                         EconomyNextOutlet),
-    (("lbo.lk", "lankabusinessonline.com"),        LBOOutlet),
-    (("newsfirst.lk", "english.newsfirst.lk"),     NewsfirstOutlet),
-    (("themorning.lk",),                           TheMorningOutlet),
-    (("colombogazette.com",),                      ColomboGazetteOutlet),
-    (("island.lk",),                               TheIslandOutlet),
-    (("dailymirror.lk",),                          DailyMirrorOutlet),
-    (("dailynews.lk",),                            DailyNewsOutlet),
-    (("sundayobserver.lk",),                       SundayObserverOutlet),
-    (("news.lk",),                                 NewsLKOutlet),
+    {"name": definition.name, "url": definition.url}
+    for definition in OUTLET_DEFINITIONS
 ]
 
 
 def _build_outlet_scraper(name: str, url: str) -> BaseOutletScraper:
-    domain = domain_of(url).lstrip("www.").lower()
-    for suffixes, cls in _OUTLET_REGISTRY:
-        if any(domain == s or domain.endswith(f".{s}") for s in suffixes):
-            logging.debug("[ROUTER] %s → %s", name, cls.__name__)
-            return cls(name=name, url=url)
+    scraper_class = resolve_outlet_class(url)
+    if scraper_class is not None:
+        logging.debug("[ROUTER] %s → %s", name, scraper_class.__name__)
+        return scraper_class(name=name, url=url)
 
     logging.debug("[ROUTER] %s → GenericOutlet (no specific scraper registered)", name)
 
@@ -390,6 +346,9 @@ async def collect_data(
                         timeout=float(OUTLET_DISCOVERY_TIMEOUT_SECONDS),
                     )
                     stat.discovered = len(articles)
+                    if stat.discovered == 0:
+                        stat.failed = True
+                        stat.failure_reason = "no recent URLs discovered"
                 except asyncio.TimeoutError:
                     logging.warning(
                         "[DISCOVERY] Outlet %s timed out after %ds — 0 URLs collected",
@@ -466,6 +425,7 @@ async def collect_data(
             ghost_count = 0
             completed_count = 0
             valid_count = 0
+            valid_by_outlet: dict[str, int] = {}
             stale_count = 0
             unknown_date_count = 0
             chunk_buffer: list[dict[str, str]] = []
@@ -503,6 +463,8 @@ async def collect_data(
 
                 chunk_buffer.append(result)
                 valid_count += 1
+                outlet_name = str(result.get("outlet", "") or "")
+                valid_by_outlet[outlet_name] = valid_by_outlet.get(outlet_name, 0) + 1
 
                 if len(chunk_buffer) >= SAVE_CHUNK_SIZE:
                     chunk = chunk_buffer[:SAVE_CHUNK_SIZE]
@@ -531,6 +493,12 @@ async def collect_data(
 
             if chunk_buffer:
                 await asyncio.to_thread(save_to_db, chunk_buffer)
+
+            for stat in run.outlet_stats:
+                stat.persisted = valid_by_outlet.get(stat.name, 0)
+                if stat.discovered > 0 and stat.persisted == 0 and not stat.failed:
+                    stat.failed = True
+                    stat.failure_reason = "no valid article content persisted"
 
             if valid_count == 0:
                 logging.warning("No valid articles collected.")

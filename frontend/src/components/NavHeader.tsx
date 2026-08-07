@@ -6,6 +6,7 @@ import { useTheme } from "next-themes";
 import { useSyncExternalStore } from "react";
 
 const navLinks = [
+    { href: "/demo", label: "Demo" },
     { href: "/", label: "Scraping Workspace" },
     { href: "/bias", label: "Bias Results" },
     { href: "/logs", label: "Scrape Logs" },
