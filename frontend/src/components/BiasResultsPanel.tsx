@@ -57,23 +57,9 @@ function politicalColor(value: number | null | undefined): string {
 
 function politicalLabel(value: number | null | undefined): string {
   if (value == null) return "No political actors";
-  if (value > 0.15) return "Govt-leaning framing";
-  if (value < -0.15) return "Opposition-leaning framing";
-  return "Balanced political framing";
-}
-
-function trustColor(score: number | null | undefined): string {
-  if (score == null) return "text-slate-400";
-  if (score >= 0.75) return "text-emerald-600 dark:text-emerald-400";
-  if (score >= 0.55) return "text-amber-600 dark:text-amber-400";
-  return "text-rose-600 dark:text-rose-400";
-}
-
-function trustBarColor(score: number | null | undefined): string {
-  if (score == null) return "bg-slate-300";
-  if (score >= 0.75) return "bg-emerald-400";
-  if (score >= 0.55) return "bg-amber-400";
-  return "bg-rose-400";
+  if (value > 0.15) return "More positive toward government";
+  if (value < -0.15) return "More positive toward opposition";
+  return "Similar portrayal of both sides";
 }
 
 // Centered bar: left half = negative (rose), right half = positive (emerald)
@@ -216,28 +202,6 @@ function OutletProfileCard({
             </div>
           )}
 
-          {/* Source trust */}
-          {profile.source_trust_score != null && (
-            <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Source Trust</p>
-                <p className={`text-lg font-bold mt-0.5 ${trustColor(profile.source_trust_score)}`}>
-                  {Math.round(profile.source_trust_score * 100)}
-                  <span className="text-sm font-semibold">/100</span>
-                </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Risk: {Math.round((profile.misinformation_risk_score ?? 1 - profile.source_trust_score) * 100)}/100
-                </p>
-              </div>
-              <div className="w-20 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${trustBarColor(profile.source_trust_score)}`}
-                  style={{ width: `${Math.min(profile.source_trust_score * 100, 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
           {/* BSI Score */}
           {profile.bsi_score != null && (
             <div className="rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 flex items-center justify-between gap-3">
@@ -341,7 +305,6 @@ function CompareCard({
   const maxCovBias = results.length ? Math.max(...results.map((r) => r.coverage_bias_rate), 0.01) : 1;
   const hasEmphasis = results.some((r) => r.emphasis_bias_avg != null);
   const maxEmph = hasEmphasis ? Math.max(...results.map((r) => Math.abs(r.emphasis_bias_avg ?? 0)), 0.01) : 1;
-  const hasTrust = results.some((r) => r.source_trust_score != null);
   const hasPolitical = results.some((r) => r.political_side_bias_avg != null);
   const maxPolitical = hasPolitical ? Math.max(...results.map((r) => Math.abs(r.political_side_bias_avg ?? 0)), 0.01) : 1;
 
@@ -460,26 +423,6 @@ function CompareCard({
             </div>
           )}
 
-          {/* Source trust */}
-          {hasTrust && (
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Source Trust (higher is better)</p>
-              {results.map((r) => {
-                const v = r.source_trust_score ?? 0;
-                return (
-                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
-                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
-                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${trustBarColor(v)}`} style={{ width: `${v * 100}%` }} />
-                    </div>
-                    <span className={`text-xs font-bold w-12 text-right ${trustColor(v)}`}>
-                      {Math.round(v * 100)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
     </div>

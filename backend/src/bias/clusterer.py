@@ -35,8 +35,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Mapping, Set, Tuple
 
 import numpy as np
@@ -52,6 +52,7 @@ MAX_SPLIT_DEPTH = int(os.getenv("BIAS_MAX_SPLIT_DEPTH", "3"))
 MIN_TOPIC_OUTLETS = int(os.getenv("BIAS_MIN_TOPIC_OUTLETS", "3"))
 MAX_DOMINANT_OUTLET_SHARE = float(os.getenv("BIAS_MAX_DOMINANT_OUTLET_SHARE", "0.6"))
 MERGE_SIMILARITY_THRESHOLD = 0.5
+MAX_TOPIC_DATE_SPAN_DAYS = max(1, int(os.getenv("BIAS_MAX_TOPIC_DATE_SPAN_DAYS", "4")))
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ def build_internal_clusters(
     labels = clustering.fit_predict(embeddings)
     clusters = _group_by_label(labels)
     clusters = _refine_clusters_for_coherence(clusters, embeddings)
+    clusters = _split_clusters_by_time(clusters, analysis_articles)
     clusters = _split_outlet_dominated_clusters(clusters, analysis_articles)
 
     clusters, merge_stats = _merge_single_outlet_clusters(clusters, embeddings, analysis_articles)
@@ -95,6 +97,12 @@ def build_internal_clusters(
         )
     # Re-run coherence refinement after merging to catch any oversized clusters
     clusters = _refine_clusters_for_coherence(clusters, embeddings)
+    clusters = _split_clusters_by_time(clusters, analysis_articles)
+    clusters = _split_outlet_dominated_clusters(clusters, analysis_articles)
+    run_logs.append(
+        f"Temporal event constraint: max_span={MAX_TOPIC_DATE_SPAN_DAYS} days, "
+        f"final_groups={len(clusters)}"
+    )
     return clusters
 
 
@@ -202,8 +210,8 @@ def stable_topic_key(
 ) -> str:
     """Stable topic key by hashing the quantized cluster centroid.
 
-    Same topic across runs → same key because centroid is rounded to 2 decimal places,
-    absorbing minor article turnover. Domain of most-central article namespaces the hash.
+    Rounding absorbs minor article turnover. Publisher identity is deliberately
+    excluded so the key does not change with the most-central outlet.
     """
     centroid = np.mean(cluster_embeddings, axis=0)
     norm = np.linalg.norm(centroid)
@@ -213,14 +221,8 @@ def stable_topic_key(
     quantized = np.round(centroid[:n_hash_dims], decimals=2)
     vec_str = ",".join(f"{v:.2f}" for v in quantized)
 
-    sim_matrix = np.dot(cluster_embeddings, cluster_embeddings.T)
-    mean_sims = sim_matrix.mean(axis=1)
-    central_idx = indices[int(np.argmax(mean_sims))]
-    url = getattr(articles[central_idx], "url", "") or ""
-    domain_match = re.search(r"https?://(?:www\.)?([^/]+)", url)
-    domain = domain_match.group(1).lower() if domain_match else "unknown"
-
-    hex_hash = hashlib.sha256(f"{vec_str}|{domain}".encode()).hexdigest()[:12]
+    _ = articles, indices  # Retained for call-site compatibility.
+    hex_hash = hashlib.sha256(vec_str.encode()).hexdigest()[:12]
     return f"topic-{hex_hash}"
 
 
@@ -408,6 +410,9 @@ def _merge_single_outlet_clusters(
             # Don't merge if it would push the target over the size cap
             if len(target["indices"]) + len(item["indices"]) > MAX_CLUSTER_SIZE:
                 continue
+            combined_indices = target["indices"] + item["indices"]
+            if _date_span_days(combined_indices, articles) > MAX_TOPIC_DATE_SPAN_DAYS:
+                continue
             target_indices = target["indices"]
             target_indices.extend(item["indices"])
             target["outlets"] = target["outlets"].union(outlets)
@@ -426,3 +431,58 @@ def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     norm_a = vec_a / (np.linalg.norm(vec_a) + 1e-8)
     norm_b = vec_b / (np.linalg.norm(vec_b) + 1e-8)
     return float(np.dot(norm_a, norm_b))
+
+
+def _article_date_value(article: models.Article) -> date | None:
+    value = getattr(article, "date", None)
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _date_span_days(indices: List[int], articles: List[models.Article]) -> int:
+    dates = [
+        parsed
+        for idx in indices
+        if (parsed := _article_date_value(articles[idx])) is not None
+    ]
+    return (max(dates) - min(dates)).days if len(dates) >= 2 else 0
+
+
+def _split_clusters_by_time(
+    clusters: Dict[int, List[int]],
+    articles: List[models.Article],
+) -> Dict[int, List[int]]:
+    """Split broad subject clusters into comparable event windows."""
+    refined: Dict[int, List[int]] = {}
+    next_label = 0
+    for indices in clusters.values():
+        dated = [
+            (idx, parsed)
+            for idx in indices
+            if (parsed := _article_date_value(articles[idx])) is not None
+        ]
+        undated = [idx for idx in indices if _article_date_value(articles[idx]) is None]
+        if not dated:
+            refined[next_label] = list(indices)
+            next_label += 1
+            continue
+
+        dated.sort(key=lambda item: item[1])
+        groups: List[List[int]] = []
+        group_start: date | None = None
+        for idx, parsed in dated:
+            if group_start is None or (parsed - group_start).days > MAX_TOPIC_DATE_SPAN_DAYS:
+                groups.append([idx])
+                group_start = parsed
+            else:
+                groups[-1].append(idx)
+        if undated:
+            largest = max(range(len(groups)), key=lambda position: len(groups[position]))
+            groups[largest].extend(undated)
+        for group in groups:
+            refined[next_label] = group
+            next_label += 1
+    return refined

@@ -15,13 +15,6 @@ function scoreColor(score: number) {
   return "text-emerald-600 dark:text-emerald-400";
 }
 
-function trustColor(score: number | null | undefined) {
-  if (score == null) return "text-slate-400";
-  if (score >= 0.75) return "text-emerald-600 dark:text-emerald-400";
-  if (score >= 0.55) return "text-amber-600 dark:text-amber-400";
-  return "text-rose-600 dark:text-rose-400";
-}
-
 function politicalColor(score: number | null | undefined) {
   if (score == null) return "text-slate-400";
   if (score > 0.15) return "text-blue-600 dark:text-blue-400";
@@ -59,8 +52,8 @@ export default function BsiLeaderboard({ analysisType = "general" }: { analysisT
     fetchAllProfiles(analysisType)
       .then((data) => {
         const sorted = [...data.profiles]
-          .filter((p) => p.bsi_score != null || p.source_trust_score != null)
-          .sort((a, b) => (b.source_trust_score ?? 0) - (a.source_trust_score ?? 0));
+          .filter((p) => p.bsi_score != null)
+          .sort((a, b) => (a.bsi_score ?? 1) - (b.bsi_score ?? 1));
         setProfiles(sorted);
       })
       .catch(() => setError("Failed to load profiles."))
@@ -96,17 +89,16 @@ export default function BsiLeaderboard({ analysisType = "general" }: { analysisT
     <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
       <div className="px-6 py-5 border-b border-gray-100 dark:border-gray-800">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-          Source Trust Leaderboard
+          Bias Signal Index by Outlet
         </h2>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-          Source trust per outlet, with BSI shown as the underlying bias signal. Higher trust = lower detected risk.
+          Experimental composite of relative sentiment, coverage gaps, emphasis, and comparable political portrayal. Lower is less detected bias.
         </p>
       </div>
 
       <div className="px-6 py-6 space-y-4">
         {profiles.map((p, idx) => {
           const score = p.bsi_score ?? 0;
-          const trust = p.source_trust_score ?? null;
           const widthPct = (score / maxBsi) * 100;
           const isFirst = idx === 0;
           const isLast = idx === profiles.length - 1;
@@ -117,8 +109,8 @@ export default function BsiLeaderboard({ analysisType = "general" }: { analysisT
                 <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
                   {p.outlet}
                 </span>
-                {isFirst && <Badge text="MOST TRUST" variant="green" />}
-                {isLast && <Badge text="LOWEST TRUST" variant="red" />}
+                {isFirst && <Badge text="LOWEST BSI" variant="green" />}
+                {isLast && <Badge text="HIGHEST BSI" variant="red" />}
               </div>
 
               <div className="flex-1 h-6 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
@@ -133,12 +125,6 @@ export default function BsiLeaderboard({ analysisType = "general" }: { analysisT
                   className={`text-sm font-mono font-semibold tabular-nums ${scoreColor(score)}`}
                 >
                   {score.toFixed(3)}
-                </span>
-                <span
-                  className={`text-sm font-mono font-semibold tabular-nums ${trustColor(trust)}`}
-                  title="Source trust score"
-                >
-                  {trust != null ? Math.round(trust * 100) : "--"}
                 </span>
                 <span
                   className={`text-sm font-mono font-semibold tabular-nums ${politicalColor(p.political_side_bias_avg)}`}

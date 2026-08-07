@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-import math
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
 import numpy as np
@@ -67,40 +66,6 @@ def compute_bsi(
     return round(0.35 * s + 0.30 * c + 0.20 * e + 0.15 * p, 6)
 
 
-def compute_source_trust_score(
-    bsi_score: float | None,
-    sentiment_confidence_avg: float,
-    articles_scored: int,
-    coverage_bias_rate: float,
-    coverage_bias_rate_soft: float | None = None,
-) -> float:
-    """Source trust score [0-1]. Higher = more trustworthy.
-
-    This is a source-level reliability heuristic, not a factuality verdict. It
-    rewards low measured bias, enough scored evidence, and broad topic
-    coverage. Sentiment confidence is accepted for API compatibility but is
-    deliberately excluded: classifier certainty is not evidence of factuality.
-    """
-    bsi = min(max(float(bsi_score or 0.0), 0.0), 1.0)
-    _ = sentiment_confidence_avg
-    coverage_raw = coverage_bias_rate_soft if coverage_bias_rate_soft is not None else coverage_bias_rate
-    coverage_quality = 1.0 - min(max(float(coverage_raw), 0.0), 1.0)
-    evidence_quality = math.sqrt(min(max(float(articles_scored), 0.0) / 20.0, 1.0))
-
-    score = (
-        0.55 * (1.0 - bsi)
-        + 0.25 * coverage_quality
-        + 0.20 * evidence_quality
-    )
-    return round(float(min(max(score, 0.0), 1.0)), 6)
-
-
-def compute_misinformation_risk_score(source_trust_score: float | None) -> float:
-    """Inverse of source trust [0-1]. Higher = more misinformation risk."""
-    trust = min(max(float(source_trust_score or 0.0), 0.0), 1.0)
-    return round(1.0 - trust, 6)
-
-
 def compute_bsi_confidence_interval(
     sentiment_bias_scores: List[float],
     coverage_bias_rate: float,
@@ -108,6 +73,8 @@ def compute_bsi_confidence_interval(
     n_resamples: int = 1000,
     ci_level: float = 0.95,
     rng_seed: int = 42,
+    coverage_bias_rate_soft: float | None = None,
+    political_side_bias_avg: float | None = None,
 ) -> Tuple[float, float]:
     """Bootstrap CI on BSI. Returns (ci_low, ci_high).
 
@@ -121,6 +88,8 @@ def compute_bsi_confidence_interval(
             float(np.mean(sentiment_bias_scores)) if sentiment_bias_scores else 0.0,
             coverage_bias_rate,
             float(np.mean(emphasis_bias_scores)) if emphasis_bias_scores else 0.0,
+            coverage_bias_rate_soft,
+            political_side_bias_avg,
         )
         return (point, point)
 
@@ -132,7 +101,13 @@ def compute_bsi_confidence_interval(
     for _ in range(n_resamples):
         idx = rng.integers(0, n, size=n)
         bsi_samples.append(
-            compute_bsi(float(np.mean(sent_arr[idx])), coverage_bias_rate, float(np.mean(emph_arr[idx])))
+            compute_bsi(
+                float(np.mean(sent_arr[idx])),
+                coverage_bias_rate,
+                float(np.mean(emph_arr[idx])),
+                coverage_bias_rate_soft,
+                political_side_bias_avg,
+            )
         )
 
     alpha = 1.0 - ci_level
@@ -147,33 +122,26 @@ def compute_soft_coverage_score(
     cluster_outlet_sets: List[Set[str]],
     topic_mainstream_weights: List[float],
 ) -> float:
-    """Continuous coverage bias in [0, 1] — replaces the binary COVERAGE_MAJORITY_THRESHOLD cliff.
+    """Return the weighted fraction of eligible topics the outlet missed.
 
-    missed_penalty = sum of mainstream weights for topics the outlet did not cover.
-    covered_weight = outlet's coverage ratio / max outlet coverage ratio across all outlets.
-    score = missed_penalty / (covered_weight + missed_penalty).
-
-    A score of 0 means the outlet covered everything relative to peers.
-    A score near 1 means the outlet systematically skipped mainstream topics.
+    Numerator and denominator deliberately use the same topic-weight scale.
     """
     if not cluster_outlet_sets:
         return 0.0
+    if len(cluster_outlet_sets) != len(topic_mainstream_weights):
+        raise ValueError("Coverage topic sets and weights must have equal length.")
 
-    n_covered = sum(1 for cs in cluster_outlet_sets if outlet in cs)
-    outlet_coverage_ratio = n_covered / len(cluster_outlet_sets)
-
-    max_ratio = max(
-        (sum(1 for cs in cluster_outlet_sets if o in cs) / len(cluster_outlet_sets) for o in all_outlets),
-        default=1.0,
+    _ = all_outlets  # Retained for API compatibility and future eligibility checks.
+    weights = [max(float(weight), 0.0) for weight in topic_mainstream_weights]
+    total_weight = sum(weights)
+    if total_weight <= 1e-8:
+        return 0.0
+    missed_weight = sum(
+        weight
+        for covered_outlets, weight in zip(cluster_outlet_sets, weights)
+        if outlet not in covered_outlets
     )
-    covered_weight = outlet_coverage_ratio / max(max_ratio, 1e-8)
-
-    missed_penalty = sum(
-        w for cs, w in zip(cluster_outlet_sets, topic_mainstream_weights) if outlet not in cs
-    )
-
-    total = covered_weight + missed_penalty
-    return float(min(1.0, missed_penalty / total)) if total > 1e-8 else 0.0
+    return float(min(max(missed_weight / total_weight, 0.0), 1.0))
 
 
 def init_outlet_stats(outlets: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -314,19 +282,22 @@ def build_profiles(
             coverage_soft,
             political_side_bias_avg,
         )
-        source_trust = compute_source_trust_score(
-            bsi,
-            sentiment_confidence_avg,
-            articles_scored,
-            coverage_bias_rate,
-            coverage_soft,
-        )
-        misinformation_risk = compute_misinformation_risk_score(source_trust)
+        # Bias, coverage and emphasis do not establish factual accuracy or
+        # source trust. Keep the legacy nullable columns empty rather than
+        # publishing unsupported credibility or misinformation claims.
+        source_trust = None
+        misinformation_risk = None
 
         arrays = (outlet_score_arrays or {}).get(outlet, {})
         sent_list = arrays.get("sentiment_bias", [])
         emph_list = arrays.get("emphasis_bias", [])
-        ci_low, ci_high = compute_bsi_confidence_interval(sent_list, coverage_bias_rate, emph_list)
+        ci_low, ci_high = compute_bsi_confidence_interval(
+            sent_list,
+            coverage_bias_rate,
+            emph_list,
+            coverage_bias_rate_soft=coverage_soft,
+            political_side_bias_avg=political_side_bias_avg,
+        )
 
         topic_article_counts = [
             t["article_count"] for t in outlet_topic_stats.get(outlet, {}).values()
@@ -361,8 +332,8 @@ def build_profiles(
                 coverage_bias_rate_soft=float(coverage_soft) if coverage_soft is not None else None,
                 missed_topics=stats["missed_topics"],
                 bsi_score=float(bsi),
-                source_trust_score=float(source_trust),
-                misinformation_risk_score=float(misinformation_risk),
+                source_trust_score=source_trust,
+                misinformation_risk_score=misinformation_risk,
                 bsi_confidence_low=ci_low,
                 bsi_confidence_high=ci_high,
                 article_count_per_topic_avg=float(art_per_topic_avg),

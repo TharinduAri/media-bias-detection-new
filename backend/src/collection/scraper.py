@@ -390,6 +390,9 @@ async def collect_data(
                         timeout=float(OUTLET_DISCOVERY_TIMEOUT_SECONDS),
                     )
                     stat.discovered = len(articles)
+                    if stat.discovered == 0:
+                        stat.failed = True
+                        stat.failure_reason = "no recent URLs discovered"
                 except asyncio.TimeoutError:
                     logging.warning(
                         "[DISCOVERY] Outlet %s timed out after %ds — 0 URLs collected",
@@ -466,6 +469,7 @@ async def collect_data(
             ghost_count = 0
             completed_count = 0
             valid_count = 0
+            valid_by_outlet: dict[str, int] = {}
             stale_count = 0
             unknown_date_count = 0
             chunk_buffer: list[dict[str, str]] = []
@@ -503,6 +507,8 @@ async def collect_data(
 
                 chunk_buffer.append(result)
                 valid_count += 1
+                outlet_name = str(result.get("outlet", "") or "")
+                valid_by_outlet[outlet_name] = valid_by_outlet.get(outlet_name, 0) + 1
 
                 if len(chunk_buffer) >= SAVE_CHUNK_SIZE:
                     chunk = chunk_buffer[:SAVE_CHUNK_SIZE]
@@ -531,6 +537,12 @@ async def collect_data(
 
             if chunk_buffer:
                 await asyncio.to_thread(save_to_db, chunk_buffer)
+
+            for stat in run.outlet_stats:
+                stat.persisted = valid_by_outlet.get(stat.name, 0)
+                if stat.discovered > 0 and stat.persisted == 0 and not stat.failed:
+                    stat.failed = True
+                    stat.failure_reason = "no valid article content persisted"
 
             if valid_count == 0:
                 logging.warning("No valid articles collected.")

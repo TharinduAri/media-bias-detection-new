@@ -5,19 +5,23 @@ from types import SimpleNamespace
 import pytest
 
 from src.bias.target_sentiment import (
+    SentimentResult,
     TargetPair,
     aggregate_target_sentiment,
+    align_sentiment_to_shared_targets,
     build_target_pairs,
+    outlet_balanced_peer_references,
 )
 
 
-def _article(title="", sentences=None, entities=None):
+def _article(title="", sentences=None, entities=None, outlet="Outlet A"):
     return SimpleNamespace(
         title=title,
         sentences=sentences or [],
         entities=entities or [],
         clean_text="",
         text="",
+        outlet=outlet,
     )
 
 
@@ -89,3 +93,66 @@ def test_aggregate_target_sentiment_returns_no_evidence_for_unmatched_article():
     assert result.entity_sentiments == []
     assert result.sentence_sentiments == []
     assert result.target_pair_count == 0
+
+
+def test_salient_person_target_is_not_drowned_by_background_locations():
+    pairs = [
+        TargetPair(0, "Leader", "PERSON", "Leader praised the reform.", 0, True),
+    ]
+    distributions = [{"negative": 0.02, "neutral": 0.03, "positive": 0.95}]
+    for index in range(8):
+        pairs.append(
+            TargetPair(0, f"Region {index}", "GPE", f"Region {index} was listed.", index + 1)
+        )
+        distributions.append({"negative": 0.01, "neutral": 0.98, "positive": 0.01})
+
+    result = aggregate_target_sentiment(1, pairs, distributions)[0]
+
+    assert result.label == "positive"
+    assert result.score > 0.8
+
+
+def test_shared_target_alignment_excludes_private_background_targets():
+    articles = [_article(outlet="A"), _article(outlet="B")]
+    results = [
+        SentimentResult(
+            label="neutral",
+            confidence=0.8,
+            score=0.0,
+            entity_sentiments=[
+                {"target": "Shared Org", "entity_label": "ORG", "salience_weight": 2.0,
+                 "negative": 0.05, "neutral": 0.05, "positive": 0.9},
+                {"target": "Private A", "entity_label": "ORG", "salience_weight": 5.0,
+                 "negative": 0.0, "neutral": 1.0, "positive": 0.0},
+            ],
+        ),
+        SentimentResult(
+            label="neutral",
+            confidence=0.8,
+            score=0.0,
+            entity_sentiments=[
+                {"target": "Shared Org", "entity_label": "ORG", "salience_weight": 2.0,
+                 "negative": 0.9, "neutral": 0.05, "positive": 0.05},
+                {"target": "Private B", "entity_label": "ORG", "salience_weight": 5.0,
+                 "negative": 0.0, "neutral": 1.0, "positive": 0.0},
+            ],
+        ),
+    ]
+
+    aligned = align_sentiment_to_shared_targets(articles, results)
+
+    assert aligned[0].label == "positive"
+    assert aligned[0].score == pytest.approx(0.85)
+    assert aligned[1].label == "negative"
+    assert aligned[1].score == pytest.approx(-0.85)
+
+
+def test_peer_reference_gives_each_outlet_equal_weight():
+    references = outlet_balanced_peer_references(
+        ["A", "A", "A", "B", "C"],
+        [1.0, 1.0, 1.0, -1.0, 0.0],
+    )
+
+    assert references["A"] == pytest.approx(-0.5)
+    assert references["B"] == pytest.approx(0.5)
+    assert references["C"] == pytest.approx(0.0)

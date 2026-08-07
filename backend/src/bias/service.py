@@ -34,6 +34,10 @@ from .embedder import (
     prepare_embeddings,
 )
 from .models_manager import SentimentResult, generate_labels_with_gemini, get_models
+from .target_sentiment import (
+    align_sentiment_to_shared_targets,
+    outlet_balanced_peer_references,
+)
 from .scorer import (
     COVERAGE_MAJORITY_THRESHOLD,
     build_profiles,
@@ -456,6 +460,15 @@ def _run_bias_analysis_impl(
             )
 
         now = datetime.utcnow()
+        # Article-level tables represent the latest completed analysis rather
+        # than an append-only history. Clear this analysis type inside the same
+        # transaction so changed topic keys cannot leave stale duplicate rows.
+        db.query(models.ArticleBiasEvidence).filter(
+            models.ArticleBiasEvidence.analysis_type == analysis_type
+        ).delete(synchronize_session=False)
+        db.query(models.ArticleBiasScore).filter(
+            models.ArticleBiasScore.analysis_type == analysis_type
+        ).delete(synchronize_session=False)
         article_scores: List[models.ArticleBiasScore] = []
         article_evidence_rows: List[models.ArticleBiasEvidence] = []
         scored_evidence_keys: Set[tuple[int, str, str]] = set()
@@ -534,17 +547,31 @@ def _run_bias_analysis_impl(
             coverage_majority = coverage_ratio >= COVERAGE_MAJORITY_THRESHOLD
             emphasis_biases = compute_emphasis_bias(indices, analysis_articles)
 
-            # Always use group mean as reference for all outlets (Fix 2 — symmetric baseline)
-            group_mean = float(np.mean([sentiment_results[idx].score for idx in indices]))
+            cluster_articles = [analysis_articles[idx] for idx in indices]
+            cluster_sentiments = align_sentiment_to_shared_targets(
+                cluster_articles,
+                [sentiment_results[idx] for idx in indices],
+            )
+            aligned_sentiments = {
+                idx: sentiment for idx, sentiment in zip(indices, cluster_sentiments)
+            }
+
+            # Give every outlet equal influence and compare it with a leave-one-out
+            # reference. Publication volume must not control an outlet's baseline.
+            reference_by_outlet = outlet_balanced_peer_references(
+                [analysis_articles[idx].outlet or "" for idx in indices],
+                [aligned_sentiments[idx].score for idx in indices],
+            )
             topics_processed += 1
 
             def _record(idx: int, is_dominant_outlet: bool = False) -> None:
                 article = analysis_articles[idx]
-                sentiment = sentiment_results[idx]
+                sentiment = aligned_sentiments[idx]
                 emph_dict = emphasis_biases.get(idx, {
                     "emphasis_bias": 0.0, "length_bias": 0.0,
                     "sentence_bias": 0.0, "entity_bias": 0.0,
                 })
+                group_mean = reference_by_outlet.get(article.outlet or "", 0.0)
                 bias_score = float(sentiment.score - group_mean)
                 emph = float(emph_dict["emphasis_bias"])
                 political_side_bias = (
@@ -737,6 +764,9 @@ def _run_bias_analysis_impl(
             outlet_soft_coverage=outlet_soft_coverage,
             analysis_type=analysis_type,
         )
+        db.query(models.OutletBiasProfile).filter(
+            models.OutletBiasProfile.analysis_type == analysis_type
+        ).delete(synchronize_session=False)
         profiles_updated = upsert_profiles(db, profiles)
         run_logs.append(f"Outlet profiles updated: {profiles_updated}")
 
@@ -877,6 +907,10 @@ def analyze_manual_article(
 
     cluster_articles = [article] + peer_articles
     sentiment_results = model_manager.analyze_sentiment(cluster_articles)
+    sentiment_results = align_sentiment_to_shared_targets(
+        cluster_articles,
+        sentiment_results,
+    )
     manual_sentiment = sentiment_results[0]
     article.entity_sentiments = manual_sentiment.entity_sentiments
     for peer, sentiment in zip(peer_articles, sentiment_results[1:]):
@@ -898,8 +932,17 @@ def analyze_manual_article(
         topic_similarity = float(np.mean([m["similarity"] for m in peer_matches]))
 
     if comparable:
-        peer_scores = [r.score for r in sentiment_results[1:]]
-        peer_sentiment_mean = float(np.mean(peer_scores)) if peer_scores else 0.0
+        peer_scores_by_outlet: Dict[str, List[float]] = {}
+        for peer, peer_sentiment in zip(peer_articles, sentiment_results[1:]):
+            peer_scores_by_outlet.setdefault(peer.outlet or "", []).append(
+                float(peer_sentiment.score)
+            )
+        peer_outlet_means = [
+            float(np.mean(scores)) for scores in peer_scores_by_outlet.values()
+        ]
+        peer_sentiment_mean = (
+            float(np.mean(peer_outlet_means)) if peer_outlet_means else 0.0
+        )
         relative_sentiment_bias = float(manual_sentiment.score - peer_sentiment_mean)
 
         cluster_embeddings = _cluster_embeddings(article_embedding[0], peer_matches)

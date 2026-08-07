@@ -14,9 +14,7 @@ from src.bias.scorer import (
     compute_bsi,
     compute_bsi_confidence_interval,
     compute_emphasis_bias,
-    compute_misinformation_risk_score,
     compute_soft_coverage_score,
-    compute_source_trust_score,
     insert_snapshots_with_omission,
     replace_article_bias_evidence,
     upsert_article_bias_scores,
@@ -52,63 +50,6 @@ def test_compute_bsi_uses_soft_coverage_when_provided():
     soft = compute_bsi(0.0, 0.8, 0.0, coverage_bias_rate_soft=0.2)
     assert soft < hard
     assert soft == pytest.approx(compute_bsi(0.0, 0.2, 0.0), abs=1e-6)
-
-
-# --- source trust / misinformation risk ---
-
-def test_source_trust_score_rewards_low_bias_coverage_and_evidence():
-    strong = compute_source_trust_score(
-        bsi_score=0.1,
-        sentiment_confidence_avg=0.9,
-        articles_scored=25,
-        coverage_bias_rate=0.0,
-    )
-    weak = compute_source_trust_score(
-        bsi_score=0.8,
-        sentiment_confidence_avg=0.4,
-        articles_scored=1,
-        coverage_bias_rate=0.7,
-    )
-    assert 0.0 <= weak < strong <= 1.0
-
-
-def test_source_trust_score_ignores_sentiment_classifier_confidence():
-    low_confidence = compute_source_trust_score(
-        bsi_score=0.2,
-        sentiment_confidence_avg=0.1,
-        articles_scored=10,
-        coverage_bias_rate=0.2,
-    )
-    high_confidence = compute_source_trust_score(
-        bsi_score=0.2,
-        sentiment_confidence_avg=0.99,
-        articles_scored=10,
-        coverage_bias_rate=0.2,
-    )
-    assert low_confidence == high_confidence
-
-
-def test_source_trust_score_uses_soft_coverage_when_available():
-    hard_gap = compute_source_trust_score(
-        bsi_score=0.2,
-        sentiment_confidence_avg=0.8,
-        articles_scored=10,
-        coverage_bias_rate=0.8,
-    )
-    soft_gap = compute_source_trust_score(
-        bsi_score=0.2,
-        sentiment_confidence_avg=0.8,
-        articles_scored=10,
-        coverage_bias_rate=0.8,
-        coverage_bias_rate_soft=0.1,
-    )
-    assert soft_gap > hard_gap
-
-
-def test_misinformation_risk_score_is_inverse_of_trust():
-    trust = 0.73
-    risk = compute_misinformation_risk_score(trust)
-    assert risk == pytest.approx(0.27, abs=1e-6)
 
 
 # ── compute_bsi_confidence_interval ──────────────────────────────────────────
@@ -211,7 +152,7 @@ def test_soft_coverage_zero_coverage():
     sets = [{"B", "C"}, {"B", "C"}]  # A never appears
     weights = [1.0, 1.0]
     score = compute_soft_coverage_score("A", outlets, sets, weights)
-    assert score > 0.5
+    assert score == pytest.approx(1.0, abs=1e-6)
 
 
 def test_soft_coverage_mixed():
@@ -221,7 +162,15 @@ def test_soft_coverage_mixed():
     score_a = compute_soft_coverage_score("A", outlets, sets, weights)
     score_b = compute_soft_coverage_score("B", outlets, sets, weights)
     # A misses one mainstream topic; B misses none
-    assert score_a > score_b
+    assert score_a == pytest.approx(1 / 3, abs=1e-6)
+    assert score_b == pytest.approx(0.0, abs=1e-6)
+
+
+def test_soft_coverage_respects_topic_weights_on_same_scale():
+    outlets = ["A", "B", "C"]
+    sets = [{"B", "C"}, {"A", "B", "C"}]
+    weights = [0.75, 0.25]
+    assert compute_soft_coverage_score("A", outlets, sets, weights) == pytest.approx(0.75)
 
 
 def test_soft_coverage_empty_clusters():

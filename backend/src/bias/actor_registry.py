@@ -214,13 +214,15 @@ def compute_political_side_metrics(entity_sentiments: Sequence[Dict[str, Any]]) 
         else None
     )
 
-    gov_baseline = government_sentiment if government_sentiment is not None else 0.0
-    opp_baseline = opposition_sentiment if opposition_sentiment is not None else 0.0
-    side_bias = (
-        max(-1.0, min(1.0, float(gov_baseline - opp_baseline)))
-        if side_weight_sum["government"] > 0.0 or side_weight_sum["opposition"] > 0.0
-        else None
-    )
+    # A comparative side-bias value is only meaningful when the article contains
+    # evidence about both sides. Treating a missing side as neutral (zero) turns
+    # one-sided coverage into a comparison that the article never made.
+    side_bias = None
+    if government_sentiment is not None and opposition_sentiment is not None:
+        side_bias = max(
+            -1.0,
+            min(1.0, float(government_sentiment - opposition_sentiment)),
+        )
 
     return {
         "political_side_bias": side_bias,

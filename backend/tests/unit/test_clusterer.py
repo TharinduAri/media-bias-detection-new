@@ -7,6 +7,8 @@ import pytest
 
 from api import models
 from src.bias.clusterer import (
+    MAX_TOPIC_DATE_SPAN_DAYS,
+    _split_clusters_by_time,
     dominant_outlet_share,
     stable_topic_key,
 )
@@ -20,6 +22,21 @@ def _articles(outlets: list[str]) -> list:
         a.url = f"http://{outlet.lower().replace(' ', '')}.com/{i}"
         articles.append(a)
     return articles
+
+
+def test_temporal_split_limits_event_window():
+    from datetime import datetime, timedelta
+
+    articles = _articles(["A", "B", "A", "B"])
+    start = datetime(2026, 8, 1)
+    articles[0].date = start
+    articles[1].date = start + timedelta(days=1)
+    articles[2].date = start + timedelta(days=MAX_TOPIC_DATE_SPAN_DAYS + 2)
+    articles[3].date = start + timedelta(days=MAX_TOPIC_DATE_SPAN_DAYS + 3)
+
+    split = _split_clusters_by_time({0: [0, 1, 2, 3]}, articles)
+
+    assert sorted(sorted(group) for group in split.values()) == [[0, 1], [2, 3]]
 
 
 # ── dominant_outlet_share ─────────────────────────────────────────────────────
@@ -87,3 +104,11 @@ def test_stable_topic_key_differs_for_different_embeddings():
     key1 = stable_topic_key(embs1, articles, [0, 1, 2, 3, 4])
     key2 = stable_topic_key(embs2, articles, [0, 1, 2, 3, 4])
     assert key1 != key2
+
+
+def test_stable_topic_key_does_not_depend_on_publisher_domain():
+    embs = _make_embeddings(3)
+    key1 = stable_topic_key(embs, _articles(["A", "B", "C"]), [0, 1, 2])
+    key2 = stable_topic_key(embs, _articles(["X", "Y", "Z"]), [0, 1, 2])
+
+    assert key1 == key2

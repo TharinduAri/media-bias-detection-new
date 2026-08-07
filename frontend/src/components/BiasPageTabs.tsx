@@ -21,7 +21,7 @@ const tabs: Array<{
   icon: typeof FileText;
 }> = [
   { key: "single", label: "Single Article Reading", icon: FileText },
-  { key: "leaderboard", label: "Source Trust Leaderboard", icon: Flame },
+  { key: "leaderboard", label: "BSI Comparison", icon: Flame },
   { key: "profiles", label: "Outlet Profiles", icon: Scale },
   { key: "topics", label: "Topic-Group Bias Calculation", icon: BarChart3 },
   { key: "heatmap", label: "Topic Coverage Heatmap", icon: Grid3X3 },

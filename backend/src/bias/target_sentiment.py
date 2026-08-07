@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Sequence
 
 from .actor_registry import (
@@ -16,6 +16,14 @@ from .entity_extraction import split_article_sentences
 TARGET_ENTITY_LABELS = {"PERSON", "ORG", "GPE", "NORP"}
 MAX_SENTENCES_PER_ARTICLE = 80
 MAX_TARGET_PAIRS_PER_ARTICLE = 96
+MAX_AGGREGATE_TARGETS_PER_ARTICLE = 6
+
+ENTITY_SALIENCE_WEIGHTS = {
+    "PERSON": 1.0,
+    "ORG": 0.85,
+    "NORP": 0.55,
+    "GPE": 0.35,
+}
 
 
 @dataclass(frozen=True)
@@ -27,6 +35,7 @@ class TargetPair:
     sentence_index: int
     is_title: bool = False
     article_date: Any = None
+    canonical_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,10 +128,22 @@ def build_target_pairs(articles: Sequence[Any]) -> List[TargetPair]:
         existing_targets = [target for target, _ in entities]
         sentence_texts = [sentence for sentence, _ in sentences]
         entities.extend(registry.supplemental_targets(sentence_texts, existing_targets))
+        seen_pair_keys: set[tuple[str, int]] = set()
         for target, entity_label in entities:
+            actor_match = registry.resolve(
+                target,
+                entity_label,
+                getattr(article, "date", None),
+            )
+            canonical_target = actor_match.canonical_name if actor_match else target
+            canonical_key = canonical_target.casefold()
             for sentence_index, (sentence, is_title) in enumerate(sentences):
                 if not _contains_target(sentence, target):
                     continue
+                pair_key = (canonical_key, sentence_index)
+                if pair_key in seen_pair_keys:
+                    continue
+                seen_pair_keys.add(pair_key)
                 article_pairs.append(
                     TargetPair(
                         article_index=article_index,
@@ -132,6 +153,7 @@ def build_target_pairs(articles: Sequence[Any]) -> List[TargetPair]:
                         sentence_index=sentence_index,
                         is_title=is_title,
                         article_date=getattr(article, "date", None),
+                        canonical_target=canonical_target,
                     )
                 )
                 if len(article_pairs) >= MAX_TARGET_PAIRS_PER_ARTICLE:
@@ -194,7 +216,7 @@ def aggregate_target_sentiment(
         sentence_rows_by_article.setdefault(pair.article_index, []).append(sentence_row)
 
         article_targets = grouped.setdefault(pair.article_index, {})
-        target_key = pair.target.casefold()
+        target_key = (pair.canonical_target or pair.target).casefold()
         target_stats = article_targets.setdefault(
             target_key,
             {
@@ -229,13 +251,6 @@ def aggregate_target_sentiment(
     results: List[SentimentResult] = []
     for article_index in range(article_count):
         target_rows: List[Dict[str, Any]] = []
-        article_probability_sums = {
-            "negative": 0.0,
-            "neutral": 0.0,
-            "positive": 0.0,
-        }
-        article_weight = 0.0
-
         for stats in grouped.get(article_index, {}).values():
             context_weight = float(stats["weight"])
             probabilities = {
@@ -245,14 +260,17 @@ def aggregate_target_sentiment(
             label = _label_from_probabilities(probabilities)
             confidence = probabilities[label]
             score = probabilities["positive"] - probabilities["negative"]
-            importance = (1.0 + math.log1p(int(stats["mentions"]))) * (
-                1.25 if stats["title_mention"] else 1.0
+            entity_weight = ENTITY_SALIENCE_WEIGHTS.get(
+                str(stats["entity_label"] or "").upper(),
+                0.5,
             )
-            aggregate_weight = max(confidence, 0.05) * importance
-
-            for probability_label, value in probabilities.items():
-                article_probability_sums[probability_label] += value * aggregate_weight
-            article_weight += aggregate_weight
+            actor_weight = 1.35 if isinstance(stats.get("actor"), dict) else 1.0
+            importance = (
+                (1.0 + math.log1p(int(stats["mentions"])))
+                * (1.5 if stats["title_mention"] else 1.0)
+                * entity_weight
+                * actor_weight
+            )
 
             target_row = {
                     "target": stats["target"],
@@ -265,6 +283,7 @@ def aggregate_target_sentiment(
                     "positive": round(float(probabilities["positive"]), 6),
                     "mentions": int(stats["mentions"]),
                     "title_mention": bool(stats["title_mention"]),
+                    "salience_weight": round(float(importance), 6),
                 }
             if isinstance(stats.get("actor"), dict):
                 target_row.update(stats["actor"])
@@ -272,7 +291,7 @@ def aggregate_target_sentiment(
                 enrich_row_with_actor(target_row)
             target_rows.append(target_row)
 
-        if not target_rows or article_weight <= 0.0:
+        if not target_rows:
             political_metrics = compute_political_side_metrics(target_rows)
             results.append(
                 SentimentResult(
@@ -289,6 +308,39 @@ def aggregate_target_sentiment(
                 )
             )
             continue
+
+        salient_rows = [
+            row
+            for row in target_rows
+            if row.get("canonical_actor")
+            or row["title_mention"]
+            or row.get("entity_label") in {"PERSON", "ORG"}
+        ]
+        if not salient_rows:
+            salient_rows = list(target_rows)
+        salient_rows.sort(
+            key=lambda row: (
+                bool(row.get("canonical_actor")),
+                row["title_mention"],
+                row["mentions"],
+                row["salience_weight"],
+            ),
+            reverse=True,
+        )
+        aggregate_rows = salient_rows[:MAX_AGGREGATE_TARGETS_PER_ARTICLE]
+        article_probability_sums = {
+            "negative": 0.0,
+            "neutral": 0.0,
+            "positive": 0.0,
+        }
+        article_weight = 0.0
+        for row in aggregate_rows:
+            aggregate_weight = max(float(row["salience_weight"]), 0.05)
+            for probability_label in article_probability_sums:
+                article_probability_sums[probability_label] += (
+                    float(row[probability_label]) * aggregate_weight
+                )
+            article_weight += aggregate_weight
 
         article_probabilities = {
             label: value / article_weight
@@ -320,3 +372,100 @@ def aggregate_target_sentiment(
             )
         )
     return results
+
+
+def align_sentiment_to_shared_targets(
+    articles: Sequence[Any],
+    results: Sequence[SentimentResult],
+) -> List[SentimentResult]:
+    """Re-aggregate each article using targets also discussed by another outlet.
+
+    Relative media-bias comparisons should not compare sentiment toward unrelated
+    entities. When a cluster has shared salient targets, this function limits the
+    article summary to those targets. Articles without a shared target keep their
+    original result rather than inventing evidence.
+    """
+    if len(articles) != len(results):
+        raise ValueError("Articles and sentiment results must have equal length.")
+
+    target_outlets: Dict[str, set[str]] = {}
+    rows_by_article: List[List[tuple[str, Dict[str, Any]]]] = []
+    for article, result in zip(articles, results):
+        outlet = str(getattr(article, "outlet", "") or "")
+        article_rows: List[tuple[str, Dict[str, Any]]] = []
+        for row in result.entity_sentiments:
+            if not (
+                row.get("canonical_actor")
+                or row.get("title_mention")
+                or row.get("entity_label") in {"PERSON", "ORG"}
+            ):
+                continue
+            target = str(row.get("canonical_actor") or row.get("target") or "").strip()
+            key = re.sub(r"\s+", " ", target).casefold()
+            if not key:
+                continue
+            article_rows.append((key, row))
+            target_outlets.setdefault(key, set()).add(outlet)
+        rows_by_article.append(article_rows)
+
+    shared_targets = {
+        key for key, outlets in target_outlets.items() if len(outlets) >= 2
+    }
+    if not shared_targets:
+        return list(results)
+
+    aligned: List[SentimentResult] = []
+    for result, article_rows in zip(results, rows_by_article):
+        comparable_rows = [row for key, row in article_rows if key in shared_targets]
+        if not comparable_rows:
+            aligned.append(result)
+            continue
+
+        probability_sums = {"negative": 0.0, "neutral": 0.0, "positive": 0.0}
+        total_weight = 0.0
+        for row in comparable_rows:
+            weight = max(float(row.get("salience_weight", 1.0) or 1.0), 0.05)
+            for label in probability_sums:
+                probability_sums[label] += float(row.get(label, 0.0) or 0.0) * weight
+            total_weight += weight
+        if sum(probability_sums.values()) <= 1e-8:
+            aligned.append(result)
+            continue
+        probabilities = {
+            label: value / total_weight for label, value in probability_sums.items()
+        }
+        label = _label_from_probabilities(probabilities)
+        aligned.append(
+            replace(
+                result,
+                label=label,
+                confidence=round(float(probabilities[label]), 6),
+                score=round(
+                    float(probabilities["positive"] - probabilities["negative"]),
+                    6,
+                ),
+            )
+        )
+    return aligned
+
+
+def outlet_balanced_peer_references(
+    outlets: Sequence[str],
+    scores: Sequence[float],
+) -> Dict[str, float]:
+    """Return leave-one-out references after giving each outlet equal weight."""
+    if len(outlets) != len(scores):
+        raise ValueError("Outlets and scores must have equal length.")
+    scores_by_outlet: Dict[str, List[float]] = {}
+    for outlet, score in zip(outlets, scores):
+        scores_by_outlet.setdefault(outlet, []).append(float(score))
+    outlet_means = {
+        outlet: sum(values) / len(values)
+        for outlet, values in scores_by_outlet.items()
+        if values
+    }
+    references: Dict[str, float] = {}
+    for outlet, own_mean in outlet_means.items():
+        peers = [mean for peer, mean in outlet_means.items() if peer != outlet]
+        references[outlet] = sum(peers) / len(peers) if peers else own_mean
+    return references

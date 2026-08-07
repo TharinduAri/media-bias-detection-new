@@ -5,17 +5,17 @@ import {
   FileText,
   Layers3,
   Scale,
-  ShieldCheck,
   Sparkles,
   Target,
 } from "lucide-react";
 import {
+  AnalysisType,
   fetchAllProfiles,
   fetchArticleOutletCounts,
   fetchBiasArticles,
   fetchBiasScores,
   fetchBiasTopics,
-  OutletBiasProfileData,
+  outletsForAnalysis,
 } from "@/lib/api";
 
 export const metadata = {
@@ -36,13 +36,6 @@ function signed(value: number | null | undefined, digits = 2): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
 }
 
-function trustTone(score: number | null | undefined): string {
-  if (score == null) return "text-slate-400";
-  if (score >= 0.75) return "text-emerald-600 dark:text-emerald-400";
-  if (score >= 0.55) return "text-amber-600 dark:text-amber-400";
-  return "text-rose-600 dark:text-rose-400";
-}
-
 function biasTone(score: number | null | undefined): string {
   if (score == null) return "text-slate-400";
   if (score >= 0.6) return "text-rose-600 dark:text-rose-400";
@@ -52,9 +45,9 @@ function biasTone(score: number | null | undefined): string {
 
 function politicalLabel(value: number | null | undefined): string {
   if (value == null) return "No signal";
-  if (value > 0.15) return "Govt-leaning";
-  if (value < -0.15) return "Opposition-leaning";
-  return "Balanced";
+  if (value > 0.15) return "More positive to govt";
+  if (value < -0.15) return "More positive to opposition";
+  return "Similar portrayal";
 }
 
 function politicalTone(value: number | null | undefined): string {
@@ -64,36 +57,57 @@ function politicalTone(value: number | null | undefined): string {
   return "text-slate-600 dark:text-slate-300";
 }
 
-function scoreLabel(profile: OutletBiasProfileData): string {
-  if (profile.source_trust_score != null) return percent(profile.source_trust_score);
-  if (profile.bsi_score != null) return profile.bsi_score.toFixed(2);
-  return "--";
-}
+type DemoPageProps = {
+  searchParams: Promise<{
+    analysis_type?: string | string[];
+  }>;
+};
 
-export default async function DemoPage() {
+export default async function DemoPage({ searchParams }: DemoPageProps) {
+  const params = await searchParams;
+  const requestedAnalysisType = Array.isArray(params.analysis_type)
+    ? params.analysis_type[0]
+    : params.analysis_type;
+  const analysisType: AnalysisType =
+    requestedAnalysisType === "financial" ? "financial" : "general";
+  const isFinancial = analysisType === "financial";
+
   const [outletCounts, profileResult, topics, scoresResult, articles] = await Promise.all([
     fetchArticleOutletCounts().catch(() => []),
-    fetchAllProfiles().catch(() => ({ last_run_at: null, profiles: [] })),
-    fetchBiasTopics().catch(() => []),
-    fetchBiasScores().catch(() => ({ last_run_at: null, scores: [] })),
-    fetchBiasArticles(8, 0).catch(() => []),
+    fetchAllProfiles(analysisType).catch(() => ({ last_run_at: null, profiles: [] })),
+    fetchBiasTopics(analysisType).catch(() => []),
+    fetchBiasScores({ analysis_type: analysisType }).catch(() => ({
+      last_run_at: null,
+      scores: [],
+    })),
+    fetchBiasArticles(8, 0, undefined, undefined, analysisType).catch(() => []),
   ]);
 
-  const profiles = [...profileResult.profiles].sort((a, b) => {
-    const trustDelta = (b.source_trust_score ?? -1) - (a.source_trust_score ?? -1);
-    if (trustDelta !== 0) return trustDelta;
-    return (a.bsi_score ?? 1) - (b.bsi_score ?? 1);
-  });
+  const profiles = [...profileResult.profiles].sort(
+    (a, b) => (a.bsi_score ?? 1) - (b.bsi_score ?? 1)
+  );
 
-  const totalArticles = outletCounts.reduce((sum, outlet) => sum + outlet.total_articles, 0);
+  const scopedOutletNames = new Set(
+    outletsForAnalysis(
+      outletCounts.map((outlet) => outlet.outlet),
+      analysisType
+    )
+  );
+  const scopedOutletCounts = outletCounts.filter((outlet) =>
+    scopedOutletNames.has(outlet.outlet)
+  );
+  const totalArticles = scopedOutletCounts.reduce(
+    (sum, outlet) => sum + outlet.total_articles,
+    0
+  );
   const scoredArticles = profiles.reduce((sum, profile) => sum + profile.articles_scored, 0);
   const totalCoverageGaps = profiles.reduce(
     (sum, profile) => sum + profile.coverage_missing_majority,
     0
   );
-  const averageTrust =
+  const averageBsi =
     profiles.length > 0
-      ? profiles.reduce((sum, profile) => sum + (profile.source_trust_score ?? 0), 0) /
+      ? profiles.reduce((sum, profile) => sum + (profile.bsi_score ?? 0), 0) /
         profiles.length
       : null;
   const topTopic = [...topics].sort((a, b) => b.article_count - a.article_count)[0];
@@ -116,17 +130,38 @@ export default async function DemoPage() {
                 Media bias, explained through comparable news coverage.
               </h1>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-                We collect articles from multiple Sri Lankan outlets, group stories by the
-                same topic, then compare sentiment, coverage, and political framing across
-                those peer articles.
+                {isFinancial
+                  ? "We group financial and economic stories from Sri Lankan business-news outlets, then compare sentiment, coverage, and framing across reports about the same topic."
+                  : "We collect articles from multiple Sri Lankan outlets, group stories by the same topic, then compare sentiment, coverage, and political framing across those peer articles."}
               </p>
+
+              <div className="mt-5 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-700 dark:bg-slate-950">
+                {(["general", "financial"] as AnalysisType[]).map((type) => {
+                  const active = analysisType === type;
+                  return (
+                    <Link
+                      key={type}
+                      href={`/demo?analysis_type=${type}`}
+                      aria-current={active ? "page" : undefined}
+                      className={`rounded-md px-4 py-2 text-xs font-semibold transition-colors ${
+                        active
+                          ? "bg-slate-900 text-white shadow-sm dark:bg-white dark:text-slate-900"
+                          : "text-slate-500 hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+                      }`}
+                    >
+                      {type === "general" ? "General News" : "Financial News"}
+                    </Link>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-gray-950/50">
               <p className="text-xs font-bold uppercase text-slate-400">Demo takeaway</p>
               <p className="mt-2 text-sm leading-6 text-slate-700 dark:text-slate-300">
-                Bias is measured relative to how other outlets covered the same topic,
-                not by judging a single article in isolation.
+                {isFinancial
+                  ? "Financial framing is measured relative to how other business outlets covered the same economic topic."
+                  : "Bias is measured relative to how other outlets covered the same topic, not by judging a single article in isolation."}
               </p>
               <div className="mt-4 flex gap-2">
                 <Link
@@ -151,13 +186,13 @@ export default async function DemoPage() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Metric
             icon={FileText}
-            label="Articles collected"
+            label={isFinancial ? "Financial articles" : "Articles collected"}
             value={number(totalArticles)}
-            hint={`${outletCounts.length} active outlets`}
+            hint={`${scopedOutletCounts.length} ${isFinancial ? "financial" : "general"} outlets`}
           />
           <Metric
             icon={Layers3}
-            label="Topic groups"
+            label={isFinancial ? "Financial topics" : "Topic groups"}
             value={number(topics.length)}
             hint={topTopic ? `Largest: ${topTopic.article_count} articles` : "Awaiting analysis"}
           />
@@ -168,10 +203,10 @@ export default async function DemoPage() {
             hint={`${number(scoresResult.scores.length)} outlet-topic scores`}
           />
           <Metric
-            icon={ShieldCheck}
-            label="Average trust"
-            value={averageTrust == null ? "--" : percent(averageTrust)}
-            hint={`${number(totalCoverageGaps)} major coverage gaps`}
+            icon={BarChart3}
+            label="Average BSI"
+            value={averageBsi == null ? "--" : averageBsi.toFixed(2)}
+            hint={`Experimental index · ${number(totalCoverageGaps)} major gaps`}
           />
         </div>
       </section>
@@ -182,10 +217,10 @@ export default async function DemoPage() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-950 dark:text-white">
-                  Outlet Trust Ranking
+                  {isFinancial ? "Financial Outlet BSI Comparison" : "Outlet BSI Comparison"}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                  Higher trust means lower detected bias, risk, and coverage gaps.
+                  Lower BSI means less detected relative sentiment, coverage, emphasis, and political-portrayal difference.
                 </p>
               </div>
               {lastRunAt && (
@@ -214,9 +249,9 @@ export default async function DemoPage() {
                   </p>
                 </div>
                 <ScoreBlock
-                  label="Trust"
-                  value={scoreLabel(profile)}
-                  className={trustTone(profile.source_trust_score)}
+                  label="Coverage gap"
+                  value={percent(profile.coverage_bias_rate_soft ?? profile.coverage_bias_rate)}
+                  className={biasTone(profile.coverage_bias_rate_soft ?? profile.coverage_bias_rate)}
                 />
                 <ScoreBlock
                   label="Bias signal"
@@ -234,7 +269,8 @@ export default async function DemoPage() {
 
             {profiles.length === 0 && (
               <div className="px-5 py-10 text-center text-sm text-slate-400">
-                No outlet profiles yet. Run bias analysis before the panel demo.
+                No {analysisType} outlet profiles yet. Run {analysisType} bias analysis
+                before the panel demo.
               </div>
             )}
           </div>
@@ -245,7 +281,7 @@ export default async function DemoPage() {
             <div className="flex items-center gap-2">
               <Target className="h-5 w-5 text-blue-600 dark:text-blue-400" />
               <h2 className="text-base font-bold text-slate-950 dark:text-white">
-                Strongest Example
+                {isFinancial ? "Strongest Financial Example" : "Strongest Example"}
               </h2>
             </div>
             {strongestArticle ? (
@@ -281,7 +317,11 @@ export default async function DemoPage() {
               <MethodStep
                 step="1"
                 title="Collect"
-                text="Scrape articles from registered news outlets."
+                text={
+                  isFinancial
+                    ? "Collect reports from specialist financial outlets."
+                    : "Scrape articles from registered news outlets."
+                }
               />
               <MethodStep
                 step="2"
@@ -308,16 +348,17 @@ export default async function DemoPage() {
           </div>
           <div className="mt-4 grid gap-3 text-sm leading-6 text-slate-600 dark:text-slate-300 md:grid-cols-3">
             <p>
-              First, this system builds a common article database from multiple
-              outlets.
+              First, this system builds a common article database from multiple{" "}
+              {isFinancial ? "financial" : "general-news"} outlets.
             </p>
             <p>
               Then it compares outlets only inside the same topic group, so the
               measurement is fair.
             </p>
             <p>
-              Finally, it summarizes trust, bias signal, coverage gaps, and
-              political framing at outlet level.
+              Finally, it summarizes the experimental bias signal, coverage gaps,
+              and comparable {isFinancial ? "financial framing" : "political portrayal"}{" "}
+              at outlet level.
             </p>
           </div>
         </div>
