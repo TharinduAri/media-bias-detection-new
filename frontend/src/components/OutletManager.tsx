@@ -33,9 +33,14 @@ function RegistryCard({ entry }: { entry: OutletRegistryEntry }) {
   return (
     <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/60 transition-all duration-200 overflow-hidden">
       <div className="flex items-start justify-between gap-3 p-4">
-        <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <DomainBadge domain={entry.domain} />
-          <ClassChip name={entry.scraper_class} />
+        <div className="min-w-0">
+          <p className="mb-2 text-sm font-bold text-slate-900 dark:text-slate-100">
+            {entry.name}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <DomainBadge domain={entry.domain} />
+            <ClassChip name={entry.scraper_class} />
+          </div>
         </div>
         <button
           onClick={() => setExpanded((v) => !v)}

@@ -1,6 +1,7 @@
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:9000/api/v1";
 
 export interface OutletRegistryEntry {
+  name: string;
   domain: string;
   scraper_class: string;
   discovery: string;
@@ -276,22 +277,6 @@ export interface ManualArticleBiasData {
   matched_articles: ManualArticlePeerData[];
   notes: string[];
 }
-
-export const OUTLET_NAMES: string[] = [
-  "Ada Derana",
-  "Ceylon Today",
-  "Daily FT",
-  "Economy Next",
-  "LBO",
-  "Newsfirst",
-  "Daily Mirror",
-  "The Morning",
-  "Daily News",
-  "The Island",
-  "Sunday Observer",
-  "Colombo Gazette",
-  "News LK",
-];
 
 export const FINANCIAL_OUTLETS = ["Economy Next", "LBO"];
 
