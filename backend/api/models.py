@@ -35,6 +35,7 @@ class ArticleBiasScore(Base):
     id = Column(Integer, primary_key=True, index=True)
     article_id = Column(Integer, nullable=False, index=True)
     outlet = Column(String, nullable=False, index=True)
+    analysis_type = Column(String(32), nullable=False, default="general", index=True)
     topic_key = Column(String, nullable=False, index=True)
     topic_label = Column(String, nullable=True)
     sentiment_label = Column(String, nullable=False)
@@ -57,7 +58,14 @@ class ArticleBiasScore(Base):
     political_actor_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, nullable=False)
 
-    __table_args__ = (UniqueConstraint("article_id", "topic_key", name="uq_article_bias_article_topic"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "topic_key",
+            "analysis_type",
+            name="uq_article_bias_article_topic_analysis",
+        ),
+    )
 
 
 class ArticleBiasEvidence(Base):
@@ -66,6 +74,7 @@ class ArticleBiasEvidence(Base):
     id = Column(Integer, primary_key=True, index=True)
     article_id = Column(Integer, nullable=False, index=True)
     outlet = Column(String, nullable=False, index=True)
+    analysis_type = Column(String(32), nullable=False, default="general", index=True)
     topic_key = Column(String, nullable=False, index=True)
     topic_label = Column(String, nullable=True)
     target_entity = Column(String, nullable=False, index=True)
@@ -114,7 +123,8 @@ class OutletBiasProfile(Base):
     __tablename__ = "OutletBiasProfile"
 
     id = Column(Integer, primary_key=True, index=True)
-    outlet = Column(String, unique=True, nullable=False, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    analysis_type = Column(String(32), nullable=False, default="general", index=True)
     sentiment_bias_avg = Column(Float, nullable=False)
     sentiment_score_avg = Column(Float, nullable=False)
     articles_scored = Column(Integer, nullable=False)
@@ -137,12 +147,17 @@ class OutletBiasProfile(Base):
     coverage_bias_rate_soft = Column(Float, nullable=True)
     updated_at = Column(DateTime, nullable=False)
 
+    __table_args__ = (
+        UniqueConstraint("outlet", "analysis_type", name="uq_outlet_bias_profile_outlet_analysis"),
+    )
+
 
 class OutletBiasSnapshot(Base):
     __tablename__ = "OutletBiasSnapshot"
 
     id = Column(Integer, primary_key=True, index=True)
     outlet = Column(String, nullable=False, index=True)
+    analysis_type = Column(String(32), nullable=False, default="general", index=True)
     run_id = Column(Integer, nullable=False, index=True)
     snapshot_date = Column(DateTime, nullable=False, index=True)
     sentiment_bias_avg = Column(Float, nullable=False)
@@ -176,6 +191,7 @@ class OutletTopicBSI(Base):
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, nullable=False, index=True)
     outlet = Column(String, nullable=False, index=True)
+    analysis_type = Column(String(32), nullable=False, default="general", index=True)
     topic_key = Column(String, nullable=False, index=True)
     topic_label = Column(String, nullable=True)
     sentiment_bias_avg = Column(Float, nullable=False)
@@ -188,8 +204,13 @@ class OutletTopicBSI(Base):
     snapshot_date = Column(DateTime, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("run_id", "outlet", "topic_key",
-                         name="uq_outlet_topic_bsi_run_outlet_topic"),
+        UniqueConstraint(
+            "run_id",
+            "outlet",
+            "topic_key",
+            "analysis_type",
+            name="uq_outlet_topic_bsi_run_outlet_topic_analysis",
+        ),
     )
 
 
@@ -200,6 +221,7 @@ class BiasRunLog(Base):
     started_at = Column(DateTime, nullable=False)
     finished_at = Column(DateTime, nullable=False)
     status = Column(String, nullable=False)
+    analysis_type = Column(String(32), nullable=False, default="general", index=True)
     error = Column(Text, nullable=True)
     log_lines = Column(JSON, nullable=False)
     created_at = Column(DateTime)

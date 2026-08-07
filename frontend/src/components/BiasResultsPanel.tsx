@@ -5,6 +5,7 @@ import {
   compareBiasProfiles,
   fetchBiasArticles,
   fetchBiasProfile,
+  AnalysisType,
   ArticleBiasWithArticleData,
   OutletBiasProfileData,
 } from "@/lib/api";
@@ -12,6 +13,7 @@ import {
 interface Props {
   outlets: string[];
   mode?: "all" | "profiles";
+  analysisType?: AnalysisType;
 }
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
@@ -92,11 +94,23 @@ function BiasBar({ value, maxAbs = 1 }: { value: number; maxAbs?: number }) {
 
 // ─── Outlet Profile Card ──────────────────────────────────────────────────────
 
-function OutletProfileCard({ outlets }: { outlets: string[] }) {
+function OutletProfileCard({
+  outlets,
+  analysisType,
+}: {
+  outlets: string[];
+  analysisType: AnalysisType;
+}) {
   const [selected, setSelected] = useState(outlets[0] ?? "");
   const [profile, setProfile] = useState<OutletBiasProfileData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelected(outlets[0] ?? "");
+    setProfile(null);
+    setError(null);
+  }, [outlets, analysisType]);
 
   const load = async (outlet: string) => {
     if (!outlet) return;
@@ -104,7 +118,7 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
     setError(null);
     setProfile(null);
     try {
-      setProfile(await fetchBiasProfile(outlet));
+      setProfile(await fetchBiasProfile(outlet, analysisType));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load profile.");
     } finally {
@@ -289,11 +303,23 @@ function OutletProfileCard({ outlets }: { outlets: string[] }) {
 
 // ─── Compare Card ─────────────────────────────────────────────────────────────
 
-function CompareCard({ outlets }: { outlets: string[] }) {
+function CompareCard({
+  outlets,
+  analysisType,
+}: {
+  outlets: string[];
+  analysisType: AnalysisType;
+}) {
   const [selections, setSelections] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<OutletBiasProfileData[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelections([]);
+    setResults([]);
+    setError(null);
+  }, [outlets, analysisType]);
 
   const toggle = (o: string) =>
     setSelections((prev) => prev.includes(o) ? prev.filter((x) => x !== o) : [...prev, o]);
@@ -303,7 +329,7 @@ function CompareCard({ outlets }: { outlets: string[] }) {
     setLoading(true);
     setError(null);
     try {
-      setResults(await compareBiasProfiles(selections));
+      setResults(await compareBiasProfiles(selections, analysisType));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Compare failed.");
     } finally {
@@ -462,7 +488,13 @@ function CompareCard({ outlets }: { outlets: string[] }) {
 
 // ─── Articles Table ───────────────────────────────────────────────────────────
 
-function ArticlesTable({ outlets }: { outlets: string[] }) {
+function ArticlesTable({
+  outlets,
+  analysisType,
+}: {
+  outlets: string[];
+  analysisType: AnalysisType;
+}) {
   const [articles, setArticles] = useState<ArticleBiasWithArticleData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -472,11 +504,21 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
   const [sort, setSort] = useState<"most_biased" | "newest" | "outlet" | "topic">("most_biased");
   const limit = 50;
 
+  useEffect(() => {
+    setOutletFilter("");
+  }, [analysisType]);
+
   const load = useCallback(async (newOffset: number, replace: boolean) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchBiasArticles(limit, newOffset, outletFilter || undefined);
+      const data = await fetchBiasArticles(
+        limit,
+        newOffset,
+        outletFilter || undefined,
+        undefined,
+        analysisType
+      );
       setArticles((prev) => replace ? data : [...prev, ...data]);
       setHasMore(data.length === limit);
       setOffset(newOffset + data.length);
@@ -485,7 +527,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
     } finally {
       setLoading(false);
     }
-  }, [outletFilter]);
+  }, [outletFilter, analysisType]);
 
   useEffect(() => {
     setOffset(0);
@@ -658,7 +700,7 @@ function ArticlesTable({ outlets }: { outlets: string[] }) {
 
 type Tab = "profiles" | "articles";
 
-export default function BiasResultsPanel({ outlets, mode = "all" }: Props) {
+export default function BiasResultsPanel({ outlets, mode = "all", analysisType = "general" }: Props) {
   const [tab, setTab] = useState<Tab>("profiles");
   const profilesOnly = mode === "profiles";
 
@@ -694,14 +736,14 @@ export default function BiasResultsPanel({ outlets, mode = "all" }: Props) {
 
         {(profilesOnly || tab === "profiles") && (
           <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <OutletProfileCard outlets={outlets} />
-            <CompareCard outlets={outlets} />
+            <OutletProfileCard outlets={outlets} analysisType={analysisType} />
+            <CompareCard outlets={outlets} analysisType={analysisType} />
           </div>
         )}
 
         {!profilesOnly && tab === "articles" && (
           <div className="px-5 py-5">
-            <ArticlesTable outlets={outlets} />
+            <ArticlesTable outlets={outlets} analysisType={analysisType} />
           </div>
         )}
       </div>

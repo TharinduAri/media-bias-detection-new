@@ -55,6 +55,7 @@ export interface BiasRunLogData {
   started_at: string;
   finished_at: string;
   status: "done" | "error" | string;
+  analysis_type: AnalysisType;
   error: string | null;
   log_lines: string[];
   created_at: string | null;
@@ -64,6 +65,7 @@ export interface ArticleBiasWithArticleData {
   id: number;
   article_id: number;
   outlet: string;
+  analysis_type: AnalysisType;
   title: string;
   date: string;
   url: string;
@@ -115,6 +117,7 @@ export interface ArticleBiasEvidenceData {
   id: number;
   article_id: number;
   outlet: string;
+  analysis_type: AnalysisType;
   topic_key: string;
   topic_label?: string | null;
   target_entity: string;
@@ -138,6 +141,7 @@ export interface ArticleBiasEvidenceData {
 export interface OutletBiasProfileData {
   id: number;
   outlet: string;
+  analysis_type: AnalysisType;
   sentiment_bias_avg: number;
   sentiment_score_avg: number;
   articles_scored: number;
@@ -165,6 +169,7 @@ export interface OutletTopicBSIData {
   id: number;
   run_id: number;
   outlet: string;
+  analysis_type: AnalysisType;
   topic_key: string;
   topic_label?: string | null;
   sentiment_bias_avg: number;
@@ -195,6 +200,7 @@ export interface TopicSummaryData {
 export interface BiasRunResponse {
   status: string;
   message: string;
+  analysis_type: AnalysisType;
   processed_articles: number;
   topics_processed: number;
   profiles_updated: number;
@@ -204,6 +210,8 @@ export interface BiasRunResponse {
   cluster_source: "internal" | "external" | string;
   clusters_received?: number | null;
 }
+
+export type AnalysisType = "general" | "financial";
 
 export interface ManualArticleBiasInput {
   outlet: string;
@@ -285,6 +293,15 @@ export const OUTLET_NAMES: string[] = [
   "News LK",
 ];
 
+export const FINANCIAL_OUTLETS = ["Economy Next", "LBO"];
+
+export function outletsForAnalysis(outlets: string[], analysisType: AnalysisType): string[] {
+  const financial = new Set(FINANCIAL_OUTLETS);
+  return analysisType === "financial"
+    ? outlets.filter((outlet) => financial.has(outlet))
+    : outlets.filter((outlet) => !financial.has(outlet));
+}
+
 export async function triggerScrape(
   outlets?: string[]
 ): Promise<{ status: string; message: string; outlets: string[] }> {
@@ -338,8 +355,9 @@ export async function fetchScrapeLogs(limit = 10): Promise<ScrapeRunLogData[]> {
   return res.json();
 }
 
-export async function fetchBiasLogs(limit = 10): Promise<BiasRunLogData[]> {
+export async function fetchBiasLogs(limit = 10, analysisType?: AnalysisType): Promise<BiasRunLogData[]> {
   const params = new URLSearchParams({ limit: String(limit) });
+  if (analysisType) params.set("analysis_type", analysisType);
   const res = await fetch(`${API_BASE_URL}/bias/logs?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch bias logs");
   return res.json();
@@ -432,6 +450,18 @@ export async function triggerBiasAnalysisFast(): Promise<BiasRunResponse> {
   return res.json();
 }
 
+export async function triggerFinancialBiasAnalysisFast(): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run-financial-fast`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to run fast financial analysis");
+  }
+  return res.json();
+}
+
 export async function triggerCleanupKeepEmbeddings(): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API_BASE_URL}/bias/cleanup-results`, {
     method: "DELETE",
@@ -458,6 +488,20 @@ export async function triggerBiasAnalysis(): Promise<BiasRunResponse> {
   return res.json();
 }
 
+export async function triggerFinancialBiasAnalysis(): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run-financial`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to run financial analysis");
+  }
+
+  return res.json();
+}
+
 export async function createManualArticleBiasReading(
   input: ManualArticleBiasInput
 ): Promise<ManualArticleBiasData> {
@@ -476,8 +520,12 @@ export async function createManualArticleBiasReading(
   return res.json();
 }
 
-export async function fetchBiasProfile(outletName: string): Promise<OutletBiasProfileData> {
-  const res = await fetch(`${API_BASE_URL}/bias/outlets/${encodeURIComponent(outletName)}`, {
+export async function fetchBiasProfile(
+  outletName: string,
+  analysisType: AnalysisType = "general"
+): Promise<OutletBiasProfileData> {
+  const params = new URLSearchParams({ analysis_type: analysisType });
+  const res = await fetch(`${API_BASE_URL}/bias/outlets/${encodeURIComponent(outletName)}?${params}`, {
     cache: "no-store",
   });
   if (!res.ok) {
@@ -487,8 +535,12 @@ export async function fetchBiasProfile(outletName: string): Promise<OutletBiasPr
   return res.json();
 }
 
-export async function compareBiasProfiles(outlets: string[]): Promise<OutletBiasProfileData[]> {
-  const res = await fetch(`${API_BASE_URL}/bias/compare`, {
+export async function compareBiasProfiles(
+  outlets: string[],
+  analysisType: AnalysisType = "general"
+): Promise<OutletBiasProfileData[]> {
+  const params = new URLSearchParams({ analysis_type: analysisType });
+  const res = await fetch(`${API_BASE_URL}/bias/compare?${params}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -505,9 +557,10 @@ export async function compareBiasProfiles(outlets: string[]): Promise<OutletBias
 
 export async function fetchArticleBiasEvidence(
   articleId: number,
-  topicKey?: string
+  topicKey?: string,
+  analysisType: AnalysisType = "general"
 ): Promise<ArticleBiasEvidenceData[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ analysis_type: analysisType });
   if (topicKey) params.set("topic_key", topicKey);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const res = await fetch(`${API_BASE_URL}/bias/articles/${articleId}/evidence${suffix}`, {
@@ -524,9 +577,14 @@ export async function fetchBiasArticles(
   limit = 50,
   offset = 0,
   outlet?: string,
-  topic_key?: string
+  topic_key?: string,
+  analysisType: AnalysisType = "general"
 ): Promise<ArticleBiasWithArticleData[]> {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    analysis_type: analysisType,
+  });
   if (outlet) params.set("outlet", outlet);
   if (topic_key) params.set("topic_key", topic_key);
   const res = await fetch(`${API_BASE_URL}/bias/articles?${params.toString()}`, { cache: "no-store" });
@@ -537,8 +595,9 @@ export async function fetchBiasArticles(
   return res.json();
 }
 
-export async function fetchBiasTopics(): Promise<TopicSummaryData[]> {
-  const res = await fetch(`${API_BASE_URL}/bias/topics`, { cache: "no-store" });
+export async function fetchBiasTopics(analysisType: AnalysisType = "general"): Promise<TopicSummaryData[]> {
+  const params = new URLSearchParams({ analysis_type: analysisType });
+  const res = await fetch(`${API_BASE_URL}/bias/topics?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch bias topics");
   return res.json();
 }
@@ -559,8 +618,10 @@ export async function fetchBiasScores(opts?: {
   outlet?: string;
   topic_key?: string;
   run_id?: number;
+  analysis_type?: AnalysisType;
 }): Promise<BiasScoresData> {
   const params = new URLSearchParams();
+  params.set("analysis_type", opts?.analysis_type ?? "general");
   if (opts?.outlet) params.set("outlet", opts.outlet);
   if (opts?.topic_key) params.set("topic_key", opts.topic_key);
   if (opts?.run_id != null) params.set("run_id", String(opts.run_id));
@@ -569,8 +630,9 @@ export async function fetchBiasScores(opts?: {
   return res.json();
 }
 
-export async function fetchAllProfiles(): Promise<AllProfilesData> {
-  const res = await fetch(`${API_BASE_URL}/bias/profiles`, { cache: "no-store" });
+export async function fetchAllProfiles(analysisType: AnalysisType = "general"): Promise<AllProfilesData> {
+  const params = new URLSearchParams({ analysis_type: analysisType });
+  const res = await fetch(`${API_BASE_URL}/bias/profiles?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch all profiles");
   return res.json();
 }

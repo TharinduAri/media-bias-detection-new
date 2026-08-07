@@ -1,6 +1,5 @@
 import { fetchArticleOutlets, fetchArticleOutletCounts, fetchArticles } from "@/lib/api";
 import CleanScrapeButton from "@/components/CleanScrapeButton";
-import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import OutletManager from "@/components/OutletManager";
 import ScrapeOutletsPanel from "@/components/ScrapeOutletsPanel";
 import RawArticlesView from "@/components/RawArticlesView";
@@ -32,7 +31,6 @@ export default async function Home() {
             </p>
           </div>
           <div className="flex flex-col items-end gap-3">
-            <BiasAnalysisButton />
             <CleanScrapeButton />
           </div>
         </div>

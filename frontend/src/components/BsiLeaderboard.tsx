@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchAllProfiles, OutletBiasProfileData } from "@/lib/api";
+import { AnalysisType, fetchAllProfiles, OutletBiasProfileData } from "@/lib/api";
 
 function barColor(score: number) {
   if (score >= 0.5) return "bg-rose-500";
@@ -50,13 +50,13 @@ function Badge({ text, variant }: { text: string; variant: "red" | "green" }) {
   );
 }
 
-export default function BsiLeaderboard() {
+export default function BsiLeaderboard({ analysisType = "general" }: { analysisType?: AnalysisType }) {
   const [profiles, setProfiles] = useState<OutletBiasProfileData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchAllProfiles()
+    fetchAllProfiles(analysisType)
       .then((data) => {
         const sorted = [...data.profiles]
           .filter((p) => p.bsi_score != null || p.source_trust_score != null)
@@ -65,7 +65,7 @@ export default function BsiLeaderboard() {
       })
       .catch(() => setError("Failed to load profiles."))
       .finally(() => setLoading(false));
-  }, []);
+  }, [analysisType]);
 
   if (loading)
     return (
@@ -85,7 +85,7 @@ export default function BsiLeaderboard() {
     return (
       <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-8 text-center">
         <p className="text-sm text-gray-400 dark:text-gray-500">
-          No profiles yet. Run bias analysis to generate them.
+          No profiles yet. Run {analysisType} bias analysis to generate them.
         </p>
       </div>
     );

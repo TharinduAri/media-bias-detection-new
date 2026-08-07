@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { fetchBiasScores, OutletTopicBSIData } from "@/lib/api";
+import { AnalysisType, fetchBiasScores, OutletTopicBSIData } from "@/lib/api";
 
 const CELL = 22;
 const GAP = 3;
@@ -18,7 +18,7 @@ interface TopicRow {
 
 type SortMode = "most-covered" | "most-missing";
 
-export default function CoverageHeatmap() {
+export default function CoverageHeatmap({ analysisType = "general" }: { analysisType?: AnalysisType }) {
   const [scores, setScores] = useState<OutletTopicBSIData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,11 +26,11 @@ export default function CoverageHeatmap() {
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
-    fetchBiasScores()
+    fetchBiasScores({ analysis_type: analysisType })
       .then((d) => setScores(d.scores))
       .catch(() => setError("Failed to load coverage data."))
       .finally(() => setLoading(false));
-  }, []);
+  }, [analysisType]);
 
   const { outlets, rows } = useMemo(() => {
     if (!scores.length) return { outlets: [], rows: [] as TopicRow[] };

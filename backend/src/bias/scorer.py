@@ -33,9 +33,14 @@ from sqlalchemy.orm import Session
 
 from api import models
 
+DEFAULT_ANALYSIS_TYPE = "general"
 COVERAGE_MAJORITY_THRESHOLD = 0.6
 OMISSION_THRESHOLD = 0.15
 OMISSION_LOOKBACK_RUNS = 5
+
+
+def _analysis_type(value: str | None) -> str:
+    return (value or DEFAULT_ANALYSIS_TYPE).strip().lower() or DEFAULT_ANALYSIS_TYPE
 
 
 def compute_bsi(
@@ -265,9 +270,11 @@ def build_profiles(
     run_id: int,
     outlet_score_arrays: Dict[str, Dict[str, List[float]]] | None = None,
     outlet_soft_coverage: Dict[str, float] | None = None,
+    analysis_type: str = DEFAULT_ANALYSIS_TYPE,
 ) -> Tuple[List[models.OutletBiasProfile], List[models.OutletTopicBSI]]:
     profiles: List[models.OutletBiasProfile] = []
     topic_bsi_rows: List[models.OutletTopicBSI] = []
+    analysis_type = _analysis_type(analysis_type)
 
     for outlet, stats in outlet_stats.items():
         articles_scored = int(stats["articles_scored"])
@@ -332,6 +339,7 @@ def build_profiles(
         profiles.append(
             models.OutletBiasProfile(
                 outlet=outlet,
+                analysis_type=analysis_type,
                 sentiment_bias_avg=float(sentiment_bias_avg),
                 sentiment_score_avg=float(sentiment_score_avg),
                 emphasis_bias_avg=float(emphasis_bias_avg),
@@ -377,6 +385,7 @@ def build_profiles(
                 models.OutletTopicBSI(
                     run_id=run_id,
                     outlet=outlet,
+                    analysis_type=analysis_type,
                     topic_key=t_key,
                     topic_label=t.get("topic_label"),
                     label_source=t.get("label_source"),
@@ -396,12 +405,15 @@ def build_profiles(
 def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -> int:
     updated = 0
     for profile in profiles:
+        profile.analysis_type = _analysis_type(getattr(profile, "analysis_type", None))
         existing = (
             db.query(models.OutletBiasProfile)
             .filter(models.OutletBiasProfile.outlet == profile.outlet)
+            .filter(models.OutletBiasProfile.analysis_type == profile.analysis_type)
             .first()
         )
         if existing:
+            existing.analysis_type = profile.analysis_type
             existing.sentiment_bias_avg = profile.sentiment_bias_avg
             existing.sentiment_score_avg = profile.sentiment_score_avg
             existing.articles_scored = profile.articles_scored
@@ -431,10 +443,11 @@ def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -
 
 
 def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore]) -> int:
-    """Upsert scores keyed on (article_id, topic_key) — one row per article-topic pair."""
-    deduped: Dict[Tuple[int, str], models.ArticleBiasScore] = {}
+    """Upsert scores keyed on (article_id, topic_key, analysis_type)."""
+    deduped: Dict[Tuple[int, str, str], models.ArticleBiasScore] = {}
     for score in scores:
-        key = (score.article_id, score.topic_key)
+        score.analysis_type = _analysis_type(getattr(score, "analysis_type", None))
+        key = (score.article_id, score.topic_key, score.analysis_type)
         if key not in deduped:
             deduped[key] = score
 
@@ -447,14 +460,16 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
         .filter(models.ArticleBiasScore.article_id.in_(article_ids))
         .all()
     )
-    existing_by_key: Dict[Tuple[int, str], models.ArticleBiasScore] = {
-        (s.article_id, s.topic_key): s for s in existing_scores
+    existing_by_key: Dict[Tuple[int, str, str], models.ArticleBiasScore] = {
+        (s.article_id, s.topic_key, _analysis_type(getattr(s, "analysis_type", None))): s
+        for s in existing_scores
     }
 
-    for (article_id, topic_key), score in deduped.items():
-        existing = existing_by_key.get((article_id, topic_key))
+    for (article_id, topic_key, analysis_type), score in deduped.items():
+        existing = existing_by_key.get((article_id, topic_key, analysis_type))
         if existing:
             existing.outlet = score.outlet
+            existing.analysis_type = analysis_type
             existing.topic_label = score.topic_label
             existing.sentiment_label = score.sentiment_label
             existing.sentiment_score = score.sentiment_score
@@ -485,16 +500,26 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
 def replace_article_bias_evidence(
     db: Session,
     rows: List[models.ArticleBiasEvidence],
-    scored_keys: Iterable[Tuple[int, str]] | None = None,
+    scored_keys: Iterable[Tuple[int, str] | Tuple[int, str, str]] | None = None,
 ) -> int:
-    """Replace sentence-level evidence keyed by (article_id, topic_key)."""
-    keys = set(scored_keys or [])
-    keys.update((row.article_id, row.topic_key) for row in rows)
-    for article_id, topic_key in keys:
+    """Replace sentence-level evidence keyed by (article_id, topic_key, analysis_type)."""
+    keys: Set[Tuple[int, str, str]] = set()
+    for key in scored_keys or []:
+        if len(key) == 2:
+            article_id, topic_key = key
+            analysis_type = DEFAULT_ANALYSIS_TYPE
+        else:
+            article_id, topic_key, analysis_type = key
+        keys.add((int(article_id), str(topic_key), _analysis_type(analysis_type)))
+    for row in rows:
+        row.analysis_type = _analysis_type(getattr(row, "analysis_type", None))
+        keys.add((row.article_id, row.topic_key, row.analysis_type))
+    for article_id, topic_key, analysis_type in keys:
         (
             db.query(models.ArticleBiasEvidence)
             .filter(models.ArticleBiasEvidence.article_id == article_id)
             .filter(models.ArticleBiasEvidence.topic_key == topic_key)
+            .filter(models.ArticleBiasEvidence.analysis_type == analysis_type)
             .delete(synchronize_session="fetch")
         )
 
@@ -508,16 +533,19 @@ def insert_topic_bsi_rows(db: Session, rows: List[models.OutletTopicBSI]) -> int
     if not rows:
         return 0
     for row in rows:
+        row.analysis_type = _analysis_type(getattr(row, "analysis_type", None))
         existing = (
             db.query(models.OutletTopicBSI)
             .filter(
                 models.OutletTopicBSI.run_id == row.run_id,
                 models.OutletTopicBSI.outlet == row.outlet,
                 models.OutletTopicBSI.topic_key == row.topic_key,
+                models.OutletTopicBSI.analysis_type == row.analysis_type,
             )
             .first()
         )
         if existing:
+            existing.analysis_type = row.analysis_type
             existing.sentiment_bias_avg = row.sentiment_bias_avg
             existing.emphasis_bias_avg = row.emphasis_bias_avg
             existing.political_side_bias_avg = row.political_side_bias_avg
@@ -539,9 +567,11 @@ def insert_snapshots_with_omission(
     cross_outlet_coverage_mean: float = 0.0,
 ) -> None:
     for profile in profiles:
+        profile_analysis_type = _analysis_type(getattr(profile, "analysis_type", None))
         recent_snaps = (
             db.query(models.OutletBiasSnapshot)
             .filter(models.OutletBiasSnapshot.outlet == profile.outlet)
+            .filter(models.OutletBiasSnapshot.analysis_type == profile_analysis_type)
             .filter(models.OutletBiasSnapshot.run_id != run_id)
             .order_by(models.OutletBiasSnapshot.snapshot_date.desc())
             .limit(OMISSION_LOOKBACK_RUNS)
@@ -562,6 +592,7 @@ def insert_snapshots_with_omission(
         db.add(
             models.OutletBiasSnapshot(
                 outlet=profile.outlet,
+                analysis_type=profile_analysis_type,
                 run_id=run_id,
                 snapshot_date=now,
                 sentiment_bias_avg=profile.sentiment_bias_avg,

@@ -54,6 +54,9 @@ __all__ = [
     "ensure_bias_tables",
     "get_models",
     "run_bias_analysis",
+    "run_bias_analysis_fast",
+    "run_financial_news_analysis",
+    "run_financial_news_analysis_fast",
     "run_bias_analysis_with_clusters",
     "analyze_manual_article",
     "TopicClusterSpec",
@@ -61,6 +64,9 @@ __all__ = [
 ]
 
 DAYS_LOOKBACK = 28
+GENERAL_ANALYSIS_TYPE = "general"
+FINANCIAL_ANALYSIS_TYPE = "financial"
+FINANCIAL_OUTLETS = {"Economy Next", "LBO"}
 
 # ── Live run state (in-memory, cleared on each new run) ──────────────────────
 
@@ -88,6 +94,7 @@ def get_run_state() -> Dict[str, Any]:
 def _run_schema_migrations() -> None:
     """Idempotent ADD COLUMN migrations executed on every startup."""
     migrations = [
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS dominant_outlet BOOLEAN DEFAULT FALSE',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_length_bias FLOAT',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_sentence_bias FLOAT',
@@ -98,10 +105,12 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS government_target_count INTEGER DEFAULT 0',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS opposition_target_count INTEGER DEFAULT 0',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
+        'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS canonical_actor VARCHAR',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_actor_type VARCHAR',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_side VARCHAR',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_side_confidence FLOAT',
+        'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS source_trust_score FLOAT',
@@ -112,6 +121,7 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS government_sentiment_avg FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS opposition_sentiment_avg FLOAT',
         'ALTER TABLE "OutletBiasProfile" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
+        'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_low FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS bsi_confidence_high FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS source_trust_score FLOAT',
@@ -122,8 +132,10 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS government_sentiment_avg FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS opposition_sentiment_avg FLOAT',
         'ALTER TABLE "OutletBiasSnapshot" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
+        'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
         'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS label_source VARCHAR(32)',
         'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS political_side_bias_avg FLOAT',
+        'ALTER TABLE "BiasRunLog" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
     ]
     with db_manager.engine.connect() as conn:
         for stmt in migrations:
@@ -132,7 +144,32 @@ def _run_schema_migrations() -> None:
                 conn.commit()
             except Exception:
                 conn.rollback()
+        try:
+            conn.execute(text(
+                'UPDATE "ArticleBiasScore" SET analysis_type = \'financial\' '
+                'WHERE outlet IN (\'Economy Next\', \'LBO\') AND COALESCE(analysis_type, \'general\') = \'general\''
+            ))
+            conn.execute(text(
+                'UPDATE "ArticleBiasEvidence" SET analysis_type = \'financial\' '
+                'WHERE outlet IN (\'Economy Next\', \'LBO\') AND COALESCE(analysis_type, \'general\') = \'general\''
+            ))
+            conn.execute(text(
+                'UPDATE "OutletBiasProfile" SET analysis_type = \'financial\' '
+                'WHERE outlet IN (\'Economy Next\', \'LBO\') AND COALESCE(analysis_type, \'general\') = \'general\''
+            ))
+            conn.execute(text(
+                'UPDATE "OutletBiasSnapshot" SET analysis_type = \'financial\' '
+                'WHERE outlet IN (\'Economy Next\', \'LBO\') AND COALESCE(analysis_type, \'general\') = \'general\''
+            ))
+            conn.execute(text(
+                'UPDATE "OutletTopicBSI" SET analysis_type = \'financial\' '
+                'WHERE outlet IN (\'Economy Next\', \'LBO\') AND COALESCE(analysis_type, \'general\') = \'general\''
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
     _migrate_article_bias_unique_constraint()
+    _migrate_analysis_type_constraints()
 
 
 def _migrate_article_bias_unique_constraint() -> None:
@@ -143,12 +180,39 @@ def _migrate_article_bias_unique_constraint() -> None:
                 'ALTER TABLE "ArticleBiasScore" DROP CONSTRAINT IF EXISTS uq_article_bias_article_id'
             ))
             conn.execute(text(
-                'ALTER TABLE "ArticleBiasScore" ADD CONSTRAINT uq_article_bias_article_topic '
-                'UNIQUE (article_id, topic_key)'
+                'ALTER TABLE "ArticleBiasScore" DROP CONSTRAINT IF EXISTS uq_article_bias_article_topic'
+            ))
+            conn.execute(text(
+                'ALTER TABLE "ArticleBiasScore" DROP CONSTRAINT IF EXISTS uq_article_bias_article_topic_analysis'
+            ))
+            conn.execute(text(
+                'ALTER TABLE "ArticleBiasScore" ADD CONSTRAINT uq_article_bias_article_topic_analysis '
+                'UNIQUE (article_id, topic_key, analysis_type)'
             ))
             conn.commit()
         except Exception:
             conn.rollback()
+
+
+def _migrate_analysis_type_constraints() -> None:
+    """Upgrade uniqueness rules so general and financial analyses can coexist."""
+    statements = [
+        'ALTER TABLE "OutletBiasProfile" DROP CONSTRAINT IF EXISTS "OutletBiasProfile_outlet_key"',
+        'ALTER TABLE "OutletBiasProfile" DROP CONSTRAINT IF EXISTS uq_outlet_bias_profile_outlet_analysis',
+        'ALTER TABLE "OutletBiasProfile" ADD CONSTRAINT uq_outlet_bias_profile_outlet_analysis '
+        'UNIQUE (outlet, analysis_type)',
+        'ALTER TABLE "OutletTopicBSI" DROP CONSTRAINT IF EXISTS uq_outlet_topic_bsi_run_outlet_topic',
+        'ALTER TABLE "OutletTopicBSI" DROP CONSTRAINT IF EXISTS uq_outlet_topic_bsi_run_outlet_topic_analysis',
+        'ALTER TABLE "OutletTopicBSI" ADD CONSTRAINT uq_outlet_topic_bsi_run_outlet_topic_analysis '
+        'UNIQUE (run_id, outlet, topic_key, analysis_type)',
+    ]
+    with db_manager.engine.connect() as conn:
+        for stmt in statements:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 
 def ensure_bias_tables(drop_first: bool = False) -> None:
@@ -168,12 +232,40 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
 
 
 def run_bias_analysis(db: Session) -> Dict[str, object]:
-    return _run_bias_analysis_impl(db=db, external_clusters=None, skip_embedding=False)
+    return _run_bias_analysis_impl(
+        db=db,
+        external_clusters=None,
+        skip_embedding=False,
+        analysis_type=GENERAL_ANALYSIS_TYPE,
+    )
 
 
 def run_bias_analysis_fast(db: Session) -> Dict[str, object]:
     """Skip embedding step — use whatever is already saved in ArticleEmbedding."""
-    return _run_bias_analysis_impl(db=db, external_clusters=None, skip_embedding=True)
+    return _run_bias_analysis_impl(
+        db=db,
+        external_clusters=None,
+        skip_embedding=True,
+        analysis_type=GENERAL_ANALYSIS_TYPE,
+    )
+
+
+def run_financial_news_analysis(db: Session) -> Dict[str, object]:
+    return _run_bias_analysis_impl(
+        db=db,
+        external_clusters=None,
+        skip_embedding=False,
+        analysis_type=FINANCIAL_ANALYSIS_TYPE,
+    )
+
+
+def run_financial_news_analysis_fast(db: Session) -> Dict[str, object]:
+    return _run_bias_analysis_impl(
+        db=db,
+        external_clusters=None,
+        skip_embedding=True,
+        analysis_type=FINANCIAL_ANALYSIS_TYPE,
+    )
 
 
 def run_bias_analysis_with_clusters(
@@ -181,7 +273,12 @@ def run_bias_analysis_with_clusters(
     clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
 ) -> Dict[str, object]:
     normalized_clusters = normalize_external_clusters(clusters)
-    return _run_bias_analysis_impl(db=db, external_clusters=normalized_clusters, skip_embedding=False)
+    return _run_bias_analysis_impl(
+        db=db,
+        external_clusters=normalized_clusters,
+        skip_embedding=False,
+        analysis_type=GENERAL_ANALYSIS_TYPE,
+    )
 
 
 EMBEDDING_PROVIDER = "local"
@@ -195,37 +292,64 @@ def _run_bias_analysis_impl(
     db: Session,
     external_clusters: List[TopicClusterSpec] | None,
     skip_embedding: bool = False,
+    analysis_type: str = GENERAL_ANALYSIS_TYPE,
 ) -> Dict[str, object]:
     started_at = datetime.utcnow()
     run_logs: _LiveLog = _LiveLog()
     run_status = "done"
     run_error: str | None = None
+    analysis_type = _normalize_analysis_type(analysis_type)
     cluster_source = "external" if external_clusters is not None else "internal"
+    financial_mode = analysis_type == FINANCIAL_ANALYSIS_TYPE
+    included_outlets = FINANCIAL_OUTLETS if financial_mode else None
+    excluded_outlets = None if financial_mode else FINANCIAL_OUTLETS
+    min_topic_outlets = 2 if financial_mode else MIN_TOPIC_OUTLETS
 
     with _run_lock:
         _run_state.update({"running": True, "logs": [], "status": "running"})
-    run_logs.append("Bias analysis started...")
+    run_logs.append(f"{analysis_type.title()} bias analysis started...")
 
     try:
         ensure_bias_tables()
 
         since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
-        recent_articles = _load_recent_articles(db, since)
+        recent_articles = _load_recent_articles(
+            db,
+            since,
+            include_outlets=included_outlets,
+            exclude_outlets=excluded_outlets,
+        )
 
         embedding_model = _resolve_embedding_model_name(EMBEDDING_PROVIDER, EMBEDDING_MODEL_KEY)
         run_logs.append(f"Cluster source: {cluster_source}")
+        run_logs.append(f"Analysis type: {analysis_type}")
         run_logs.append(f"Embedding model: {embedding_model}")
+        if financial_mode:
+            run_logs.append("Financial outlets: Economy Next, LBO")
+            run_logs.append("Sentiment model: ProsusAI/finbert")
+        else:
+            run_logs.append("Excluded financial outlets: Economy Next, LBO")
         run_logs.append(f"Recent articles found: {len(recent_articles)}")
 
         if not recent_articles:
             run_logs.append("No recent articles with enough text in the last 28 days.")
-            _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(0, embedding_model, cluster_source, external_clusters)
+            _persist_run_log(
+                db,
+                started_at,
+                datetime.utcnow(),
+                run_status,
+                run_error,
+                run_logs,
+                analysis_type=analysis_type,
+            )
+            return _empty_result(0, embedding_model, cluster_source, external_clusters, analysis_type)
 
-        outlets = [
-            row[0]
-            for row in db.query(distinct(models.Article.outlet)).filter(models.Article.date >= since).all()
-        ]
+        outlets_query = db.query(distinct(models.Article.outlet)).filter(models.Article.date >= since)
+        if included_outlets:
+            outlets_query = outlets_query.filter(models.Article.outlet.in_(included_outlets))
+        if excluded_outlets:
+            outlets_query = outlets_query.filter(~models.Article.outlet.in_(excluded_outlets))
+        outlets = [row[0] for row in outlets_query.all()]
         run_logs.append(f"Outlets in window: {len(outlets)}")
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
@@ -265,8 +389,16 @@ def _run_bias_analysis_impl(
 
         if len(analysis_rows) < 2:
             run_logs.append("Not enough articles to form topic groups.")
-            _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
+            _persist_run_log(
+                db,
+                started_at,
+                datetime.utcnow(),
+                run_status,
+                run_error,
+                run_logs,
+                analysis_type=analysis_type,
+            )
+            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters, analysis_type)
 
         analysis_articles = [row["article"] for row in analysis_rows]
         if external_clusters is None:
@@ -285,26 +417,48 @@ def _run_bias_analysis_impl(
 
         if not clusters:
             run_logs.append("No valid topic groups available for scoring.")
-            _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
-            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters)
+            _persist_run_log(
+                db,
+                started_at,
+                datetime.utcnow(),
+                run_status,
+                run_error,
+                run_logs,
+                analysis_type=analysis_type,
+            )
+            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters, analysis_type)
 
-        sentiment_results = model_manager.analyze_sentiment(analysis_articles)
+        sentiment_results = (
+            model_manager.analyze_financial_sentiment(analysis_articles)
+            if financial_mode
+            else model_manager.analyze_sentiment(analysis_articles)
+        )
         for article, sentiment in zip(analysis_articles, sentiment_results):
             article.entity_sentiments = sentiment.entity_sentiments
-        run_logs.append("Computed target-dependent sentiment scores.")
         run_logs.append(
-            "Target sentiment mix: "
+            "Computed FinBERT financial sentiment scores."
+            if financial_mode
+            else "Computed target-dependent sentiment scores."
+        )
+        sentiment_mix = (
             f"positive={sum(1 for r in sentiment_results if r.label == 'positive')}, "
             f"neutral={sum(1 for r in sentiment_results if r.label == 'neutral')}, "
-            f"negative={sum(1 for r in sentiment_results if r.label == 'negative')}, "
-            f"without_target_evidence={sum(1 for r in sentiment_results if r.target_pair_count == 0)}, "
-            f"target_pairs={sum(r.target_pair_count for r in sentiment_results)}"
+            f"negative={sum(1 for r in sentiment_results if r.label == 'negative')}"
         )
+        if financial_mode:
+            run_logs.append(f"Financial sentiment mix: {sentiment_mix}")
+        else:
+            run_logs.append(
+                "Target sentiment mix: "
+                f"{sentiment_mix}, "
+                f"without_target_evidence={sum(1 for r in sentiment_results if r.target_pair_count == 0)}, "
+                f"target_pairs={sum(r.target_pair_count for r in sentiment_results)}"
+            )
 
         now = datetime.utcnow()
         article_scores: List[models.ArticleBiasScore] = []
         article_evidence_rows: List[models.ArticleBiasEvidence] = []
-        scored_evidence_keys: Set[tuple[int, str]] = set()
+        scored_evidence_keys: Set[tuple[int, str, str]] = set()
         outlet_stats = init_outlet_stats(outlets)
         outlet_topic_stats: Dict[str, Dict[str, Dict[str, Any]]] = {o: {} for o in outlets}
         outlet_score_arrays: Dict[str, Dict[str, List[float]]] = {
@@ -324,7 +478,7 @@ def _run_bias_analysis_impl(
         scoreable = [
             (label, indices)
             for label, indices in cluster_items
-            if len({analysis_articles[idx].outlet for idx in indices}) >= MIN_TOPIC_OUTLETS
+            if len({analysis_articles[idx].outlet for idx in indices}) >= min_topic_outlets
             and not topic_overrides.get(label, {}).get("topic_label")
         ]
         cluster_title_batches = [
@@ -344,7 +498,7 @@ def _run_bias_analysis_impl(
             if len(cluster_outlets) < 2:
                 skipped_single_outlet += len(indices)
                 continue
-            if len(cluster_outlets) < MIN_TOPIC_OUTLETS:
+            if len(cluster_outlets) < min_topic_outlets:
                 skipped_low_diversity += len(indices)
                 continue
 
@@ -399,11 +553,12 @@ def _run_bias_analysis_impl(
                     else None
                 )
                 if article.id is not None and topic_key is not None:
-                    scored_evidence_keys.add((int(article.id), str(topic_key)))
+                    scored_evidence_keys.add((int(article.id), str(topic_key), analysis_type))
                 article_scores.append(
                     models.ArticleBiasScore(
                         article_id=article.id,
                         outlet=article.outlet,
+                        analysis_type=analysis_type,
                         topic_key=topic_key,
                         topic_label=topic_label,
                         sentiment_label=sentiment.label,
@@ -444,6 +599,7 @@ def _run_bias_analysis_impl(
                         models.ArticleBiasEvidence(
                             article_id=int(article.id),
                             outlet=article.outlet or "",
+                            analysis_type=analysis_type,
                             topic_key=str(topic_key),
                             topic_label=topic_label,
                             target_entity=target,
@@ -564,7 +720,14 @@ def _run_bias_analysis_impl(
         )
 
         log_row = _persist_run_log(
-            db, started_at, datetime.utcnow(), run_status, run_error, run_logs, commit=False
+            db,
+            started_at,
+            datetime.utcnow(),
+            run_status,
+            run_error,
+            run_logs,
+            commit=False,
+            analysis_type=analysis_type,
         )
         run_id = log_row.id
 
@@ -572,6 +735,7 @@ def _run_bias_analysis_impl(
             outlet_stats, outlet_topic_stats, now, run_id,
             outlet_score_arrays=outlet_score_arrays,
             outlet_soft_coverage=outlet_soft_coverage,
+            analysis_type=analysis_type,
         )
         profiles_updated = upsert_profiles(db, profiles)
         run_logs.append(f"Outlet profiles updated: {profiles_updated}")
@@ -590,7 +754,8 @@ def _run_bias_analysis_impl(
 
         return {
             "status": "ok",
-            "message": "Bias analysis completed.",
+            "message": f"{analysis_type.title()} bias analysis completed.",
+            "analysis_type": analysis_type,
             "processed_articles": article_scores_saved,
             "topics_processed": topics_processed,
             "profiles_updated": profiles_updated,
@@ -607,7 +772,15 @@ def _run_bias_analysis_impl(
         with _run_lock:
             _run_state.update({"running": False, "status": "error"})
         db.rollback()
-        _persist_run_log(db, started_at, datetime.utcnow(), run_status, run_error, run_logs)
+        _persist_run_log(
+            db,
+            started_at,
+            datetime.utcnow(),
+            run_status,
+            run_error,
+            run_logs,
+            analysis_type=analysis_type,
+        )
         raise
 
 
@@ -746,6 +919,7 @@ def analyze_manual_article(
         score_row = models.ArticleBiasScore(
             article_id=article.id,
             outlet=article.outlet,
+            analysis_type=GENERAL_ANALYSIS_TYPE,
             topic_key=topic_key,
             topic_label=topic_label,
             sentiment_label=manual_sentiment.label,
@@ -935,6 +1109,7 @@ def _manual_evidence_rows(
             models.ArticleBiasEvidence(
                 article_id=int(article.id),
                 outlet=article.outlet or "",
+                analysis_type=GENERAL_ANALYSIS_TYPE,
                 topic_key=topic_key,
                 topic_label=topic_label,
                 target_entity=target,
@@ -972,15 +1147,30 @@ def _bias_signal_label(score: float) -> str:
     return "Minimal"
 
 
-def _load_recent_articles(db: Session, since: datetime) -> List[models.Article]:
-    return (
+def _normalize_analysis_type(value: str | None) -> str:
+    normalized = (value or GENERAL_ANALYSIS_TYPE).strip().lower()
+    if normalized == FINANCIAL_ANALYSIS_TYPE:
+        return FINANCIAL_ANALYSIS_TYPE
+    return GENERAL_ANALYSIS_TYPE
+
+
+def _load_recent_articles(
+    db: Session,
+    since: datetime,
+    include_outlets: Set[str] | None = None,
+    exclude_outlets: Set[str] | None = None,
+) -> List[models.Article]:
+    query = (
         db.query(models.Article)
         .filter(models.Article.date >= since)
         .filter(models.Article.text.isnot(None))
         .filter(func.length(models.Article.text) > 100)
-        .order_by(models.Article.date.desc())
-        .all()
     )
+    if include_outlets:
+        query = query.filter(models.Article.outlet.in_(include_outlets))
+    if exclude_outlets:
+        query = query.filter(~models.Article.outlet.in_(exclude_outlets))
+    return query.order_by(models.Article.date.desc()).all()
 
 
 def _persist_run_log(
@@ -991,12 +1181,14 @@ def _persist_run_log(
     error: str | None,
     log_lines: List[str],
     commit: bool = True,
+    analysis_type: str = GENERAL_ANALYSIS_TYPE,
 ) -> models.BiasRunLog:
     ensure_bias_tables()
     log_row = models.BiasRunLog(
         started_at=started_at,
         finished_at=finished_at,
         status=status,
+        analysis_type=_normalize_analysis_type(analysis_type),
         error=error,
         log_lines=log_lines,
         created_at=datetime.utcnow(),
@@ -1014,10 +1206,12 @@ def _empty_result(
     embedding_model: str,
     cluster_source: str,
     external_clusters: List[TopicClusterSpec] | None,
+    analysis_type: str = GENERAL_ANALYSIS_TYPE,
 ) -> Dict[str, object]:
     return {
         "status": "ok",
         "message": "No data to process.",
+        "analysis_type": _normalize_analysis_type(analysis_type),
         "processed_articles": 0,
         "topics_processed": 0,
         "profiles_updated": 0,
