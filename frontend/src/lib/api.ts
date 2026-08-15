@@ -15,8 +15,8 @@ export interface ArticleData {
   date: string;
   title: string;
   url: string;
-  text: string | null;
-  clean_text: string | null;
+  text?: string | null;
+  clean_text?: string | null;
   created_at: string;
 }
 
@@ -371,6 +371,12 @@ export async function fetchArticles(outlet?: string, limit = 50, offset = 0): Pr
   if (outlet) params.set("outlet", outlet);
   const res = await fetch(`${API_BASE_URL}/articles/?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch articles");
+  return res.json();
+}
+
+export async function fetchArticle(articleId: number): Promise<ArticleData> {
+  const res = await fetch(`${API_BASE_URL}/articles/${articleId}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch article details");
   return res.json();
 }
 

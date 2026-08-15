@@ -1,34 +1,29 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BarChart3, FileText, Flame, Grid3X3, Scale } from "lucide-react";
-import BsiLeaderboard from "@/components/BsiLeaderboard";
+import { BarChart3, Scale } from "lucide-react";
 import BiasResultsPanel from "@/components/BiasResultsPanel";
-import CoverageHeatmap from "@/components/CoverageHeatmap";
-import ManualArticleBiasPanel from "@/components/ManualArticleBiasPanel";
 import TopicValidationPanel from "@/components/TopicValidationPanel";
-import { AnalysisType, outletsForAnalysis } from "@/lib/api";
+import { AnalysisType, outletsForAnalysis, TopicSummaryData } from "@/lib/api";
 
 interface Props {
   outlets: string[];
+  initialTopics: TopicSummaryData[];
 }
 
-type BiasTab = "single" | "leaderboard" | "profiles" | "topics" | "heatmap";
+type BiasTab = "topics" | "profiles";
 
 const tabs: Array<{
   key: BiasTab;
   label: string;
-  icon: typeof FileText;
+  icon: typeof BarChart3;
 }> = [
-  { key: "single", label: "Single Article Reading", icon: FileText },
-  { key: "leaderboard", label: "BSI Comparison", icon: Flame },
-  { key: "profiles", label: "Outlet Profiles", icon: Scale },
   { key: "topics", label: "Topic-Group Bias Calculation", icon: BarChart3 },
-  { key: "heatmap", label: "Topic Coverage Heatmap", icon: Grid3X3 },
+  { key: "profiles", label: "Outlet Profiles", icon: Scale },
 ];
 
-export default function BiasPageTabs({ outlets }: Props) {
-  const [activeTab, setActiveTab] = useState<BiasTab>("single");
+export default function BiasPageTabs({ outlets, initialTopics }: Props) {
+  const [activeTab, setActiveTab] = useState<BiasTab>("topics");
   const [analysisType, setAnalysisType] = useState<AnalysisType>("general");
   const scopedOutlets = useMemo(
     () => outletsForAnalysis(outlets, analysisType),
@@ -76,13 +71,12 @@ export default function BiasPageTabs({ outlets }: Props) {
         </div>
       </div>
 
-      {activeTab === "single" && <ManualArticleBiasPanel outlets={outlets} />}
-      {activeTab === "leaderboard" && <BsiLeaderboard analysisType={analysisType} />}
+      {activeTab === "topics" && (
+        <TopicValidationPanel analysisType={analysisType} initialTopics={initialTopics} />
+      )}
       {activeTab === "profiles" && (
         <BiasResultsPanel outlets={scopedOutlets} mode="profiles" analysisType={analysisType} />
       )}
-      {activeTab === "topics" && <TopicValidationPanel analysisType={analysisType} />}
-      {activeTab === "heatmap" && <CoverageHeatmap analysisType={analysisType} />}
     </section>
   );
 }

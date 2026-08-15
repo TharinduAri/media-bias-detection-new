@@ -3,6 +3,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import load_only
 from sqlalchemy import distinct, func
 
 from .. import models, schemas
@@ -47,7 +48,7 @@ def get_article_outlet_counts(db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/", response_model=List[schemas.ArticleResponse])
+@router.get("/", response_model=List[schemas.ArticleSummaryResponse])
 def get_articles(
     outlet: Optional[str] = Query(None, description="Filter by outlet name"),
     source: Optional[str] = Query(None, description="Outlet alias, e.g. ft, economynext, dailymirror"),
@@ -58,7 +59,20 @@ def get_articles(
     db: Session = Depends(get_db),
 ):
     """Return scraped articles with optional outlet alias and date-range filters."""
-    q = db.query(models.Article).order_by(models.Article.date.desc())
+    q = (
+        db.query(models.Article)
+        .options(
+            load_only(
+                models.Article.id,
+                models.Article.outlet,
+                models.Article.date,
+                models.Article.title,
+                models.Article.url,
+                models.Article.created_at,
+            )
+        )
+        .order_by(models.Article.date.desc())
+    )
 
     if source and not outlet:
         normalized = source.strip().lower()
@@ -77,6 +91,15 @@ def get_articles(
         q = q.filter(models.Article.date <= datetime.combine(to_date, time.max))
 
     return q.offset(offset).limit(limit).all()
+
+
+@router.get("/{article_id}", response_model=schemas.ArticleResponse)
+def get_article(article_id: int, db: Session = Depends(get_db)):
+    """Return full text for one article when the UI expands it."""
+    article = db.query(models.Article).filter(models.Article.id == article_id).first()
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+    return article
 
 
 @router.delete("/outlet/{outlet_name}")

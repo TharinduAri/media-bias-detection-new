@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { ArticleData, ArticleOutletCountData, deleteArticle, deleteOutletArticles, fetchArticles } from "@/lib/api";
+import {
+    ArticleData,
+    ArticleOutletCountData,
+    deleteArticle,
+    deleteOutletArticles,
+    fetchArticle,
+    fetchArticles,
+} from "@/lib/api";
 
 interface Props {
     outlets: string[];
@@ -20,6 +27,8 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
     const [hasMore, setHasMore] = useState(initialArticles.length === PAGE_SIZE);
     const [search, setSearch] = useState("");
     const [expandedId, setExpandedId] = useState<number | null>(null);
+    const [loadingDetailId, setLoadingDetailId] = useState<number | null>(null);
+    const [detailErrorId, setDetailErrorId] = useState<number | null>(null);
     const [deletingId, setDeletingId] = useState<number | null>(null);
     const [deletingOutlet, setDeletingOutlet] = useState(false);
     const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
@@ -42,9 +51,34 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
         setSelectedOutlet(outlet);
         setSearch("");
         setExpandedId(null);
+        setLoadingDetailId(null);
+        setDetailErrorId(null);
         setMessage(null);
         setOffset(0);
         loadArticles(outlet, 0, true);
+    };
+
+    const handleArticleToggle = async (article: ArticleData) => {
+        if (expandedId === article.id) {
+            setExpandedId(null);
+            return;
+        }
+
+        setExpandedId(article.id);
+        setDetailErrorId(null);
+        if (article.text !== undefined || article.clean_text !== undefined) return;
+
+        setLoadingDetailId(article.id);
+        try {
+            const detail = await fetchArticle(article.id);
+            setArticles((current) =>
+                current.map((item) => item.id === article.id ? { ...item, ...detail } : item)
+            );
+        } catch {
+            setDetailErrorId(article.id);
+        } finally {
+            setLoadingDetailId((current) => current === article.id ? null : current);
+        }
     };
 
     const handleLoadMore = () => {
@@ -205,7 +239,7 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
                             {/* Card header */}
                             <div
                                 className="flex items-start gap-4 p-4 cursor-pointer"
-                                onClick={() => setExpandedId(expandedId === article.id ? null : article.id)}
+                                onClick={() => void handleArticleToggle(article)}
                             >
                                 {/* Date pill */}
                                 <div className="shrink-0 text-center">
@@ -264,7 +298,11 @@ export default function RawArticlesView({ outlets, outletCounts, initialOutlet, 
                             {/* Expanded body */}
                             {expandedId === article.id && (
                                 <div className="border-t border-gray-100 dark:border-gray-700 px-4 pb-4 pt-3">
-                                    {article.clean_text ? (
+                                    {loadingDetailId === article.id ? (
+                                        <p className="text-sm text-gray-400 dark:text-gray-500 animate-pulse">Loading article text…</p>
+                                    ) : detailErrorId === article.id ? (
+                                        <p className="text-sm text-red-600 dark:text-red-400">Failed to load article text.</p>
+                                    ) : article.clean_text ? (
                                         <div>
                                             <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">Cleaned Text</p>
                                             <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap max-h-64 overflow-y-auto pr-1">

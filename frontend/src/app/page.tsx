@@ -9,8 +9,10 @@ export const metadata = {
 };
 
 export default async function Home() {
-  const outlets = await fetchArticleOutlets().catch(() => [] as string[]);
-  const outletCounts = await fetchArticleOutletCounts().catch(() => []);
+  const [outlets, outletCounts] = await Promise.all([
+    fetchArticleOutlets().catch(() => [] as string[]),
+    fetchArticleOutletCounts().catch(() => []),
+  ]);
   const firstOutlet = outlets[0] ?? "";
   const initialArticles = firstOutlet
     ? await fetchArticles(firstOutlet, 50, 0).catch(() => [])

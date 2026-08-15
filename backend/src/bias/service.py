@@ -76,6 +76,8 @@ FINANCIAL_OUTLETS = {"Economy Next", "LBO"}
 
 _run_lock = threading.Lock()
 _run_state: Dict[str, Any] = {"running": False, "logs": [], "status": "idle"}
+_schema_lock = threading.Lock()
+_bias_tables_ready = False
 
 
 class _LiveLog(list):
@@ -96,7 +98,7 @@ def get_run_state() -> Dict[str, Any]:
 
 
 def _run_schema_migrations() -> None:
-    """Idempotent ADD COLUMN migrations executed on every startup."""
+    """Apply the idempotent schema changes required by the bias API."""
     migrations = [
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS dominant_outlet BOOLEAN DEFAULT FALSE',
@@ -140,6 +142,14 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS label_source VARCHAR(32)',
         'ALTER TABLE "OutletTopicBSI" ADD COLUMN IF NOT EXISTS political_side_bias_avg FLOAT',
         'ALTER TABLE "BiasRunLog" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
+        'CREATE INDEX IF NOT EXISTS "ix_Article_outlet" ON "Article" (outlet)',
+        'CREATE INDEX IF NOT EXISTS "ix_Article_date" ON "Article" (date DESC)',
+        'CREATE INDEX IF NOT EXISTS "ix_Article_outlet_date" ON "Article" (outlet, date DESC)',
+        'CREATE INDEX IF NOT EXISTS "ix_ArticleBiasScore_analysis_type" ON "ArticleBiasScore" (analysis_type)',
+        'CREATE INDEX IF NOT EXISTS "ix_ArticleBiasScore_analysis_topic_bias" '
+        'ON "ArticleBiasScore" (analysis_type, topic_key, sentiment_bias DESC)',
+        'CREATE INDEX IF NOT EXISTS "ix_ArticleBiasEvidence_analysis_article_topic" '
+        'ON "ArticleBiasEvidence" (analysis_type, article_id, topic_key)',
     ]
     with db_manager.engine.connect() as conn:
         for stmt in migrations:
@@ -220,19 +230,30 @@ def _migrate_analysis_type_constraints() -> None:
 
 
 def ensure_bias_tables(drop_first: bool = False) -> None:
-    target_tables = [
-        models.ArticleBiasScore.__table__,
-        models.ArticleBiasEvidence.__table__,
-        models.ArticleEmbedding.__table__,
-        models.OutletBiasProfile.__table__,
-        models.BiasRunLog.__table__,
-        models.OutletBiasSnapshot.__table__,
-        models.OutletTopicBSI.__table__,
-    ]
-    if drop_first:
-        Base.metadata.drop_all(bind=db_manager.engine, tables=target_tables)
-    _run_schema_migrations()
-    Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
+    """Prepare bias tables once per process instead of once per API request."""
+    global _bias_tables_ready
+
+    if _bias_tables_ready and not drop_first:
+        return
+
+    with _schema_lock:
+        if _bias_tables_ready and not drop_first:
+            return
+
+        target_tables = [
+            models.ArticleBiasScore.__table__,
+            models.ArticleBiasEvidence.__table__,
+            models.ArticleEmbedding.__table__,
+            models.OutletBiasProfile.__table__,
+            models.BiasRunLog.__table__,
+            models.OutletBiasSnapshot.__table__,
+            models.OutletTopicBSI.__table__,
+        ]
+        if drop_first:
+            Base.metadata.drop_all(bind=db_manager.engine, tables=target_tables)
+        _run_schema_migrations()
+        Base.metadata.create_all(bind=db_manager.engine, tables=target_tables)
+        _bias_tables_ready = True
 
 
 def run_bias_analysis(db: Session) -> Dict[str, object]:

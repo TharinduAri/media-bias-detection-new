@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  compareBiasProfiles,
   fetchBiasArticles,
   fetchBiasProfile,
   AnalysisType,
@@ -265,170 +264,6 @@ function OutletProfileCard({
   );
 }
 
-// ─── Compare Card ─────────────────────────────────────────────────────────────
-
-function CompareCard({
-  outlets,
-  analysisType,
-}: {
-  outlets: string[];
-  analysisType: AnalysisType;
-}) {
-  const [selections, setSelections] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<OutletBiasProfileData[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setSelections([]);
-    setResults([]);
-    setError(null);
-  }, [outlets, analysisType]);
-
-  const toggle = (o: string) =>
-    setSelections((prev) => prev.includes(o) ? prev.filter((x) => x !== o) : [...prev, o]);
-
-  const run = async () => {
-    if (selections.length < 2) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setResults(await compareBiasProfiles(selections, analysisType));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Compare failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const maxSentBias = results.length ? Math.max(...results.map((r) => Math.abs(r.sentiment_bias_avg)), 0.01) : 1;
-  const maxCovBias = results.length ? Math.max(...results.map((r) => r.coverage_bias_rate), 0.01) : 1;
-  const hasEmphasis = results.some((r) => r.emphasis_bias_avg != null);
-  const maxEmph = hasEmphasis ? Math.max(...results.map((r) => Math.abs(r.emphasis_bias_avg ?? 0)), 0.01) : 1;
-  const hasPolitical = results.some((r) => r.political_side_bias_avg != null);
-  const maxPolitical = hasPolitical ? Math.max(...results.map((r) => Math.abs(r.political_side_bias_avg ?? 0)), 0.01) : 1;
-
-  return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 space-y-4">
-      <div>
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Compare Outlets</h3>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Side-by-side bias comparison.</p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
-        {outlets.map((o) => (
-          <label key={o} className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-            <input type="checkbox" checked={selections.includes(o)} onChange={() => toggle(o)} />
-            <span className="truncate">{o}</span>
-          </label>
-        ))}
-      </div>
-
-      <button
-        onClick={run}
-        disabled={loading || selections.length < 2}
-        className="w-full rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-semibold py-2 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {loading ? "Comparing…" : "Compare"}
-      </button>
-      {selections.length < 2 && <p className="text-[11px] text-slate-400">Select at least two outlets.</p>}
-      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
-
-      {results.length > 0 && (
-        <div className="space-y-3">
-          {/* Sentiment bias */}
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Sentiment Bias (deviation from topic mean)</p>
-            {results.map((r) => (
-              <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
-                <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
-                <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden relative">
-                  <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
-                  {r.sentiment_bias_avg >= 0 ? (
-                    <div className="absolute top-0 h-full bg-emerald-400 rounded-r-full" style={{ left: "50%", width: `${(r.sentiment_bias_avg / maxSentBias) * 50}%` }} />
-                  ) : (
-                    <div className="absolute top-0 h-full bg-rose-400 rounded-l-full" style={{ right: "50%", width: `${(Math.abs(r.sentiment_bias_avg) / maxSentBias) * 50}%` }} />
-                  )}
-                </div>
-                <span className={`text-xs font-bold w-12 text-right ${biasColor(r.sentiment_bias_avg)}`}>
-                  {r.sentiment_bias_avg > 0 ? "+" : ""}{r.sentiment_bias_avg.toFixed(3)}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Coverage bias */}
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Coverage Gap (% of major stories missed)</p>
-            {results.map((r) => (
-              <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
-                <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
-                <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                  <div className="h-full bg-amber-400 rounded-full" style={{ width: `${(r.coverage_bias_rate / maxCovBias) * 100}%` }} />
-                </div>
-                <span className="text-xs font-bold w-12 text-right text-amber-600 dark:text-amber-400">{pct(r.coverage_bias_rate)}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Emphasis bias */}
-          {hasEmphasis && (
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Story Emphasis (relative article length)</p>
-              {results.map((r) => {
-                const v = r.emphasis_bias_avg ?? 0;
-                return (
-                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
-                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
-                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden relative">
-                      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
-                      {v >= 0 ? (
-                        <div className="absolute top-0 h-full bg-blue-400 rounded-r-full" style={{ left: "50%", width: `${(v / maxEmph) * 50}%` }} />
-                      ) : (
-                        <div className="absolute top-0 h-full bg-orange-400 rounded-l-full" style={{ right: "50%", width: `${(Math.abs(v) / maxEmph) * 50}%` }} />
-                      )}
-                    </div>
-                    <span className={`text-xs font-bold w-12 text-right ${emphasisColor(v)}`}>
-                      {v > 0 ? "+" : ""}{Math.round(v * 100)}%
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Political framing */}
-          {hasPolitical && (
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Political Framing (govt vs opposition)</p>
-              {results.map((r) => {
-                const v = r.political_side_bias_avg ?? 0;
-                return (
-                  <div key={r.outlet} className="flex items-center gap-2 mb-1.5">
-                    <span className="w-28 text-xs font-medium text-slate-700 dark:text-slate-300 truncate">{r.outlet}</span>
-                    <div className="flex-1 h-3 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden relative">
-                      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300 dark:bg-slate-600" />
-                      {v >= 0 ? (
-                        <div className="absolute top-0 h-full bg-blue-400 rounded-r-full" style={{ left: "50%", width: `${(v / maxPolitical) * 50}%` }} />
-                      ) : (
-                        <div className="absolute top-0 h-full bg-violet-400 rounded-l-full" style={{ right: "50%", width: `${(Math.abs(v) / maxPolitical) * 50}%` }} />
-                      )}
-                    </div>
-                    <span className={`text-xs font-bold w-12 text-right ${politicalColor(v)}`}>
-                      {v > 0 ? "+" : ""}{v.toFixed(2)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Articles Table ───────────────────────────────────────────────────────────
 
 function ArticlesTable({
@@ -655,8 +490,8 @@ export default function BiasResultsPanel({ outlets, mode = "all", analysisType =
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Bias Analysis Results</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             {profilesOnly
-              ? "Outlet profiles and side-by-side comparison."
-              : "Outlet profiles, side-by-side comparison, and every scored article."}
+              ? "Bias metrics for individual outlets."
+              : "Outlet profiles and every scored article."}
           </p>
           {!profilesOnly && (
             <div className="mt-4 flex gap-1">
@@ -670,7 +505,7 @@ export default function BiasResultsPanel({ outlets, mode = "all", analysisType =
                       : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
                   }`}
                 >
-                  {t === "profiles" ? "Profiles & Compare" : "Scored Articles"}
+                  {t === "profiles" ? "Outlet Profiles" : "Scored Articles"}
                 </button>
               ))}
             </div>
@@ -678,9 +513,8 @@ export default function BiasResultsPanel({ outlets, mode = "all", analysisType =
         </div>
 
         {(profilesOnly || tab === "profiles") && (
-          <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div className="p-5">
             <OutletProfileCard outlets={outlets} analysisType={analysisType} />
-            <CompareCard outlets={outlets} analysisType={analysisType} />
           </div>
         )}
 
