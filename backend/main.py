@@ -5,11 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.database import db_manager
 from api.routers import system, outlets, articles, bias
+from src.bias.service import ensure_bias_tables
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db_manager.connect()
+    ensure_bias_tables()
     try:
         yield
     finally:

@@ -6,17 +6,20 @@ class ScrapeRequest(BaseModel):
     outlets: Optional[List[str]] = None
 
 
-class ArticleResponse(BaseModel):
+class ArticleSummaryResponse(BaseModel):
     id: int
     outlet: str
     date: datetime
     title: str
     url: str
-    text: Optional[str] = None
-    clean_text: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ArticleResponse(ArticleSummaryResponse):
+    text: Optional[str] = None
+    clean_text: Optional[str] = None
 
 
 class ArticleOutletCountResponse(BaseModel):
@@ -148,7 +151,6 @@ class ArticleBiasWithArticleResponse(BaseModel):
     sentiment_label: str
     sentiment_score: float
     sentiment_confidence: float
-    entity_sentiments: Optional[List[dict]] = None
     sentiment_bias: float
     group_sentiment_mean: float
     coverage_majority: bool

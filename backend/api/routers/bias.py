@@ -268,7 +268,12 @@ def list_article_bias_scores(
 ):
     ensure_bias_tables()
     q = (
-        db.query(models.ArticleBiasScore, models.Article)
+        db.query(
+            models.ArticleBiasScore,
+            models.Article.title,
+            models.Article.date,
+            models.Article.url,
+        )
         .join(models.Article, models.Article.id == models.ArticleBiasScore.article_id)
         .filter(models.ArticleBiasScore.analysis_type == _analysis_type(analysis_type))
         .order_by(models.ArticleBiasScore.sentiment_bias.desc())
@@ -280,22 +285,21 @@ def list_article_bias_scores(
 
     rows = q.offset(offset).limit(limit).all()
     results: list[schemas.ArticleBiasWithArticleResponse] = []
-    for score, article in rows:
+    for score, article_title, article_date, article_url in rows:
         results.append(
             schemas.ArticleBiasWithArticleResponse(
                 id=score.id,
                 article_id=score.article_id,
                 outlet=score.outlet,
                 analysis_type=score.analysis_type,
-                title=article.title,
-                date=article.date,
-                url=article.url,
+                title=article_title,
+                date=article_date,
+                url=article_url,
                 topic_key=score.topic_key,
                 topic_label=score.topic_label,
                 sentiment_label=score.sentiment_label,
                 sentiment_score=score.sentiment_score,
                 sentiment_confidence=score.sentiment_confidence,
-                entity_sentiments=article.entity_sentiments,
                 sentiment_bias=score.sentiment_bias,
                 group_sentiment_mean=score.group_sentiment_mean,
                 coverage_majority=score.coverage_majority,

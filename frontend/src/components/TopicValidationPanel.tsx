@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { 
   fetchBiasTopics, 
   fetchBiasArticles, 
@@ -25,11 +25,23 @@ import {
   Eye
 } from "lucide-react";
 
-export default function TopicValidationPanel({ analysisType = "general" }: { analysisType?: AnalysisType }) {
-  const [topics, setTopics] = useState<TopicSummaryData[]>([]);
+interface TopicValidationPanelProps {
+  analysisType?: AnalysisType;
+  initialTopics?: TopicSummaryData[];
+}
+
+export default function TopicValidationPanel({
+  analysisType = "general",
+  initialTopics = [],
+}: TopicValidationPanelProps) {
+  const [topics, setTopics] = useState<TopicSummaryData[]>(
+    analysisType === "general" ? initialTopics : []
+  );
   const [selectedTopic, setSelectedTopic] = useState<string>("");
   const [articles, setArticles] = useState<ArticleBiasWithArticleData[]>([]);
-  const [loadingTopics, setLoadingTopics] = useState(true);
+  const [loadingTopics, setLoadingTopics] = useState(
+    analysisType !== "general" || initialTopics.length === 0
+  );
   const [loadingArticles, setLoadingArticles] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -37,12 +49,31 @@ export default function TopicValidationPanel({ analysisType = "general" }: { ana
   const [evidenceByArticle, setEvidenceByArticle] = useState<Record<number, ArticleBiasEvidenceData[]>>({});
   const [loadingEvidenceId, setLoadingEvidenceId] = useState<number | null>(null);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const topicCache = useRef<Partial<Record<AnalysisType, TopicSummaryData[]>>>(
+    initialTopics.length > 0 ? { general: initialTopics } : {}
+  );
+  const topicRequests = useRef<Partial<Record<AnalysisType, Promise<TopicSummaryData[]>>>>({});
 
-  const loadTopics = useCallback(async () => {
+  const loadTopics = useCallback(async (force = false) => {
+    const cached = topicCache.current[analysisType];
+    if (!force && cached) {
+      setTopics(cached);
+      setSelectedTopic("");
+      setEvidenceByArticle({});
+      setLoadingTopics(false);
+      return;
+    }
+
     setLoadingTopics(true);
     setError(null);
     try {
-      const data = await fetchBiasTopics(analysisType);
+      let request = force ? undefined : topicRequests.current[analysisType];
+      if (!request) {
+        request = fetchBiasTopics(analysisType);
+        topicRequests.current[analysisType] = request;
+      }
+      const data = await request;
+      topicCache.current[analysisType] = data;
       setTopics(data);
       setSelectedTopic("");
       setEvidenceByArticle({});
@@ -50,6 +81,7 @@ export default function TopicValidationPanel({ analysisType = "general" }: { ana
       setError("Failed to load topic groups.");
       console.error(err);
     } finally {
+      delete topicRequests.current[analysisType];
       setLoadingTopics(false);
     }
   }, [analysisType]);
@@ -69,7 +101,7 @@ export default function TopicValidationPanel({ analysisType = "general" }: { ana
   }, [analysisType]);
 
   useEffect(() => {
-    loadTopics();
+    void loadTopics();
   }, [loadTopics]);
 
   useEffect(() => {
@@ -420,7 +452,7 @@ export default function TopicValidationPanel({ analysisType = "general" }: { ana
             </p>
           </div>
           <button 
-            onClick={loadTopics}
+            onClick={() => void loadTopics(true)}
             className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingTopics ? 'animate-spin' : ''}`} />

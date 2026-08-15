@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, Float, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, Float, Boolean, Index, UniqueConstraint
 from .database import Base
 
 class Article(Base):
@@ -6,7 +6,7 @@ class Article(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     outlet = Column(String, index=True)
-    date = Column(DateTime)
+    date = Column(DateTime, index=True)
     title = Column(String)
     url = Column(String, unique=True)
     text = Column(Text, nullable=True)
@@ -16,6 +16,10 @@ class Article(Base):
     entity_sentiments = Column(JSON, nullable=True)
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
+
+    __table_args__ = (
+        Index("ix_Article_outlet_date", "outlet", "date"),
+    )
 
 class ScrapeRunLog(Base):
     __tablename__ = "ScrapeRunLog"
@@ -65,6 +69,12 @@ class ArticleBiasScore(Base):
             "analysis_type",
             name="uq_article_bias_article_topic_analysis",
         ),
+        Index(
+            "ix_ArticleBiasScore_analysis_topic_bias",
+            "analysis_type",
+            "topic_key",
+            "sentiment_bias",
+        ),
     )
 
 
@@ -93,6 +103,15 @@ class ArticleBiasEvidence(Base):
     political_side = Column(String, nullable=True, index=True)
     political_side_confidence = Column(Float, nullable=True)
     created_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_ArticleBiasEvidence_analysis_article_topic",
+            "analysis_type",
+            "article_id",
+            "topic_key",
+        ),
+    )
 
 
 class ArticleEmbedding(Base):

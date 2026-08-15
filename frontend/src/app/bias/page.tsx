@@ -23,7 +23,7 @@ export default async function BiasPage() {
               Bias Results
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Start with topic-group bias calculation, then inspect outlet profiles and article-level scores.
+              Calculate bias within topic groups, then inspect outlet profiles.
             </p>
             <div className="mt-4 flex items-center gap-2">
               <div className="px-3 py-1 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 rounded-full">
@@ -41,7 +41,7 @@ export default async function BiasPage() {
       </div>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        <BiasPageTabs outlets={outlets} />
+        <BiasPageTabs outlets={outlets} initialTopics={topics} />
       </main>
     </div>
   );
