@@ -1,13 +1,20 @@
 import os
+from contextlib import contextmanager
+from pathlib import Path
 from threading import Lock
-from typing import Generator, Optional
+from typing import Generator, Iterator, Optional
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-load_dotenv()
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+# Process variables take precedence, followed by developer-specific credentials
+# in the ignored .env.local file, then shared defaults in .env.
+load_dotenv(BACKEND_DIR / ".env.local")
+load_dotenv(BACKEND_DIR / ".env")
 
 Base = declarative_base()
 
@@ -79,6 +86,13 @@ db_manager = DatabaseManager()
 # Backward-compatible exports used by existing imports.
 engine = db_manager.engine
 SessionLocal = db_manager.session_factory
+
+
+@contextmanager
+def connect_to_database() -> Iterator[Connection]:
+    """Open a database connection and always close it after use."""
+    with db_manager.engine.connect() as connection:
+        yield connection
 
 
 def get_db() -> Generator[Session, None, None]:
