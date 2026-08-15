@@ -31,12 +31,6 @@ export default function BiasAnalysisButton() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    fetchEmbeddingStatus()
-      .then((d) => {
-        setEmbeddingCount(d.count);
-        setLastComputed(d.last_computed_at);
-      })
-      .catch(() => {});
     fetchClusteringProvidersStatus()
       .then((providers) => {
         setExternalAvailable(providers.external.available);
@@ -55,6 +49,18 @@ export default function BiasAnalysisButton() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchEmbeddingStatus(clusterProvider)
+      .then((data) => {
+        setEmbeddingCount(data.count);
+        setLastComputed(data.last_computed_at);
+      })
+      .catch(() => {
+        setEmbeddingCount(null);
+        setLastComputed(null);
+      });
+  }, [clusterProvider]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -76,7 +82,7 @@ export default function BiasAnalysisButton() {
           stopPolling();
           setIsRunning(false);
           // Refresh embedding count after a full run
-          fetchEmbeddingStatus().then((d) => {
+          fetchEmbeddingStatus(clusterProvider).then((d) => {
             setEmbeddingCount(d.count);
             setLastComputed(d.last_computed_at);
           }).catch(() => {});
@@ -234,9 +240,11 @@ export default function BiasAnalysisButton() {
 
       {mappingStats && clusterProvider === "external" && (
         <div className="w-full max-w-2xl rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-800 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-300">
-          Matched {mappingStats.matched_local_articles} of {mappingStats.local_articles} local articles; {" "}
-          {mappingStats.matched_clustered_local_articles} are clustered across {mappingStats.mapped_clusters_with_two_articles} usable groups.
-          {mappingStats.external_fetch_truncated && " External results were truncated by the configured page limit."}
+          Loaded {mappingStats.external_articles_loaded} external articles directly across {" "}
+          {mappingStats.external_clusters_loaded} API-provided clusters. No internal scraped articles were used.
+          {mappingStats.external_clusters_failed > 0 && (
+            ` ${mappingStats.external_clusters_failed} cluster detail request(s) failed after retries and were skipped.`
+          )}
         </div>
       )}
 

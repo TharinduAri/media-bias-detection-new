@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { BarChart3, Scale } from "lucide-react";
 import BiasResultsPanel from "@/components/BiasResultsPanel";
 import TopicValidationPanel from "@/components/TopicValidationPanel";
-import { AnalysisType, outletsForAnalysis, TopicSummaryData } from "@/lib/api";
+import { AnalysisType, fetchAllProfiles, TopicSummaryData } from "@/lib/api";
 
 interface Props {
-  outlets: string[];
+  initialProfileOutlets: string[];
   initialTopics: TopicSummaryData[];
 }
 
@@ -22,13 +22,50 @@ const tabs: Array<{
   { key: "profiles", label: "Outlet Profiles", icon: Scale },
 ];
 
-export default function BiasPageTabs({ outlets, initialTopics }: Props) {
+export default function BiasPageTabs({ initialProfileOutlets, initialTopics }: Props) {
   const [activeTab, setActiveTab] = useState<BiasTab>("topics");
   const [analysisType, setAnalysisType] = useState<AnalysisType>("general");
-  const scopedOutlets = useMemo(
-    () => outletsForAnalysis(outlets, analysisType),
-    [outlets, analysisType]
-  );
+  const [profileState, setProfileState] = useState<{
+    analysisType: AnalysisType;
+    outlets: string[];
+    error: string | null;
+  }>({
+    analysisType: "general",
+    outlets: initialProfileOutlets,
+    error: null,
+  });
+
+  const profileOutlets = profileState.analysisType === analysisType ? profileState.outlets : [];
+  const profilesLoading = profileState.analysisType !== analysisType;
+  const profilesError = profileState.analysisType === analysisType ? profileState.error : null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchAllProfiles(analysisType)
+      .then((data) => {
+        if (!cancelled) {
+          setProfileState({
+            analysisType,
+            outlets: data.profiles.map((profile) => profile.outlet),
+            error: null,
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProfileState({
+            analysisType,
+            outlets: [],
+            error: "Failed to load outlet profiles.",
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [analysisType]);
 
   return (
     <section className="space-y-6">
@@ -75,7 +112,15 @@ export default function BiasPageTabs({ outlets, initialTopics }: Props) {
         <TopicValidationPanel analysisType={analysisType} initialTopics={initialTopics} />
       )}
       {activeTab === "profiles" && (
-        <BiasResultsPanel outlets={scopedOutlets} mode="profiles" analysisType={analysisType} />
+        <div className="space-y-3">
+          {profilesLoading && (
+            <p className="text-xs text-slate-500 dark:text-slate-400">Loading outlet profiles…</p>
+          )}
+          {profilesError && (
+            <p className="text-xs text-red-600 dark:text-red-400">{profilesError}</p>
+          )}
+          <BiasResultsPanel outlets={profileOutlets} mode="profiles" analysisType={analysisType} />
+        </div>
       )}
     </section>
   );

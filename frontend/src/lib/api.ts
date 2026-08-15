@@ -65,6 +65,7 @@ export interface BiasRunLogData {
 export interface ArticleBiasWithArticleData {
   id: number;
   article_id: number;
+  article_source: ClusteringProvider;
   outlet: string;
   analysis_type: AnalysisType;
   title: string;
@@ -117,6 +118,7 @@ export interface EntitySentimentData {
 export interface ArticleBiasEvidenceData {
   id: number;
   article_id: number;
+  article_source: ClusteringProvider;
   outlet: string;
   analysis_type: AnalysisType;
   topic_key: string;
@@ -219,16 +221,16 @@ export type ClusteringProvider = "internal" | "external";
 export type EmbeddingMode = "full" | "reuse";
 
 export interface ExternalClusterMappingStats {
-  local_articles: number;
-  local_urls_indexed: number;
-  local_url_collisions: number;
   external_articles_reported: number;
-  external_articles_fetched: number;
-  external_fetch_truncated: boolean;
-  matched_local_articles: number;
-  matched_clustered_local_articles: number;
   external_clusters_reported: number;
-  mapped_clusters_with_two_articles: number;
+  external_clusters_in_window: number;
+  external_clusters_loaded: number;
+  external_articles_loaded: number;
+  external_articles_without_body: number;
+  external_articles_outside_window: number;
+  external_clusters_failed: number;
+  external_failed_cluster_ids: number[];
+  external_failed_cluster_errors: Record<string, string>;
 }
 
 export interface ClusteringProvidersStatus {
@@ -484,8 +486,11 @@ export interface EmbeddingStatusData {
   last_computed_at: string | null;
 }
 
-export async function fetchEmbeddingStatus(): Promise<EmbeddingStatusData> {
-  const res = await fetch(`${API_BASE_URL}/bias/embedding-status`, { cache: "no-store" });
+export async function fetchEmbeddingStatus(
+  clusteringProvider: ClusteringProvider = "internal"
+): Promise<EmbeddingStatusData> {
+  const params = new URLSearchParams({ clustering_provider: clusteringProvider });
+  const res = await fetch(`${API_BASE_URL}/bias/embedding-status?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch embedding status");
   return res.json();
 }

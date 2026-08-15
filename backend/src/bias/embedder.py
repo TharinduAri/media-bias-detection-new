@@ -153,6 +153,7 @@ def _upsert_article_embeddings(
     embedding_provider: str,
     embedding_model: str,
     now: datetime,
+    article_source: str = "internal",
 ) -> int:
     if len(articles) != len(texts) or len(articles) != len(embeddings):
         raise RuntimeError("Article embedding inputs are misaligned.")
@@ -165,6 +166,7 @@ def _upsert_article_embeddings(
         existing = (
             db.query(models.ArticleEmbedding)
             .filter(models.ArticleEmbedding.article_id == article.id)
+            .filter(models.ArticleEmbedding.article_source == article_source)
             .filter(models.ArticleEmbedding.embedding_provider == provider)
             .filter(models.ArticleEmbedding.embedding_model == embedding_model)
             .first()
@@ -179,6 +181,7 @@ def _upsert_article_embeddings(
             db.add(
                 models.ArticleEmbedding(
                     article_id=article.id,
+                    article_source=article_source,
                     outlet=article.outlet or "",
                     embedding_provider=provider,
                     embedding_model=embedding_model,
@@ -204,6 +207,7 @@ def prepare_embeddings(
     embedding_model: str,
     model_manager: BiasModelManager,
     run_logs: List[str],
+    article_source: str = "internal",
 ) -> int:
     texts = [_build_article_text(article, outlet_blocklist) for article in recent_articles]
     if texts:
@@ -225,6 +229,7 @@ def prepare_embeddings(
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
         now=datetime.utcnow(),
+        article_source=article_source,
     )
     run_logs.append(f"Article embeddings upserted: {saved}")
     return saved
@@ -236,6 +241,7 @@ def load_analysis_rows(
     outlet_blocklist: Set[str],
     embedding_provider: str,
     embedding_model: str,
+    article_source: str = "internal",
 ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
     provider = (embedding_provider or "local").strip().lower()
     article_by_id: Dict[int, models.Article] = {article.id: article for article in recent_articles}
@@ -245,6 +251,7 @@ def load_analysis_rows(
     embedding_rows = (
         db.query(models.ArticleEmbedding)
         .filter(models.ArticleEmbedding.article_id.in_(article_by_id.keys()))
+        .filter(models.ArticleEmbedding.article_source == article_source)
         .filter(models.ArticleEmbedding.embedding_provider == provider)
         .filter(models.ArticleEmbedding.embedding_model == embedding_model)
         .all()

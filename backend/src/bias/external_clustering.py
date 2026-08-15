@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import math
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Iterable
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -13,13 +13,13 @@ from .clusterer import TopicClusterSpec
 
 
 DEFAULT_EXTERNAL_CLUSTER_API_URL = "http://localhost:8000"
-TRACKING_QUERY_KEYS = {
-    "fbclid",
-    "gclid",
-    "mc_cid",
-    "mc_eid",
-    "ref",
-    "source",
+SOURCE_NAME_OVERRIDES = {
+    "adaderana": "Ada Derana",
+    "ceylon_today": "Ceylon Today",
+    "daily_ft": "Daily FT",
+    "economynext": "Economy Next",
+    "lankabusinessonline": "LBO",
+    "newsfirst": "Newsfirst",
 }
 
 
@@ -28,51 +28,27 @@ class ExternalClusteringError(RuntimeError):
 
 
 class ExternalClusteringNoDataError(ExternalClusteringError):
-    """Raised when no external clusters overlap the current local cohort."""
+    """Raised when the external service has no usable clustered articles."""
 
 
 @dataclass(frozen=True)
-class ExternalClusterResult:
+class ExternalArticleRecord:
+    id: int
+    title: str
+    source: str
+    published_at: datetime | None
+    url: str
+    body: str
+    cluster_id: int
+    category: str | None = None
+    image_url: str | None = None
+
+
+@dataclass(frozen=True)
+class ExternalDatasetResult:
+    articles: list[ExternalArticleRecord]
     clusters: list[TopicClusterSpec]
     mapping_stats: dict[str, Any]
-
-
-def canonicalize_article_url(raw_url: str | None) -> str:
-    """Return a conservative URL identity suitable for joining two article stores."""
-    value = (raw_url or "").strip()
-    if not value:
-        return ""
-
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return value.rstrip("/").lower()
-
-    host = (parsed.hostname or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    if not host:
-        return value.rstrip("/").lower()
-
-    port = parsed.port
-    if port and port not in {80, 443}:
-        host = f"{host}:{port}"
-
-    path = parsed.path or "/"
-    if path != "/":
-        path = path.rstrip("/")
-
-    query_pairs = []
-    for key, item_value in parse_qsl(parsed.query, keep_blank_values=True):
-        normalized_key = key.lower()
-        if normalized_key.startswith("utm_") or normalized_key in TRACKING_QUERY_KEYS:
-            continue
-        query_pairs.append((key, item_value))
-    query_pairs.sort()
-    query = urlencode(query_pairs, doseq=True)
-
-    canonical = f"{host}{path}"
-    return f"{canonical}?{query}" if query else canonical
 
 
 class ExternalClusteringClient:
@@ -80,8 +56,10 @@ class ExternalClusteringClient:
         self,
         base_url: str | None = None,
         timeout_seconds: float | None = None,
-        max_pages: int | None = None,
         max_workers: int | None = None,
+        detail_timeout_seconds: float | None = None,
+        detail_retries: int | None = None,
+        retry_backoff_seconds: float | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         self.base_url = (base_url or os.getenv(
@@ -90,8 +68,20 @@ class ExternalClusteringClient:
         self.timeout_seconds = timeout_seconds or float(os.getenv(
             "NEWS_CLUSTER_API_TIMEOUT_SECONDS", "30"
         ))
-        self.max_pages = max_pages or int(os.getenv("NEWS_CLUSTER_API_MAX_PAGES", "100"))
         self.max_workers = max_workers or int(os.getenv("NEWS_CLUSTER_API_MAX_WORKERS", "8"))
+        self.detail_timeout_seconds = detail_timeout_seconds or float(os.getenv(
+            "NEWS_CLUSTER_API_DETAIL_TIMEOUT_SECONDS", "60"
+        ))
+        self.detail_retries = (
+            detail_retries
+            if detail_retries is not None
+            else int(os.getenv("NEWS_CLUSTER_API_DETAIL_RETRIES", "2"))
+        )
+        self.retry_backoff_seconds = (
+            retry_backoff_seconds
+            if retry_backoff_seconds is not None
+            else float(os.getenv("NEWS_CLUSTER_API_RETRY_BACKOFF_SECONDS", "1"))
+        )
         self._client = client
 
     def status(self) -> dict[str, Any]:
@@ -114,122 +104,174 @@ class ExternalClusteringClient:
                 "error": str(exc),
             }
 
-    def fetch_clusters(self, local_articles: Iterable[Any]) -> ExternalClusterResult:
-        local_rows = list(local_articles)
-        local_by_url: dict[str, Any] = {}
-        local_url_collisions = 0
-        for article in local_rows:
-            canonical = canonicalize_article_url(getattr(article, "url", None))
-            if not canonical:
-                continue
-            if canonical in local_by_url:
-                local_url_collisions += 1
-                continue
-            local_by_url[canonical] = article
+    def fetch_dataset(
+        self,
+        analysis_type: str = "general",
+        since: datetime | None = None,
+    ) -> ExternalDatasetResult:
+        """Fetch external cluster details and their full articles without local joins."""
+        cluster_params: dict[str, Any] = {"min_size": 2}
+        if (analysis_type or "").strip().lower() == "financial":
+            cluster_params["category"] = "economics"
 
         with self._client_context() as client:
             stats = self._get_json(client, "/stats")
-            summaries = self._get_json(client, "/clusters", params={"min_size": 2})
+            summaries = self._get_json(client, "/clusters", params=cluster_params)
+            builtin_sources = self._get_json(client, "/sources/builtin")
             if not isinstance(stats, dict):
                 raise ExternalClusteringError("External /stats response was not an object.")
             if not isinstance(summaries, list):
                 raise ExternalClusteringError("External /clusters response was not an array.")
+            if not isinstance(builtin_sources, list):
+                builtin_sources = []
 
-            total_articles = int(stats.get("total_articles") or 0)
-            page_size = 100
-            total_pages = min(self.max_pages, math.ceil(total_articles / page_size))
-            offsets = [page * page_size for page in range(total_pages)]
+            current_summaries = []
+            for summary in summaries:
+                if not isinstance(summary, dict):
+                    continue
+                sources = {
+                    str(source).strip()
+                    for source in (summary.get("sources") or [])
+                    if str(source).strip()
+                }
+                if len(sources) < 2:
+                    continue
+                latest_at = _parse_datetime(summary.get("latest_at"))
+                if since is not None and latest_at is not None and latest_at < since:
+                    continue
+                current_summaries.append(summary)
 
-            def fetch_page(offset: int) -> list[dict[str, Any]]:
-                payload = self._get_json(
-                    client,
-                    "/articles",
-                    params={"limit": page_size, "offset": offset},
-                )
-                if not isinstance(payload, list):
-                    raise ExternalClusteringError(
-                        f"External /articles response at offset {offset} was not an array."
-                    )
-                return payload
+            def fetch_detail(
+                summary: dict[str, Any],
+            ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+                try:
+                    cluster_id = int(summary.get("cluster_id"))
+                except (TypeError, ValueError) as exc:
+                    raise ExternalClusteringError("External cluster is missing a valid ID.") from exc
 
-            pages: list[list[dict[str, Any]]] = []
-            if offsets:
-                if self.max_workers <= 1 or len(offsets) == 1:
-                    pages = [fetch_page(offset) for offset in offsets]
-                else:
-                    with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                        pages = list(executor.map(fetch_page, offsets))
+                last_error: str | None = None
+                for attempt in range(self.detail_retries + 1):
+                    try:
+                        payload = self._get_json(
+                            client,
+                            f"/clusters/{cluster_id}",
+                            timeout_seconds=self.detail_timeout_seconds,
+                        )
+                        if not isinstance(payload, dict):
+                            raise ExternalClusteringError(
+                                f"External cluster {cluster_id} response was not an object."
+                            )
+                        return summary, payload, None
+                    except ExternalClusteringError as exc:
+                        last_error = str(exc)
+                        if attempt < self.detail_retries and self.retry_backoff_seconds > 0:
+                            time.sleep(self.retry_backoff_seconds * (2 ** attempt))
+                return summary, None, last_error
 
-        external_articles = [article for page in pages for article in page]
-        summary_by_id: dict[int, dict[str, Any]] = {}
-        for summary in summaries:
+            if self.max_workers <= 1 or len(current_summaries) <= 1:
+                detail_results = [fetch_detail(summary) for summary in current_summaries]
+            else:
+                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                    detail_results = list(executor.map(fetch_detail, current_summaries))
+
+        details: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        failed_cluster_ids: list[int] = []
+        failed_cluster_errors: dict[str, str] = {}
+        for summary, detail, error in detail_results:
+            if detail is not None:
+                details.append((summary, detail))
+                continue
+            cluster_id = int(summary.get("cluster_id"))
+            failed_cluster_ids.append(cluster_id)
+            failed_cluster_errors[str(cluster_id)] = error or "Unknown cluster detail error"
+
+        source_names = {
+            str(item.get("key")): str(item.get("name"))
+            for item in builtin_sources
+            if isinstance(item, dict) and item.get("key") and item.get("name")
+        }
+        source_names.update(SOURCE_NAME_OVERRIDES)
+
+        article_by_id: dict[int, ExternalArticleRecord] = {}
+        clusters: list[TopicClusterSpec] = []
+        articles_without_body = 0
+        articles_outside_window = 0
+
+        for summary, detail in details:
             try:
-                summary_by_id[int(summary.get("cluster_id"))] = summary
-            except (AttributeError, TypeError, ValueError):
-                continue
-
-        grouped_local_ids: dict[int, list[int]] = {}
-        grouped_seen_ids: dict[int, set[int]] = {}
-        matched_local_ids: set[int] = set()
-        matched_clustered_local_ids: set[int] = set()
-
-        for external_article in external_articles:
-            if not isinstance(external_article, dict):
-                continue
-            canonical = canonicalize_article_url(external_article.get("url"))
-            local_article = local_by_url.get(canonical)
-            if local_article is None:
-                continue
-
-            local_id = getattr(local_article, "id", None)
-            if local_id is None:
-                continue
-            local_id = int(local_id)
-            matched_local_ids.add(local_id)
-
-            cluster_id_raw = external_article.get("cluster_id")
-            try:
-                cluster_id = int(cluster_id_raw)
+                cluster_id = int(detail.get("cluster_id", summary.get("cluster_id")))
             except (TypeError, ValueError):
                 continue
-            if cluster_id < 0:
-                continue
+            cluster_article_ids: list[int] = []
+            for item in detail.get("articles") or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    article_id = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                published_at = _parse_datetime(item.get("published_at"))
+                if since is not None and published_at is not None and published_at < since:
+                    articles_outside_window += 1
+                    continue
+                body = str(item.get("body") or "").strip()
+                if len(body) <= 100:
+                    articles_without_body += 1
+                    continue
+                source_key = str(item.get("source") or "unknown").strip()
+                record = ExternalArticleRecord(
+                    id=article_id,
+                    title=str(item.get("title") or "Untitled").strip(),
+                    source=source_names.get(source_key, source_key.replace("_", " ").title()),
+                    published_at=published_at,
+                    url=str(item.get("url") or "").strip(),
+                    body=body,
+                    cluster_id=cluster_id,
+                    category=str(detail.get("category") or summary.get("category") or "").strip() or None,
+                    image_url=str(item.get("image_url") or "").strip() or None,
+                )
+                article_by_id[article_id] = record
+                cluster_article_ids.append(article_id)
 
-            matched_clustered_local_ids.add(local_id)
-            seen = grouped_seen_ids.setdefault(cluster_id, set())
-            if local_id in seen:
+            cluster_article_ids = list(dict.fromkeys(cluster_article_ids))
+            if len(cluster_article_ids) < 2:
                 continue
-            seen.add(local_id)
-            grouped_local_ids.setdefault(cluster_id, []).append(local_id)
-
-        clusters: list[TopicClusterSpec] = []
-        for cluster_id in sorted(grouped_local_ids):
-            article_ids = grouped_local_ids[cluster_id]
-            if len(article_ids) < 2:
-                continue
-            summary = summary_by_id.get(cluster_id, {})
-            label = str(summary.get("event_title") or f"External cluster {cluster_id}").strip()
+            label = str(
+                detail.get("event_title")
+                or summary.get("event_title")
+                or f"External cluster {cluster_id}"
+            ).strip()
             clusters.append(
                 TopicClusterSpec(
                     topic_key=f"sl-news-api:{cluster_id}",
                     topic_label=label,
-                    article_ids=article_ids,
+                    article_ids=cluster_article_ids,
                 )
             )
 
-        mapping_stats = {
-            "local_articles": len(local_rows),
-            "local_urls_indexed": len(local_by_url),
-            "local_url_collisions": local_url_collisions,
-            "external_articles_reported": total_articles,
-            "external_articles_fetched": len(external_articles),
-            "external_fetch_truncated": total_pages * page_size < total_articles,
-            "matched_local_articles": len(matched_local_ids),
-            "matched_clustered_local_articles": len(matched_clustered_local_ids),
-            "external_clusters_reported": len(summaries),
-            "mapped_clusters_with_two_articles": len(clusters),
+        used_article_ids = {
+            article_id
+            for cluster in clusters
+            for article_id in cluster.article_ids
         }
-        return ExternalClusterResult(clusters=clusters, mapping_stats=mapping_stats)
+        articles = [article_by_id[article_id] for article_id in sorted(used_article_ids)]
+        mapping_stats = {
+            "external_articles_reported": int(stats.get("total_articles") or 0),
+            "external_clusters_reported": len(summaries),
+            "external_clusters_in_window": len(current_summaries),
+            "external_clusters_loaded": len(clusters),
+            "external_articles_loaded": len(articles),
+            "external_articles_without_body": articles_without_body,
+            "external_articles_outside_window": articles_outside_window,
+            "external_clusters_failed": len(failed_cluster_ids),
+            "external_failed_cluster_ids": failed_cluster_ids,
+            "external_failed_cluster_errors": failed_cluster_errors,
+        }
+        return ExternalDatasetResult(
+            articles=articles,
+            clusters=clusters,
+            mapping_stats=mapping_stats,
+        )
 
     def _client_context(self):
         if self._client is not None:
@@ -241,9 +283,10 @@ class ExternalClusteringClient:
         client: httpx.Client,
         path: str,
         params: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> Any:
         try:
-            response = client.get(path, params=params)
+            response = client.get(path, params=params, timeout=timeout_seconds or self.timeout_seconds)
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -263,9 +306,23 @@ class _BorrowedClientContext:
         return None
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def get_external_clustering_status() -> dict[str, Any]:
     return ExternalClusteringClient().status()
 
 
-def fetch_external_clusters(local_articles: Iterable[Any]) -> ExternalClusterResult:
-    return ExternalClusteringClient().fetch_clusters(local_articles)
+def fetch_external_dataset(
+    analysis_type: str,
+    since: datetime,
+) -> ExternalDatasetResult:
+    return ExternalClusteringClient().fetch_dataset(analysis_type=analysis_type, since=since)

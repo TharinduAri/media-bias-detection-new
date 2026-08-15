@@ -42,6 +42,10 @@ def _analysis_type(value: str | None) -> str:
     return (value or DEFAULT_ANALYSIS_TYPE).strip().lower() or DEFAULT_ANALYSIS_TYPE
 
 
+def _article_source(value: str | None) -> str:
+    return "external" if (value or "").strip().lower() == "external" else "internal"
+
+
 def compute_bsi(
     sentiment_bias_avg: float,
     coverage_bias_rate: float,
@@ -414,11 +418,12 @@ def upsert_profiles(db: Session, profiles: Iterable[models.OutletBiasProfile]) -
 
 
 def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore]) -> int:
-    """Upsert scores keyed on (article_id, topic_key, analysis_type)."""
-    deduped: Dict[Tuple[int, str, str], models.ArticleBiasScore] = {}
+    """Upsert scores keyed on article, topic, analysis type, and article source."""
+    deduped: Dict[Tuple[int, str, str, str], models.ArticleBiasScore] = {}
     for score in scores:
         score.analysis_type = _analysis_type(getattr(score, "analysis_type", None))
-        key = (score.article_id, score.topic_key, score.analysis_type)
+        score.article_source = _article_source(getattr(score, "article_source", None))
+        key = (score.article_id, score.topic_key, score.analysis_type, score.article_source)
         if key not in deduped:
             deduped[key] = score
 
@@ -431,16 +436,22 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
         .filter(models.ArticleBiasScore.article_id.in_(article_ids))
         .all()
     )
-    existing_by_key: Dict[Tuple[int, str, str], models.ArticleBiasScore] = {
-        (s.article_id, s.topic_key, _analysis_type(getattr(s, "analysis_type", None))): s
+    existing_by_key: Dict[Tuple[int, str, str, str], models.ArticleBiasScore] = {
+        (
+            s.article_id,
+            s.topic_key,
+            _analysis_type(getattr(s, "analysis_type", None)),
+            _article_source(getattr(s, "article_source", None)),
+        ): s
         for s in existing_scores
     }
 
-    for (article_id, topic_key, analysis_type), score in deduped.items():
-        existing = existing_by_key.get((article_id, topic_key, analysis_type))
+    for (article_id, topic_key, analysis_type, article_source), score in deduped.items():
+        existing = existing_by_key.get((article_id, topic_key, analysis_type, article_source))
         if existing:
             existing.outlet = score.outlet
             existing.analysis_type = analysis_type
+            existing.article_source = article_source
             existing.topic_label = score.topic_label
             existing.sentiment_label = score.sentiment_label
             existing.sentiment_score = score.sentiment_score
@@ -471,26 +482,39 @@ def upsert_article_bias_scores(db: Session, scores: List[models.ArticleBiasScore
 def replace_article_bias_evidence(
     db: Session,
     rows: List[models.ArticleBiasEvidence],
-    scored_keys: Iterable[Tuple[int, str] | Tuple[int, str, str]] | None = None,
+    scored_keys: Iterable[
+        Tuple[int, str] | Tuple[int, str, str] | Tuple[int, str, str, str]
+    ] | None = None,
 ) -> int:
-    """Replace sentence-level evidence keyed by (article_id, topic_key, analysis_type)."""
-    keys: Set[Tuple[int, str, str]] = set()
+    """Replace evidence keyed by article, topic, analysis type, and source."""
+    keys: Set[Tuple[int, str, str, str]] = set()
     for key in scored_keys or []:
         if len(key) == 2:
             article_id, topic_key = key
             analysis_type = DEFAULT_ANALYSIS_TYPE
-        else:
+            article_source = "internal"
+        elif len(key) == 3:
             article_id, topic_key, analysis_type = key
-        keys.add((int(article_id), str(topic_key), _analysis_type(analysis_type)))
+            article_source = "internal"
+        else:
+            article_id, topic_key, analysis_type, article_source = key
+        keys.add((
+            int(article_id),
+            str(topic_key),
+            _analysis_type(analysis_type),
+            _article_source(article_source),
+        ))
     for row in rows:
         row.analysis_type = _analysis_type(getattr(row, "analysis_type", None))
-        keys.add((row.article_id, row.topic_key, row.analysis_type))
-    for article_id, topic_key, analysis_type in keys:
+        row.article_source = _article_source(getattr(row, "article_source", None))
+        keys.add((row.article_id, row.topic_key, row.analysis_type, row.article_source))
+    for article_id, topic_key, analysis_type, article_source in keys:
         (
             db.query(models.ArticleBiasEvidence)
             .filter(models.ArticleBiasEvidence.article_id == article_id)
             .filter(models.ArticleBiasEvidence.topic_key == topic_key)
             .filter(models.ArticleBiasEvidence.analysis_type == analysis_type)
+            .filter(models.ArticleBiasEvidence.article_source == article_source)
             .delete(synchronize_session="fetch")
         )
 

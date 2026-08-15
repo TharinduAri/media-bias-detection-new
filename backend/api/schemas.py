@@ -92,6 +92,7 @@ class ManualArticlePeerResponse(BaseModel):
 class ArticleBiasScoreResponse(BaseModel):
     id: int
     article_id: int
+    article_source: str = "internal"
     outlet: str
     analysis_type: str = "general"
     topic_key: str
@@ -122,6 +123,7 @@ class ArticleBiasScoreResponse(BaseModel):
 class ArticleBiasEvidenceResponse(BaseModel):
     id: int
     article_id: int
+    article_source: str = "internal"
     outlet: str
     analysis_type: str = "general"
     topic_key: str
@@ -149,6 +151,7 @@ class ArticleBiasEvidenceResponse(BaseModel):
 class ArticleBiasWithArticleResponse(BaseModel):
     id: int
     article_id: int
+    article_source: str = "internal"
     outlet: str
     analysis_type: str = "general"
     title: str

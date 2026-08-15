@@ -21,6 +21,31 @@ class Article(Base):
         Index("ix_Article_outlet_date", "outlet", "date"),
     )
 
+
+class ExternalArticle(Base):
+    """Article cache owned by the external clustering integration."""
+    __tablename__ = "ExternalArticle"
+
+    id = Column(Integer, primary_key=True, index=True)
+    outlet = Column(String, nullable=False, index=True)
+    category = Column(String, nullable=True, index=True)
+    date = Column(DateTime, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    url = Column(String, nullable=False, index=True)
+    text = Column(Text, nullable=True)
+    clean_text = Column(Text, nullable=True)
+    sentences = Column(JSON, nullable=True)
+    entities = Column(JSON, nullable=True)
+    entity_sentiments = Column(JSON, nullable=True)
+    cluster_id = Column(Integer, nullable=True, index=True)
+    image_url = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index("ix_ExternalArticle_outlet_date", "outlet", "date"),
+    )
+
 class ScrapeRunLog(Base):
     __tablename__ = "ScrapeRunLog"
 
@@ -38,6 +63,7 @@ class ArticleBiasScore(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     article_id = Column(Integer, nullable=False, index=True)
+    article_source = Column(String(32), nullable=False, default="internal", index=True)
     outlet = Column(String, nullable=False, index=True)
     analysis_type = Column(String(32), nullable=False, default="general", index=True)
     topic_key = Column(String, nullable=False, index=True)
@@ -67,7 +93,8 @@ class ArticleBiasScore(Base):
             "article_id",
             "topic_key",
             "analysis_type",
-            name="uq_article_bias_article_topic_analysis",
+            "article_source",
+            name="uq_article_bias_article_topic_analysis_source",
         ),
         Index(
             "ix_ArticleBiasScore_analysis_topic_bias",
@@ -83,6 +110,7 @@ class ArticleBiasEvidence(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     article_id = Column(Integer, nullable=False, index=True)
+    article_source = Column(String(32), nullable=False, default="internal", index=True)
     outlet = Column(String, nullable=False, index=True)
     analysis_type = Column(String(32), nullable=False, default="general", index=True)
     topic_key = Column(String, nullable=False, index=True)
@@ -119,6 +147,7 @@ class ArticleEmbedding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     article_id = Column(Integer, nullable=False, index=True)
+    article_source = Column(String(32), nullable=False, default="internal", index=True)
     outlet = Column(String, nullable=False, index=True)
     embedding_provider = Column(String, nullable=False, index=True)
     embedding_model = Column(String, nullable=False, index=True)
@@ -133,7 +162,8 @@ class ArticleEmbedding(Base):
             "article_id",
             "embedding_provider",
             "embedding_model",
-            name="uq_article_embedding_article_provider_model",
+            "article_source",
+            name="uq_article_embedding_article_provider_model_source",
         ),
     )
 

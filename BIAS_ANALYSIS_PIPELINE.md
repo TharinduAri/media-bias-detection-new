@@ -118,6 +118,12 @@ When external clusters are provided:
 
 Result: validated external cluster map plus topic metadata overrides.
 
+Provider integration note: selecting the external API loads full article bodies directly from
+`/clusters/{cluster_id}` and caches them in the separate `ExternalArticle` table. It does not
+read from the internal scraper's `Article` table or run internal clustering. Embeddings and
+bias records are namespaced with `article_source=external`, while the API's cluster ID and
+event title remain the topic key and label.
+
 ## 11. Topic Label Generation Strategy
 
 For clusters that need labels, the pipeline uses layered fallback logic:

@@ -34,9 +34,10 @@ from .embedder import (
     prepare_embeddings,
 )
 from .external_clustering import (
+    ExternalArticleRecord,
     ExternalClusteringError,
     ExternalClusteringNoDataError,
-    fetch_external_clusters,
+    fetch_external_dataset,
     get_external_clustering_status,
 )
 from .models_manager import SentimentResult, generate_labels_with_gemini, get_models
@@ -126,6 +127,7 @@ def _run_schema_migrations() -> None:
     """Apply the idempotent schema changes required by the bias API."""
     migrations = [
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
+        'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS article_source VARCHAR(32) DEFAULT \'internal\'',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS dominant_outlet BOOLEAN DEFAULT FALSE',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_length_bias FLOAT',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS emphasis_sentence_bias FLOAT',
@@ -137,6 +139,8 @@ def _run_schema_migrations() -> None:
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS opposition_target_count INTEGER DEFAULT 0',
         'ALTER TABLE "ArticleBiasScore" ADD COLUMN IF NOT EXISTS political_actor_count INTEGER DEFAULT 0',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS analysis_type VARCHAR(32) DEFAULT \'general\'',
+        'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS article_source VARCHAR(32) DEFAULT \'internal\'',
+        'ALTER TABLE "ArticleEmbedding" ADD COLUMN IF NOT EXISTS article_source VARCHAR(32) DEFAULT \'internal\'',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS canonical_actor VARCHAR',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_actor_type VARCHAR',
         'ALTER TABLE "ArticleBiasEvidence" ADD COLUMN IF NOT EXISTS political_side VARCHAR',
@@ -208,6 +212,7 @@ def _run_schema_migrations() -> None:
         except Exception:
             conn.rollback()
     _migrate_article_bias_unique_constraint()
+    _migrate_embedding_unique_constraint()
     _migrate_analysis_type_constraints()
 
 
@@ -225,8 +230,32 @@ def _migrate_article_bias_unique_constraint() -> None:
                 'ALTER TABLE "ArticleBiasScore" DROP CONSTRAINT IF EXISTS uq_article_bias_article_topic_analysis'
             ))
             conn.execute(text(
-                'ALTER TABLE "ArticleBiasScore" ADD CONSTRAINT uq_article_bias_article_topic_analysis '
-                'UNIQUE (article_id, topic_key, analysis_type)'
+                'ALTER TABLE "ArticleBiasScore" DROP CONSTRAINT IF EXISTS uq_article_bias_article_topic_analysis_source'
+            ))
+            conn.execute(text(
+                'ALTER TABLE "ArticleBiasScore" ADD CONSTRAINT uq_article_bias_article_topic_analysis_source '
+                'UNIQUE (article_id, topic_key, analysis_type, article_source)'
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
+
+def _migrate_embedding_unique_constraint() -> None:
+    with db_manager.engine.connect() as conn:
+        try:
+            conn.execute(text(
+                'ALTER TABLE "ArticleEmbedding" DROP CONSTRAINT IF EXISTS '
+                'uq_article_embedding_article_provider_model'
+            ))
+            conn.execute(text(
+                'ALTER TABLE "ArticleEmbedding" DROP CONSTRAINT IF EXISTS '
+                'uq_article_embedding_article_provider_model_source'
+            ))
+            conn.execute(text(
+                'ALTER TABLE "ArticleEmbedding" ADD CONSTRAINT '
+                'uq_article_embedding_article_provider_model_source '
+                'UNIQUE (article_id, embedding_provider, embedding_model, article_source)'
             ))
             conn.commit()
         except Exception:
@@ -266,6 +295,7 @@ def ensure_bias_tables(drop_first: bool = False) -> None:
             return
 
         target_tables = [
+            models.ExternalArticle.__table__,
             models.ArticleBiasScore.__table__,
             models.ArticleBiasEvidence.__table__,
             models.ArticleEmbedding.__table__,
@@ -371,10 +401,12 @@ def _run_bias_analysis_impl(
     if external_clusters is not None:
         cluster_provider = EXTERNAL_CLUSTER_PROVIDER
     cluster_source = cluster_provider
+    external_api_mode = cluster_provider == EXTERNAL_CLUSTER_PROVIDER and external_clusters is None
+    article_source = EXTERNAL_CLUSTER_PROVIDER if external_api_mode else INTERNAL_CLUSTER_PROVIDER
     mapping_stats: Dict[str, Any] | None = None
     financial_mode = analysis_type == FINANCIAL_ANALYSIS_TYPE
-    included_outlets = FINANCIAL_OUTLETS if financial_mode else None
-    excluded_outlets = None if financial_mode else FINANCIAL_OUTLETS
+    included_outlets = FINANCIAL_OUTLETS if financial_mode and not external_api_mode else None
+    excluded_outlets = FINANCIAL_OUTLETS if not financial_mode and not external_api_mode else None
     min_topic_outlets = 2 if financial_mode else MIN_TOPIC_OUTLETS
 
     with _run_lock:
@@ -393,21 +425,52 @@ def _run_bias_analysis_impl(
         ensure_bias_tables()
 
         since = datetime.utcnow() - timedelta(days=DAYS_LOOKBACK)
-        recent_articles = _load_recent_articles(
-            db,
-            since,
-            include_outlets=included_outlets,
-            exclude_outlets=excluded_outlets,
-        )
+        if external_api_mode:
+            run_logs.append("Fetching complete clusters and article bodies from the external API...")
+            external_result = fetch_external_dataset(analysis_type=analysis_type, since=since)
+            external_clusters = external_result.clusters
+            mapping_stats = external_result.mapping_stats
+            recent_articles = _upsert_external_articles(db, external_result.articles)
+            with _run_lock:
+                _run_state["mapping_stats"] = mapping_stats
+            run_logs.append(
+                "External dataset loaded: "
+                f"articles={mapping_stats['external_articles_loaded']}, "
+                f"clusters={mapping_stats['external_clusters_loaded']}, "
+                f"clusters_in_window={mapping_stats['external_clusters_in_window']}"
+            )
+            failed_cluster_ids = mapping_stats.get("external_failed_cluster_ids") or []
+            if failed_cluster_ids:
+                preview = ", ".join(str(cluster_id) for cluster_id in failed_cluster_ids[:20])
+                suffix = "..." if len(failed_cluster_ids) > 20 else ""
+                run_logs.append(
+                    "Warning: skipped external clusters after retry exhaustion: "
+                    f"count={len(failed_cluster_ids)}, ids={preview}{suffix}"
+                )
+            if not external_clusters or not recent_articles:
+                raise ExternalClusteringNoDataError(
+                    "The external API returned no usable clustered articles in the analysis window."
+                )
+        else:
+            recent_articles = _load_recent_articles(
+                db,
+                since,
+                include_outlets=included_outlets,
+                exclude_outlets=excluded_outlets,
+            )
 
         embedding_model = _resolve_embedding_model_name(EMBEDDING_PROVIDER, EMBEDDING_MODEL_KEY)
         run_logs.append(f"Cluster source: {cluster_source}")
         run_logs.append(f"Analysis type: {analysis_type}")
         run_logs.append(f"Embedding model: {embedding_model}")
         if financial_mode:
-            run_logs.append("Financial outlets: Economy Next, LBO")
+            run_logs.append(
+                "External category: economics"
+                if external_api_mode
+                else "Financial outlets: Economy Next, LBO"
+            )
             run_logs.append("Sentiment model: ProsusAI/finbert")
-        else:
+        elif not external_api_mode:
             run_logs.append("Excluded financial outlets: Economy Next, LBO")
         run_logs.append(f"Recent articles found: {len(recent_articles)}")
 
@@ -438,33 +501,7 @@ def _run_bias_analysis_impl(
                 mapping_stats,
             )
 
-        if external_clusters is None and cluster_provider == EXTERNAL_CLUSTER_PROVIDER:
-            run_logs.append("Fetching clusters from the external clustering API...")
-            external_result = fetch_external_clusters(recent_articles)
-            external_clusters = external_result.clusters
-            mapping_stats = external_result.mapping_stats
-            with _run_lock:
-                _run_state["mapping_stats"] = mapping_stats
-            run_logs.append(
-                "External article mapping: "
-                f"matched={mapping_stats['matched_local_articles']}/{mapping_stats['local_articles']}, "
-                f"clustered={mapping_stats['matched_clustered_local_articles']}, "
-                f"usable_groups={mapping_stats['mapped_clusters_with_two_articles']}"
-            )
-            if mapping_stats.get("external_fetch_truncated"):
-                run_logs.append("Warning: external article fetch hit its configured page limit.")
-            if not external_clusters:
-                raise ExternalClusteringNoDataError(
-                    "The external API returned no clusters containing at least two articles "
-                    "from the current project cohort."
-                )
-
-        outlets_query = db.query(distinct(models.Article.outlet)).filter(models.Article.date >= since)
-        if included_outlets:
-            outlets_query = outlets_query.filter(models.Article.outlet.in_(included_outlets))
-        if excluded_outlets:
-            outlets_query = outlets_query.filter(~models.Article.outlet.in_(excluded_outlets))
-        outlets = [row[0] for row in outlets_query.all()]
+        outlets = sorted({str(article.outlet) for article in recent_articles if article.outlet})
         run_logs.append(f"Outlets in window: {len(outlets)}")
 
         outlet_blocklist = _build_outlet_blocklist(outlets)
@@ -492,6 +529,7 @@ def _run_bias_analysis_impl(
                 embedding_model=embedding_model,
                 model_manager=model_manager,
                 run_logs=run_logs,
+                article_source=article_source,
             )
         analysis_rows, embeddings = load_analysis_rows(
             db=db,
@@ -499,10 +537,16 @@ def _run_bias_analysis_impl(
             outlet_blocklist=outlet_blocklist,
             embedding_provider=EMBEDDING_PROVIDER,
             embedding_model=embedding_model,
+            article_source=article_source,
         )
         run_logs.append(f"Embeddings available for analysis: {len(analysis_rows)}")
 
         if len(analysis_rows) < 2:
+            if external_api_mode:
+                raise ExternalClusteringNoDataError(
+                    "External articles were loaded, but fewer than two have embeddings for "
+                    "the selected mode. Run the full external analysis before using Fast mode."
+                )
             run_logs.append("Not enough articles to form topic groups.")
             _persist_run_log(
                 db,
@@ -607,7 +651,7 @@ def _run_bias_analysis_impl(
         ).delete(synchronize_session=False)
         article_scores: List[models.ArticleBiasScore] = []
         article_evidence_rows: List[models.ArticleBiasEvidence] = []
-        scored_evidence_keys: Set[tuple[int, str, str]] = set()
+        scored_evidence_keys: Set[tuple[int, str, str, str]] = set()
         outlet_stats = init_outlet_stats(outlets)
         outlet_topic_stats: Dict[str, Dict[str, Dict[str, Any]]] = {o: {} for o in outlets}
         outlet_score_arrays: Dict[str, Dict[str, List[float]]] = {
@@ -716,10 +760,13 @@ def _run_bias_analysis_impl(
                     else None
                 )
                 if article.id is not None and topic_key is not None:
-                    scored_evidence_keys.add((int(article.id), str(topic_key), analysis_type))
+                    scored_evidence_keys.add(
+                        (int(article.id), str(topic_key), analysis_type, article_source)
+                    )
                 article_scores.append(
                     models.ArticleBiasScore(
                         article_id=article.id,
+                        article_source=article_source,
                         outlet=article.outlet,
                         analysis_type=analysis_type,
                         topic_key=topic_key,
@@ -761,6 +808,7 @@ def _run_bias_analysis_impl(
                     article_evidence_rows.append(
                         models.ArticleBiasEvidence(
                             article_id=int(article.id),
+                            article_source=article_source,
                             outlet=article.outlet or "",
                             analysis_type=analysis_type,
                             topic_key=str(topic_key),
@@ -1099,6 +1147,7 @@ def analyze_manual_article(
         coverage_ratio = len(cluster_outlets) / max(len(outlets), 1)
         score_row = models.ArticleBiasScore(
             article_id=article.id,
+            article_source=INTERNAL_CLUSTER_PROVIDER,
             outlet=article.outlet,
             analysis_type=GENERAL_ANALYSIS_TYPE,
             topic_key=topic_key,
@@ -1230,6 +1279,7 @@ def _find_manual_article_peers(
         db.query(models.ArticleEmbedding, models.Article)
         .join(models.Article, models.Article.id == models.ArticleEmbedding.article_id)
         .filter(models.ArticleEmbedding.article_id != article_id)
+        .filter(models.ArticleEmbedding.article_source == INTERNAL_CLUSTER_PROVIDER)
         .filter(models.ArticleEmbedding.embedding_provider == EMBEDDING_PROVIDER)
         .filter(models.ArticleEmbedding.embedding_model == embedding_model)
         .filter(models.Article.text.isnot(None))
@@ -1289,6 +1339,7 @@ def _manual_evidence_rows(
         rows.append(
             models.ArticleBiasEvidence(
                 article_id=int(article.id),
+                article_source=INTERNAL_CLUSTER_PROVIDER,
                 outlet=article.outlet or "",
                 analysis_type=GENERAL_ANALYSIS_TYPE,
                 topic_key=topic_key,
@@ -1359,6 +1410,48 @@ def _load_recent_articles(
     if exclude_outlets:
         query = query.filter(~models.Article.outlet.in_(exclude_outlets))
     return query.order_by(models.Article.date.desc()).all()
+
+
+def _upsert_external_articles(
+    db: Session,
+    records: List[ExternalArticleRecord],
+) -> List[models.ExternalArticle]:
+    """Refresh the isolated external-article cache without touching scraper rows."""
+    if not records:
+        return []
+
+    record_ids = [record.id for record in records]
+    existing_by_id = {
+        article.id: article
+        for article in (
+            db.query(models.ExternalArticle)
+            .filter(models.ExternalArticle.id.in_(record_ids))
+            .all()
+        )
+    }
+    now = datetime.utcnow()
+    rows: List[models.ExternalArticle] = []
+    for record in records:
+        article = existing_by_id.get(record.id)
+        if article is None:
+            article = models.ExternalArticle(
+                id=record.id,
+                created_at=now,
+            )
+            db.add(article)
+        article.outlet = record.source
+        article.category = record.category
+        article.date = record.published_at or now
+        article.title = record.title
+        article.url = record.url
+        article.text = record.body
+        article.clean_text = record.body
+        article.cluster_id = record.cluster_id
+        article.image_url = record.image_url
+        article.updated_at = now
+        rows.append(article)
+    db.flush()
+    return rows
 
 
 def _persist_run_log(

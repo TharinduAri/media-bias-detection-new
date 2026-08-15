@@ -1,18 +1,19 @@
 import BiasAnalysisButton from "@/components/BiasAnalysisButton";
 import BiasCleanupButton from "@/components/BiasCleanupButton";
 import BiasPageTabs from "@/components/BiasPageTabs";
-import { fetchArticleOutlets, fetchBiasTopics } from "@/lib/api";
+import { fetchAllProfiles, fetchBiasTopics } from "@/lib/api";
 
 export const metadata = {
   title: "Bias Results | Media Bias Control Center",
 };
 
 export default async function BiasPage() {
-  const [topics, outlets] = await Promise.all([
+  const [topics, profileData] = await Promise.all([
     fetchBiasTopics().catch(() => []),
-    fetchArticleOutlets().catch(() => [] as string[]),
+    fetchAllProfiles("general").catch(() => ({ last_run_at: null, profiles: [] })),
   ]);
   const topicCount = topics.length;
+  const profileOutlets = profileData.profiles.map((profile) => profile.outlet);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 pb-20 transition-colors duration-200">
@@ -41,7 +42,7 @@ export default async function BiasPage() {
       </div>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        <BiasPageTabs outlets={outlets} initialTopics={topics} />
+        <BiasPageTabs initialProfileOutlets={profileOutlets} initialTopics={topics} />
       </main>
     </div>
   );

@@ -97,11 +97,21 @@ def clustering_providers_status():
 
 
 @router.get("/embedding-status")
-def embedding_status(db: Session = Depends(get_db)):
+def embedding_status(
+    clustering_provider: str = Query("internal"),
+    db: Session = Depends(get_db),
+):
     ensure_bias_tables()
-    count = db.query(func.count(models.ArticleEmbedding.id)).scalar() or 0
+    article_source = "external" if clustering_provider.strip().lower() == "external" else "internal"
+    count = (
+        db.query(func.count(models.ArticleEmbedding.id))
+        .filter(models.ArticleEmbedding.article_source == article_source)
+        .scalar()
+        or 0
+    )
     last_row = (
         db.query(models.ArticleEmbedding.updated_at)
+        .filter(models.ArticleEmbedding.article_source == article_source)
         .order_by(models.ArticleEmbedding.updated_at.desc())
         .first()
     )
@@ -300,15 +310,24 @@ def list_article_bias_scores(
     db: Session = Depends(get_db),
 ):
     ensure_bias_tables()
+    latest_source = (
+        db.query(models.ArticleBiasScore.article_source)
+        .filter(models.ArticleBiasScore.analysis_type == _analysis_type(analysis_type))
+        .order_by(models.ArticleBiasScore.id.desc())
+        .first()
+    )
+    article_source = latest_source[0] if latest_source else "internal"
+    article_model = models.ExternalArticle if article_source == "external" else models.Article
     q = (
         db.query(
             models.ArticleBiasScore,
-            models.Article.title,
-            models.Article.date,
-            models.Article.url,
+            article_model.title,
+            article_model.date,
+            article_model.url,
         )
-        .join(models.Article, models.Article.id == models.ArticleBiasScore.article_id)
+        .join(article_model, article_model.id == models.ArticleBiasScore.article_id)
         .filter(models.ArticleBiasScore.analysis_type == _analysis_type(analysis_type))
+        .filter(models.ArticleBiasScore.article_source == article_source)
         .order_by(models.ArticleBiasScore.sentiment_bias.desc())
     )
     if outlet:
@@ -323,6 +342,7 @@ def list_article_bias_scores(
             schemas.ArticleBiasWithArticleResponse(
                 id=score.id,
                 article_id=score.article_id,
+                article_source=score.article_source,
                 outlet=score.outlet,
                 analysis_type=score.analysis_type,
                 title=article_title,
