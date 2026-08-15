@@ -33,6 +33,12 @@ from .embedder import (
     load_analysis_rows,
     prepare_embeddings,
 )
+from .external_clustering import (
+    ExternalClusteringError,
+    ExternalClusteringNoDataError,
+    fetch_external_clusters,
+    get_external_clustering_status,
+)
 from .models_manager import SentimentResult, generate_labels_with_gemini, get_models
 from .target_sentiment import (
     align_sentiment_to_shared_targets,
@@ -61,8 +67,13 @@ __all__ = [
     "run_bias_analysis_fast",
     "run_financial_news_analysis",
     "run_financial_news_analysis_fast",
+    "run_bias_analysis_selected",
     "run_bias_analysis_with_clusters",
     "analyze_manual_article",
+    "get_external_clustering_status",
+    "ExternalClusteringError",
+    "ExternalClusteringNoDataError",
+    "BiasRunAlreadyRunningError",
     "TopicClusterSpec",
     "SentimentResult",
 ]
@@ -71,13 +82,25 @@ DAYS_LOOKBACK = 28
 GENERAL_ANALYSIS_TYPE = "general"
 FINANCIAL_ANALYSIS_TYPE = "financial"
 FINANCIAL_OUTLETS = {"Economy Next", "LBO"}
+INTERNAL_CLUSTER_PROVIDER = "internal"
+EXTERNAL_CLUSTER_PROVIDER = "external"
 
 # ── Live run state (in-memory, cleared on each new run) ──────────────────────
 
 _run_lock = threading.Lock()
-_run_state: Dict[str, Any] = {"running": False, "logs": [], "status": "idle"}
+_run_state: Dict[str, Any] = {
+    "running": False,
+    "logs": [],
+    "status": "idle",
+    "cluster_provider": None,
+    "mapping_stats": None,
+}
 _schema_lock = threading.Lock()
 _bias_tables_ready = False
+
+
+class BiasRunAlreadyRunningError(RuntimeError):
+    """Raised when another bias run already owns the process-wide run slot."""
 
 
 class _LiveLog(list):
@@ -94,6 +117,8 @@ def get_run_state() -> Dict[str, Any]:
             "running": _run_state["running"],
             "logs": list(_run_state["logs"]),
             "status": _run_state["status"],
+            "cluster_provider": _run_state.get("cluster_provider"),
+            "mapping_stats": _run_state.get("mapping_stats"),
         }
 
 
@@ -293,6 +318,22 @@ def run_financial_news_analysis_fast(db: Session) -> Dict[str, object]:
     )
 
 
+def run_bias_analysis_selected(
+    db: Session,
+    analysis_type: str = GENERAL_ANALYSIS_TYPE,
+    skip_embedding: bool = False,
+    clustering_provider: str = INTERNAL_CLUSTER_PROVIDER,
+) -> Dict[str, object]:
+    """Run one analysis mode with an explicitly selected clustering provider."""
+    return _run_bias_analysis_impl(
+        db=db,
+        external_clusters=None,
+        skip_embedding=skip_embedding,
+        analysis_type=analysis_type,
+        clustering_provider=clustering_provider,
+    )
+
+
 def run_bias_analysis_with_clusters(
     db: Session,
     clusters: Iterable[Mapping[str, Any] | TopicClusterSpec],
@@ -303,6 +344,7 @@ def run_bias_analysis_with_clusters(
         external_clusters=normalized_clusters,
         skip_embedding=False,
         analysis_type=GENERAL_ANALYSIS_TYPE,
+        clustering_provider=EXTERNAL_CLUSTER_PROVIDER,
     )
 
 
@@ -318,20 +360,33 @@ def _run_bias_analysis_impl(
     external_clusters: List[TopicClusterSpec] | None,
     skip_embedding: bool = False,
     analysis_type: str = GENERAL_ANALYSIS_TYPE,
+    clustering_provider: str = INTERNAL_CLUSTER_PROVIDER,
 ) -> Dict[str, object]:
     started_at = datetime.utcnow()
     run_logs: _LiveLog = _LiveLog()
     run_status = "done"
     run_error: str | None = None
     analysis_type = _normalize_analysis_type(analysis_type)
-    cluster_source = "external" if external_clusters is not None else "internal"
+    cluster_provider = _normalize_cluster_provider(clustering_provider)
+    if external_clusters is not None:
+        cluster_provider = EXTERNAL_CLUSTER_PROVIDER
+    cluster_source = cluster_provider
+    mapping_stats: Dict[str, Any] | None = None
     financial_mode = analysis_type == FINANCIAL_ANALYSIS_TYPE
     included_outlets = FINANCIAL_OUTLETS if financial_mode else None
     excluded_outlets = None if financial_mode else FINANCIAL_OUTLETS
     min_topic_outlets = 2 if financial_mode else MIN_TOPIC_OUTLETS
 
     with _run_lock:
-        _run_state.update({"running": True, "logs": [], "status": "running"})
+        if _run_state["running"]:
+            raise BiasRunAlreadyRunningError("A bias analysis run is already in progress.")
+        _run_state.update({
+            "running": True,
+            "logs": [],
+            "status": "running",
+            "cluster_provider": cluster_provider,
+            "mapping_stats": None,
+        })
     run_logs.append(f"{analysis_type.title()} bias analysis started...")
 
     try:
@@ -357,6 +412,10 @@ def _run_bias_analysis_impl(
         run_logs.append(f"Recent articles found: {len(recent_articles)}")
 
         if not recent_articles:
+            if cluster_provider == EXTERNAL_CLUSTER_PROVIDER:
+                raise ExternalClusteringNoDataError(
+                    "No recent project articles are available for external cluster matching."
+                )
             run_logs.append("No recent articles with enough text in the last 28 days.")
             _persist_run_log(
                 db,
@@ -367,7 +426,38 @@ def _run_bias_analysis_impl(
                 run_logs,
                 analysis_type=analysis_type,
             )
-            return _empty_result(0, embedding_model, cluster_source, external_clusters, analysis_type)
+            with _run_lock:
+                _run_state.update({"running": False, "status": "done"})
+            return _empty_result(
+                0,
+                embedding_model,
+                cluster_source,
+                external_clusters,
+                analysis_type,
+                cluster_provider,
+                mapping_stats,
+            )
+
+        if external_clusters is None and cluster_provider == EXTERNAL_CLUSTER_PROVIDER:
+            run_logs.append("Fetching clusters from the external clustering API...")
+            external_result = fetch_external_clusters(recent_articles)
+            external_clusters = external_result.clusters
+            mapping_stats = external_result.mapping_stats
+            with _run_lock:
+                _run_state["mapping_stats"] = mapping_stats
+            run_logs.append(
+                "External article mapping: "
+                f"matched={mapping_stats['matched_local_articles']}/{mapping_stats['local_articles']}, "
+                f"clustered={mapping_stats['matched_clustered_local_articles']}, "
+                f"usable_groups={mapping_stats['mapped_clusters_with_two_articles']}"
+            )
+            if mapping_stats.get("external_fetch_truncated"):
+                run_logs.append("Warning: external article fetch hit its configured page limit.")
+            if not external_clusters:
+                raise ExternalClusteringNoDataError(
+                    "The external API returned no clusters containing at least two articles "
+                    "from the current project cohort."
+                )
 
         outlets_query = db.query(distinct(models.Article.outlet)).filter(models.Article.date >= since)
         if included_outlets:
@@ -423,7 +513,17 @@ def _run_bias_analysis_impl(
                 run_logs,
                 analysis_type=analysis_type,
             )
-            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters, analysis_type)
+            with _run_lock:
+                _run_state.update({"running": False, "status": "done"})
+            return _empty_result(
+                embeddings_saved,
+                embedding_model,
+                cluster_source,
+                external_clusters,
+                analysis_type,
+                cluster_provider,
+                mapping_stats,
+            )
 
         analysis_articles = [row["article"] for row in analysis_rows]
         if external_clusters is None:
@@ -441,6 +541,11 @@ def _run_bias_analysis_impl(
                 run_logs.append(f"External topic groups ignored: {ignored_clusters}")
 
         if not clusters:
+            if cluster_provider == EXTERNAL_CLUSTER_PROVIDER:
+                raise ExternalClusteringNoDataError(
+                    "External clusters were found, but none aligned with at least two "
+                    "articles that have embeddings in the current run."
+                )
             run_logs.append("No valid topic groups available for scoring.")
             _persist_run_log(
                 db,
@@ -451,7 +556,17 @@ def _run_bias_analysis_impl(
                 run_logs,
                 analysis_type=analysis_type,
             )
-            return _empty_result(embeddings_saved, embedding_model, cluster_source, external_clusters, analysis_type)
+            with _run_lock:
+                _run_state.update({"running": False, "status": "done"})
+            return _empty_result(
+                embeddings_saved,
+                embedding_model,
+                cluster_source,
+                external_clusters,
+                analysis_type,
+                cluster_provider,
+                mapping_stats,
+            )
 
         sentiment_results = (
             model_manager.analyze_financial_sentiment(analysis_articles)
@@ -814,7 +929,9 @@ def _run_bias_analysis_impl(
             "embedding_provider": EMBEDDING_PROVIDER,
             "embedding_model": embedding_model,
             "cluster_source": cluster_source,
+            "cluster_provider": cluster_provider,
             "clusters_received": len(external_clusters) if external_clusters is not None else None,
+            "mapping_stats": mapping_stats,
         }
     except Exception as exc:
         run_status = "error"
@@ -1218,6 +1335,13 @@ def _normalize_analysis_type(value: str | None) -> str:
     return GENERAL_ANALYSIS_TYPE
 
 
+def _normalize_cluster_provider(value: str | None) -> str:
+    normalized = (value or INTERNAL_CLUSTER_PROVIDER).strip().lower()
+    if normalized == EXTERNAL_CLUSTER_PROVIDER:
+        return EXTERNAL_CLUSTER_PROVIDER
+    return INTERNAL_CLUSTER_PROVIDER
+
+
 def _load_recent_articles(
     db: Session,
     since: datetime,
@@ -1271,6 +1395,8 @@ def _empty_result(
     cluster_source: str,
     external_clusters: List[TopicClusterSpec] | None,
     analysis_type: str = GENERAL_ANALYSIS_TYPE,
+    cluster_provider: str = INTERNAL_CLUSTER_PROVIDER,
+    mapping_stats: Dict[str, Any] | None = None,
 ) -> Dict[str, object]:
     return {
         "status": "ok",
@@ -1283,5 +1409,7 @@ def _empty_result(
         "embedding_provider": EMBEDDING_PROVIDER,
         "embedding_model": embedding_model,
         "cluster_source": cluster_source,
+        "cluster_provider": _normalize_cluster_provider(cluster_provider),
         "clusters_received": len(external_clusters) if external_clusters is not None else None,
+        "mapping_stats": mapping_stats,
     }

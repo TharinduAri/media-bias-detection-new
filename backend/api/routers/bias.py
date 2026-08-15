@@ -8,18 +8,33 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from src.bias.service import (
+    BiasRunAlreadyRunningError,
+    ExternalClusteringError,
+    ExternalClusteringNoDataError,
     FINANCIAL_ANALYSIS_TYPE,
     GENERAL_ANALYSIS_TYPE,
     analyze_manual_article,
     ensure_bias_tables,
     get_models,
+    get_external_clustering_status,
     get_run_state,
     run_bias_analysis,
     run_bias_analysis_fast,
+    run_bias_analysis_selected,
     run_bias_analysis_with_clusters,
     run_financial_news_analysis,
     run_financial_news_analysis_fast,
 )
+
+
+def _bias_run_http_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, BiasRunAlreadyRunningError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ExternalClusteringNoDataError):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(exc, ExternalClusteringError):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
 
 
 def _get_last_run_at(db: Session) -> datetime | None:
@@ -73,6 +88,14 @@ def bias_run_status():
     return get_run_state()
 
 
+@router.get("/clustering-providers/status")
+def clustering_providers_status():
+    return {
+        "internal": {"available": True, "error": None},
+        "external": get_external_clustering_status(),
+    }
+
+
 @router.get("/embedding-status")
 def embedding_status(db: Session = Depends(get_db)):
     ensure_bias_tables()
@@ -87,11 +110,21 @@ def embedding_status(db: Session = Depends(get_db)):
 
 
 @router.post("/run", response_model=schemas.BiasRunResponse)
-def run_bias(db: Session = Depends(get_db)):
+def run_bias(
+    payload: schemas.BiasRunRequest | None = None,
+    db: Session = Depends(get_db),
+):
     try:
-        return run_bias_analysis(db)
+        if payload is None:
+            return run_bias_analysis(db)
+        return run_bias_analysis_selected(
+            db=db,
+            analysis_type=payload.analysis_type,
+            skip_embedding=payload.embedding_mode == "reuse",
+            clustering_provider=payload.clustering_provider,
+        )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _bias_run_http_exception(exc) from exc
 
 
 @router.post("/run-fast", response_model=schemas.BiasRunResponse)
@@ -99,7 +132,7 @@ def run_bias_fast(db: Session = Depends(get_db)):
     try:
         return run_bias_analysis_fast(db)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _bias_run_http_exception(exc) from exc
 
 
 @router.post("/run-financial", response_model=schemas.BiasRunResponse)
@@ -107,7 +140,7 @@ def run_financial_bias(db: Session = Depends(get_db)):
     try:
         return run_financial_news_analysis(db)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _bias_run_http_exception(exc) from exc
 
 
 @router.post("/run-financial-fast", response_model=schemas.BiasRunResponse)
@@ -115,7 +148,7 @@ def run_financial_bias_fast(db: Session = Depends(get_db)):
     try:
         return run_financial_news_analysis_fast(db)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _bias_run_http_exception(exc) from exc
 
 
 @router.post("/run-with-clusters", response_model=schemas.BiasRunResponse)
@@ -126,7 +159,7 @@ def run_bias_with_clusters(
     try:
         return run_bias_analysis_with_clusters(db=db, clusters=payload.clusters)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise _bias_run_http_exception(exc) from exc
 
 
 @router.post("/manual-article", response_model=schemas.ManualArticleBiasResponse)

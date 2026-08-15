@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 class ScrapeRequest(BaseModel):
     outlets: Optional[List[str]] = None
@@ -50,7 +50,15 @@ class BiasRunResponse(BaseModel):
     embedding_provider: str
     embedding_model: str
     cluster_source: str
+    cluster_provider: str = "internal"
     clusters_received: Optional[int] = None
+    mapping_stats: Optional[dict] = None
+
+
+class BiasRunRequest(BaseModel):
+    analysis_type: Literal["general", "financial"] = "general"
+    embedding_mode: Literal["full", "reuse"] = "full"
+    clustering_provider: Literal["internal", "external"] = "internal"
 
 
 class BiasTopicClusterRequest(BaseModel):

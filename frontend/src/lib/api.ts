@@ -209,10 +209,45 @@ export interface BiasRunResponse {
   embedding_provider: "local" | "gemini" | string;
   embedding_model: string;
   cluster_source: "internal" | "external" | string;
+  cluster_provider: ClusteringProvider;
   clusters_received?: number | null;
+  mapping_stats?: ExternalClusterMappingStats | null;
 }
 
 export type AnalysisType = "general" | "financial";
+export type ClusteringProvider = "internal" | "external";
+export type EmbeddingMode = "full" | "reuse";
+
+export interface ExternalClusterMappingStats {
+  local_articles: number;
+  local_urls_indexed: number;
+  local_url_collisions: number;
+  external_articles_reported: number;
+  external_articles_fetched: number;
+  external_fetch_truncated: boolean;
+  matched_local_articles: number;
+  matched_clustered_local_articles: number;
+  external_clusters_reported: number;
+  mapped_clusters_with_two_articles: number;
+}
+
+export interface ClusteringProvidersStatus {
+  internal: {
+    available: boolean;
+    error: string | null;
+  };
+  external: {
+    available: boolean;
+    base_url: string;
+    stats: {
+      total_articles: number;
+      clustered: number;
+      unclustered: number;
+      total_clusters: number;
+    } | null;
+    error: string | null;
+  };
+}
 
 export interface ManualArticleBiasInput {
   outlet: string;
@@ -410,11 +445,37 @@ export interface BiasRunStatus {
   running: boolean;
   logs: string[];
   status: "idle" | "running" | "done" | "error";
+  cluster_provider?: ClusteringProvider | null;
+  mapping_stats?: ExternalClusterMappingStats | null;
 }
 
 export async function fetchBiasRunStatus(): Promise<BiasRunStatus> {
   const res = await fetch(`${API_BASE_URL}/bias/run-status`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to fetch run status");
+  return res.json();
+}
+
+export async function fetchClusteringProvidersStatus(): Promise<ClusteringProvidersStatus> {
+  const res = await fetch(`${API_BASE_URL}/bias/clustering-providers/status`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch clustering provider status");
+  return res.json();
+}
+
+export async function triggerBiasAnalysisSelected(input: {
+  analysis_type: AnalysisType;
+  embedding_mode: EmbeddingMode;
+  clustering_provider: ClusteringProvider;
+}): Promise<BiasRunResponse> {
+  const res = await fetch(`${API_BASE_URL}/bias/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || "Failed to run bias analysis");
+  }
   return res.json();
 }
 
